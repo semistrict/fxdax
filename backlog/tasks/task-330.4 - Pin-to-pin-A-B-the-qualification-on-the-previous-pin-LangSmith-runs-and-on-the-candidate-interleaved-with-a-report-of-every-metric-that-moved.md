@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10 14:00'
-updated_date: '2026-11-12 07:45'
+updated_date: '2026-11-12 09:33'
 labels:
   - testing
 dependencies: []
@@ -55,4 +55,6 @@ LangSmith bumps pins (6a513509a to 96c7808b8 went bad). Before a pin is offered,
 2026-11-12 (claude): third A/B (96c7808b8 vs main 09fa51f08): its sandboxes now started on ubu1's long paths (short TMPDIR, ce48681ac); 2 min 41 s into the pin's first round the kernel OOM-killed the pin's host-b extentd in the run's 16 GiB scope (anon 2.97 GB + shmem 2.11 GB, against main's 3.25 GB peak in the same mode: TASK-317's growth in the pin), and systemd stopped the scope, the A/B with it (status 143). Fixed: the sandboxes case stops itself as its cgroup's memory past reclaim (anon + shmem) comes within 1 GiB of the nearest limit, a failed check naming its daemons' memory, its VMs killed, so the round fails and the A/B goes on (a9264a871).
 
 2026-11-12 (claude): fourth A/B (96c7808b8 vs main 0ee1bdb58, run-r3305-20261112T043728Z-8d65a41d). Contaminated: TASK-369's loader (scope fxjob-t369-loader-1808752, ordinary work, 1 GiB rewritten with fsync in a loop on the same /mnt/fxdax-scratch NVMe, ~186 MB/s) ran 01:54:30-02:45:16 EST, beside round 1: pin-r1 (01:54:28-02:27:37) wholly, main-r1's sandboxes part (02:27:37-~02:44) wholly and its soak's first minute. fxjob --bench isolates CPU, cache and memory bandwidth, not the disk. Their framing, durable-lag, command-latency, duration and throughput numbers don't count; pass/fail on memory and correctness stands: the pin's sandboxes stopped by the memory guard (15,365 MiB past reclaim of 16,384, its daemons 4,328 and 4,652 MiB: TASK-317's growth), main's 16 VMs each doing its role with daemons peaking at 3.29/3.24 GB, stores 1.20x the guests' bytes. Round 2 (main then pin) runs after the loader; one more round (pin then main) after it, so the table compares two clean rounds a side, both orders.
+
+2026-11-12 (claude): the fourth A/B's timeline (EST, from each part's resources.log and the journal): pin-r1 01:54:28-02:27:37, main-r1 sandboxes 02:27:37-02:44, soak 02:44-03:14, main-r2 03:14-03:58, pin-r2 03:58-~04:30. TASK-374's drop_caches (~02:50) fell in main-r1's soak, already contaminated by TASK-369's loader. TASK-374's loaders (fxjob-t374-load-2912248 02:56:57-03:07:58, -3120098 03:08:08-04:30:15, -3884249 04:30:47-04:31:34) each waited on its go pipe, which only its bench job (fxjob-t374-bench, started 04:30:13, once this A/B's rounds let the bench slot go) wrote: no load during round 2, which stands clean. Round 2: main's sandboxes failed framings alone (host-a 10 past 1 s, slowest 1,549.6 ms; host-b 12, slowest 4,704.1 ms); the pin's sandboxes stopped by the memory guard again (15,379 of 16,384 MiB past reclaim, daemons 4,326 and 4,839 MiB). A third round (pin then main) runs now, after TASK-374's loader is gone and step 146 caps work's writes on /mnt/fxdax-scratch at 32 MB/s while a bench job runs.
 <!-- SECTION:NOTES:END -->
