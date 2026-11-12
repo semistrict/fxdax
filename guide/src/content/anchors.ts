@@ -41,7 +41,7 @@ export const anchors = {
   es_commit: { path: "crates/fxdax/src/extents.rs", snippet: "pub fn commit(&self, root: Option<&[u8]>) -> Result<()>", note: "COMMIT: seals the extents written before it; nothing in a window changes." },
   es_durable: { path: "crates/fxdax/src/extents.rs", snippet: "fn make_durable(&self) -> Result<()>", note: "Durable means synced locally, and uploaded if the store has a remote." },
   es_map: { path: "crates/fxdax/src/extents.rs", snippet: "pub fn map(&self, extent: ExtentId, offset: u64, len: u64, window_offset: u64) -> Result<()>", note: "MAP: a sealed extent's pages into the window, read-only." },
-  es_fork: { path: "crates/fxdax/src/extents.rs", snippet: "pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error>", note: "A fork: a new branch, as of the last commit made durable." },
+  es_fork: { path: "crates/fxdax/src/extents.rs", snippet: "pub fn fork(&self, path: impl AsRef<Path>, cell: Cell) -> Result<Branch, Error>", note: "A fork: a new branch, as of the last commit made durable, its ID given out in its cell." },
   store: { path: "crates/extent_store/src/store.rs", snippet: "pub struct Store<D: Dir>", note: "The local extent store: the bucket's WAL and cache." },
   store_commit: { path: "crates/extent_store/src/store.rs", snippet: "pub fn commit(&self, root: Option<&[u8]>) -> Result<(), Error> {", note: "The local store's commit." },
   store_commit_fork: { path: "crates/extent_store/src/store.rs", snippet: "pub fn commit_fork(&self, child: Child) -> Result<u64, Error> {", note: "The commit that names a fork." },
