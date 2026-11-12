@@ -21,7 +21,11 @@
 //!   and the time the guests took to write what waited, which the bucket takes back at least as
 //!   fast as it took it before it failed;
 //! - **no VM process is let go** (TASK-249): each writes and commits till the end, its connection
-//!   up, as slowly as the bucket lets it.
+//!   up, as slowly as the bucket lets it;
+//! - **a failing bucket is sent no more than probes** (TASK-382): through a failing phase, the
+//!   writes that failed, each its object sent whole, are a wave of the host's uploads at once and
+//!   then a probe of each kind every [`extent_remote::store`]'s backoff at most, not every upload
+//!   tried again and again, most of the daemon's CPU in the qualification's soak.
 //!
 //! `FXDAX_SOAK_SECS` says how long it runs (default 300 s, CI's; 1,800 or more each night, Hunt's
 //! `soak` job), the phases each a fraction of it. Ignored by the workspace's suite, which it would
@@ -80,6 +84,13 @@ const PHASES: [(&str, f64, Fault); 5] = [
     ("out of service", 0.1, Fault { latency: Duration::ZERO, failing: Failing::Unavailable }),
     ("answering again", 0.3, Fault { latency: Duration::from_millis(300), failing: Failing::Not }),
 ];
+
+/// The PUTs a host's uploads make at once (`crate::remote::UPLOADS`' requests), every one of which
+/// may fail as a bucket fails before a probe's turn holds them back.
+const UPLOADS_AT_ONCE: u64 = 64;
+
+/// The kinds of request that write, sending an object, which take turns while they fail.
+const WRITES: [Request; 3] = [Request::Create, Request::Update, Request::Overwrite];
 
 /// What a VM process did.
 #[derive(Default)]
@@ -221,7 +232,7 @@ fn a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound() {
     };
     // When the bucket answered again, and how long after it every commit made before was uploaded.
     let (mut answered_again, mut caught_up) = (None, None);
-    let mut failed_before = 0;
+    let (mut failed_before, mut writes_failed_before) = (0, 0);
     for (name, fraction, fault) in PHASES {
         std::fs::write(&faults, fault.words()).unwrap();
         let ends = Instant::now() + run.mul_f64(fraction);
@@ -249,11 +260,26 @@ fn a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound() {
         }
         // Through a failing phase, the failures said, of its kinds: a full bucket's writes, one
         // out of service's every request.
-        let failed: u64 = failures(&stats).iter().map(|(_, count)| count).sum();
+        let failures = failures(&stats);
+        let failed: u64 = failures.iter().map(|(_, count)| count).sum();
         if fault.failing != Failing::Not {
             assert!(failed > failed_before, "the bucket {name}, and no failure said");
         }
         failed_before = failed;
+        // And no more writes failed than the uploads at once, then a probe of each kind every
+        // 5 s, its backoff at most, the backoff's first steps (50 ms to 3.2 s) besides.
+        let writes_failed: u64 = (failures.iter())
+            .filter(|(request, _)| WRITES.contains(request))
+            .map(|(_, count)| count)
+            .sum();
+        let probes = run.mul_f64(fraction).as_secs() / 5 + 8;
+        let bound = UPLOADS_AT_ONCE + WRITES.len() as u64 * probes;
+        assert!(
+            writes_failed - writes_failed_before <= bound,
+            "the bucket {name}: {} writes failed, past {bound}: {failures:?}",
+            writes_failed - writes_failed_before
+        );
+        writes_failed_before = writes_failed;
         let statuses = stores::upload_statuses();
         let pending: u64 = statuses.iter().map(|(_, status)| status.pending_bytes).sum();
         let sample = process::last();

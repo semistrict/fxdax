@@ -17,7 +17,8 @@
 //! a run of failures of a kind and then every [`FAILING_EVERY`], with how many failed, and once
 //! the kind answers again (TASK-314): a bucket that keeps failing, full, out of reach or refusing
 //! its credentials, stalls its stores' guests' commits at their lag bound (doc-7, decision 3),
-//! which the log says why of.
+//! which the log says why of. And once a write fails, writes of its kind take turns ([`Turns`],
+//! TASK-382): one at a time, probing the bucket, until one is answered, then more as more are.
 //!
 //! fxdax: every reader of a bucket reads it through a store, which warns of reading what the
 //! collector's newest mark-only pass marked ([`crate::marks`], TASK-264): on wherever a marks object
@@ -160,6 +161,110 @@ struct Counts {
     failures: [AtomicU64; Request::ALL.len()],
     /// fxdax: the run of failures of each kind going on, if one is.
     failing: [Failing; Request::ALL.len()],
+    /// fxdax: the turns the writes of each kind take, since one failed (TASK-382).
+    turns: [Turns; Request::ALL.len()],
+}
+
+/// fxdax: the writes of a kind in flight at once once one failed (TASK-382): one, a probe of the
+/// bucket, after [`backoff`] of the failures in a row since the last answer, until one is
+/// answered; then one more for each answered, as TCP's slow start opens its window, doubling each
+/// round trip, until [`Turns::OPEN`], when none waits for a turn any more.
+///
+/// Each write sends its object whole, every try of it (and `object_store` tries each several times
+/// before it says it failed). Every write of a host's uploads, as many as its upload memory holds,
+/// sending its object to a full or failing bucket again and again, each as its own backoff said,
+/// was most of the extent daemon's CPU in the qualification's bucket soak: the kernel's copies into
+/// the sockets and the pages it zeroed for them, 1,200 of its 1,580 s on ubu1. And as the bucket
+/// answers again, those waiting don't all go at once: RustFS on a slow disk refused such a rush
+/// (`SlowDown`), failing each write it refused again, until the soak ran out of time.
+#[derive(Default)]
+struct Turns {
+    window: std::sync::Mutex<Window>,
+    /// Told as a write's turn ends, the window opens, or a write fails.
+    changed: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct Window {
+    /// The writes that may be in flight at once, taking turns; none, if no write takes a turn.
+    limit: Option<u64>,
+    /// The writes in flight with a turn.
+    in_flight: u64,
+    /// The writes that failed in a row, and when the latest did, which the next probe goes
+    /// [`backoff`] after.
+    failed: u32,
+    last: Option<tokio::time::Instant>,
+}
+
+impl Turns {
+    /// The window at which no write waits for its turn any more: the host's uploads' PUTs at once
+    /// (`fxdax::remote`'s `UPLOADS`).
+    const OPEN: u64 = 64;
+
+    fn window(&self) -> std::sync::MutexGuard<'_, Window> {
+        self.window.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Waits for a write's turn, if writes take turns: until fewer than the window are in flight,
+    /// and, after a failure, [`backoff`] of the failures in a row passed since the latest. Its turn
+    /// lasts until what it returns is dropped, as the write is answered.
+    async fn turn(&self) -> Option<Turn<'_>> {
+        loop {
+            // Told of a change from before the window is looked at, so that none goes unseen.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let due = {
+                let mut window = self.window();
+                let Some(limit) = window.limit else { return None };
+                let due = window.last.map(|last| last + backoff(window.failed));
+                let now = tokio::time::Instant::now();
+                if window.in_flight < limit && due.is_none_or(|due| due <= now) {
+                    window.in_flight += 1;
+                    return Some(Turn(self));
+                }
+                due.filter(|due| *due > now)
+            };
+            match due {
+                Some(due) => tokio::select! {
+                    () = tokio::time::sleep_until(due) => {}
+                    () = &mut changed => {}
+                },
+                None => changed.await,
+            }
+        }
+    }
+
+    /// A write of the kind failed: one at a time from now on, each after [`backoff`].
+    fn failed(&self) {
+        let mut window = self.window();
+        window.limit = Some(1);
+        window.failed = window.failed.saturating_add(1);
+        window.last = Some(tokio::time::Instant::now());
+        drop(window);
+        self.changed.notify_waiters();
+    }
+
+    /// A write of the kind was answered: one more in flight at once, or none waiting from
+    /// [`Turns::OPEN`] on.
+    fn answered(&self) {
+        let mut window = self.window();
+        let Some(limit) = window.limit else { return };
+        (window.failed, window.last) = (0, None);
+        window.limit = Some(limit + 1).filter(|limit| *limit < Self::OPEN);
+        drop(window);
+        self.changed.notify_waiters();
+    }
+}
+
+/// A write's turn ([`Turns::turn`]), until it drops.
+struct Turn<'a>(&'a Turns);
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.0.window().in_flight -= 1;
+        self.0.changed.notify_waiters();
+    }
 }
 
 /// fxdax: how often a run of failures of requests of a kind is logged again, with how many failed,
@@ -347,6 +452,7 @@ impl Timed<'_> {
             let answer = error(&failure);
             if answer == Error::Unavailable {
                 self.counts.failures[self.request as usize].fetch_add(1, Ordering::Relaxed);
+                self.counts.turns[self.request as usize].failed();
                 self.counts.failing[self.request as usize].failed(
                     self.request,
                     &object(),
@@ -357,6 +463,7 @@ impl Timed<'_> {
         });
         if !matches!(answered, Err(Error::Unavailable)) {
             self.counts.failing[self.request as usize].answered(self.request);
+            self.counts.turns[self.request as usize].answered();
         }
         let logged = log::log_enabled!(log::Level::Debug).then(object);
         let ms = || self.started.elapsed().as_secs_f64() * 1e3;
@@ -713,6 +820,8 @@ impl Bucket for Store {
         };
         let upload = Upload::of(key);
         async move {
+            // fxdax: its turn, once a write of its kind failed (TASK-382).
+            let _turn = self.counts.turns[request as usize].turn().await;
             let timed = self.counts.request(request, Some(&path));
             let len = bytes.len() as u64;
             let options = PutOptions { mode, ..PutOptions::default() };
@@ -792,6 +901,52 @@ pub(crate) mod tests {
     fn failed_requests_back_off() {
         let waits: Vec<_> = (1..=10).map(|failures| backoff(failures).as_millis()).collect();
         assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
+    }
+
+    /// TASK-382: a host's uploads, as many as its upload memory holds, each sending its object whole
+    /// every try, to a full bucket: 48 creates failing for 92.5 s. Each tried on its own, they
+    /// failed 25 times each, 1,200 objects sent; taking turns, the first fails and the others wait,
+    /// the bucket probed as one create alone would try it. Answering again, a second a write, they
+    /// go as more are answered: one, then two, four, and so on, not all at once.
+    #[tokio::test(start_paused = true)]
+    async fn writes_failing_take_turns_until_they_land() {
+        use crate::faults::{Failing, Fault, Faults, Faulty};
+        let faults = Faults::new(std::time::Duration::ZERO, None);
+        let objects = Arc::new(object_store::memory::InMemory::new());
+        let store = Arc::new(Store::new(Arc::new(Faulty::new(objects, faults.clone())), ""));
+        faults.set(Fault { failing: Failing::NoSpace, ..Fault::default() });
+        let start = tokio::time::Instant::now();
+        let creates: Vec<_> = (0..48)
+            .map(|seq| {
+                let (store, key) = (store.clone(), layout::segment(test_branch(1), seq));
+                tokio::spawn(async move {
+                    let created = crate::bucket::create(&*store, &key, vec![1, 2, 3]).await;
+                    assert!(matches!(created, crate::bucket::Created::Created), "{key}");
+                    start.elapsed()
+                })
+            })
+            .collect();
+        tokio::time::sleep(std::time::Duration::from_millis(92_500)).await;
+        // Reads answer meanwhile, a full bucket's, and take no turn.
+        assert_eq!(store.get("other").await.map(|object| object.bytes), Err(Error::NotFound));
+        let second = std::time::Duration::from_secs(1);
+        faults.set(Fault { latency: second, failing: Failing::Not });
+        let mut landed = Vec::new();
+        for create in creates {
+            landed.push(create.await.unwrap());
+        }
+        landed.sort();
+        // Failed at 0 s, then probed at 50 ms, 150 ms, ... 3.15 s, 6.35 s, then every 5 s to
+        // 91.35 s; the probe at 96.35 s lands a second later, then two, four, eight, 16, and the
+        // last 17 at once, each a second after the last.
+        let stats = store.stats();
+        assert_eq!((stats.requests(Request::Create), stats.failures(Request::Create)), (73, 25));
+        let probe = std::time::Duration::from_millis(97_350);
+        let rounds = [1, 2, 4, 8, 16, 17];
+        let expected: Vec<_> = (rounds.iter().enumerate())
+            .flat_map(|(round, writes)| std::iter::repeat_n(probe + second * round as u32, *writes))
+            .collect();
+        assert_eq!(landed, expected);
     }
 
     /// TASK-314: a bucket whose writes keep failing, its disk full, which `object_store` says only

@@ -6,21 +6,17 @@
 # Killer: extentd::tests::soak::a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound
 --- a/crates/extent_remote/src/store.rs
 +++ b/crates/extent_remote/src/store.rs
-@@ -341,16 +341,7 @@ impl Timed<'_> {
-         let kind = self.request.name();
-         let object = || self.path.map_or_else(String::new, |path| path.to_string());
+@@ -451,13 +451,7 @@
          let answered = answered.map_err(|failure| {
--            let answer = error(&failure);
--            if answer == Error::Unavailable {
+             let answer = error(&failure);
+             if answer == Error::Unavailable {
 -                self.counts.failures[self.request as usize].fetch_add(1, Ordering::Relaxed);
+                 self.counts.turns[self.request as usize].failed();
 -                self.counts.failing[self.request as usize].failed(
 -                    self.request,
 -                    &object(),
 -                    &failure,
 -                );
--            }
--            answer
-+            error(&failure)
+             }
+             answer
          });
-         if !matches!(answered, Err(Error::Unavailable)) {
-             self.counts.failing[self.request as usize].answered(self.request);

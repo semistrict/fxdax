@@ -1,0 +1,17 @@
+# Every write goes as soon as it is made or retried, whatever the bucket's writes of its kind do, as
+# before TASK-382: a full or failing bucket is sent each of the host's uploads, its object whole,
+# again and again, each as its own backoff says, most of the daemon's CPU in the qualification's
+# bucket soak (1,200 of its 1,580 s on ubu1), where a probe at a time would do.
+# Kind: failures
+# Killer: extentd::tests::soak::a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound
+--- a/crates/extent_remote/src/store.rs
++++ b/crates/extent_remote/src/store.rs
+@@ -820,8 +820,6 @@
+         };
+         let upload = Upload::of(key);
+         async move {
+-            // fxdax: its turn, once a write of its kind failed (TASK-382).
+-            let _turn = self.counts.turns[request as usize].turn().await;
+             let timed = self.counts.request(request, Some(&path));
+             let len = bytes.len() as u64;
+             let options = PutOptions { mode, ..PutOptions::default() };
