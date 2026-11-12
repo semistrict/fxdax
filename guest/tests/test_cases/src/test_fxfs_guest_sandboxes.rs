@@ -827,10 +827,14 @@ mod guest {
     }
 
     /// Runs `git` with `args` in `dir`, as a sandbox's user, and returns its standard output; it
-    /// must succeed.
+    /// must succeed. Its automatic gc, which a commit past so many loose objects starts, runs as
+    /// the commit does, not detached: detached, it still held gc's lock as the role's own `git gc`
+    /// ran, which failed ("gc is already running", the long mode's 100 commits of 3,000 files,
+    /// TASK-330.4's A/B).
     fn git(dir: &str, args: &[&str]) -> String {
         let output = Command::new("git")
-            .args(["-c", "user.name=sandbox", "-c", "user.email=sandbox@fxdax", "-C", dir])
+            .args(["-c", "user.name=sandbox", "-c", "user.email=sandbox@fxdax"])
+            .args(["-c", "gc.autoDetach=false", "-C", dir])
             .args(args)
             .output()
             .expect("git");
