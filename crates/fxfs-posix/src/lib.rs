@@ -1717,13 +1717,14 @@ impl<P: Platform> Fxfs<P> {
     /// journal's sync asked of it: the journal counts itself durable as far as any flush took it,
     /// an fsync's too, which is ordered alone, and asks the device nothing once it is; so that a
     /// sync after fsyncs, finding nothing more, returned with their commits not yet durable, which
-    /// a lost host lost (TASK-67). Where the journal's own flush was durable, this one finds
-    /// nothing left to make so.
+    /// a lost host lost (TASK-67). That flush alone is durable, the journal's before it ordered:
+    /// each durable commit waits for object storage, a round trip, and the journal's sync makes
+    /// two or three, its flush, and the flush recording it for the frees it lets go (TASK-371).
     pub async fn sync(&self) -> Result<(), Error> {
         self.begin(Op::Sync, None).await?;
         self.filesystem.graveyard().flush().await;
-        let _durable = self.platform.durable();
         self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await?;
+        let _durable = self.platform.durable();
         self.filesystem.device().flush().await
     }
 

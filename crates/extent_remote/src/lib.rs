@@ -149,10 +149,24 @@ impl From<extent_frame::Corrupt> for Error {
 /// turning it off, and specs/bucket's TLA+ by its mutation removing it (doc-7, Testing).
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
-    /// A writer acknowledges a segment only once a read of its lease that follows the segment's
-    /// creation shows the lease still its.
-    /// TLA+: `specs/bucket/mutations/NoAcksAfterLease.cfg`.
-    pub acks_after_lease: bool,
+    /// The collector keeps every fence of a live branch, the first segment of each epoch its state
+    /// applied ([`State::fences`](recovery::State::fences)): a writer taken over, whatever it
+    /// still creates, finds its create failing at its successor's fence for as long as it lives.
+    /// So a writer acknowledges what it created, its creates the fencing, with no read of its
+    /// lease: a durable commit is one round trip (TASK-371).
+    /// TLA+: `specs/bucket/mutations/NoFencesKept.cfg`.
+    pub fences_kept: bool,
+    /// The collector keeps every segment of a live branch whose lease, read after the listing, is
+    /// of an epoch past its state's: a writer taking it over, which may have read the branch
+    /// before the last writer's segment landed there, fences where it found the end, which that
+    /// segment must still hold (TASK-371).
+    /// TLA+: `specs/bucket/mutations/NoTakeoversKept.cfg`.
+    pub takeovers_kept: bool,
+    /// A writer acknowledges a segment holding a fork only once a read of its lease that follows
+    /// the segment's creation shows the lease still its: a deleted branch's fences go, and its
+    /// writer, taken over, would record the child of a fork of segments the collector let go of.
+    /// TLA+: `specs/bucket/mutations/NoForksAfterLease.cfg`.
+    pub forks_after_lease: bool,
     /// A writer taking a branch over first creates an empty segment of its own at its end.
     /// TLA+: `specs/bucket/mutations/NoFence.cfg`.
     pub fence: bool,
@@ -295,7 +309,9 @@ pub struct Rules {
 
 impl Rules {
     pub const ALL: Self = Self {
-        acks_after_lease: true,
+        fences_kept: true,
+        takeovers_kept: true,
+        forks_after_lease: true,
         fence: true,
         continuity: true,
         epoch_sequences: true,

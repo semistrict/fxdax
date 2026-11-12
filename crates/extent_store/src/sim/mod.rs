@@ -98,7 +98,9 @@ fn one() {
         std::env::var("SIM_OFF").unwrap_or_default().split(',').filter(|name| !name.is_empty())
     {
         match name {
-            "acks_after_lease" => rules.acks_after_lease = false,
+            "fences_kept" => rules.fences_kept = false,
+            "takeovers_kept" => rules.takeovers_kept = false,
+            "forks_after_lease" => rules.forks_after_lease = false,
             "fence" => rules.fence = false,
             "continuity" => rules.continuity = false,
             "epoch_sequences" => rules.epoch_sequences = false,
@@ -284,7 +286,16 @@ fn takeovers() -> Profile {
 
 test_holds!(takeovers_while_uploading, takeovers());
 
-test_needs!(takeovers_need_acks_after_lease, acks_after_lease, Profile::default());
+// A writer acknowledging what it created, with no read of its lease (TASK-371): a later writer's
+// fence, which a checkpoint covers, kept for as long as the writer taken over lives...
+test_needs!(takeovers_need_fences_kept, fences_kept, recreated());
+
+// ...and what the last writer landed after a later writer read the branch, until that one fenced.
+test_needs!(takeovers_need_takeovers_kept, takeovers_kept, late_checkpoints());
+
+// A deleted branch's writer, taken over, acknowledging a fork only after a read of its lease: the
+// deletion's fence goes with the branch.
+test_needs!(deleted_forks_need_forks_after_lease, forks_after_lease, deleted_bases());
 
 test_needs!(takeovers_need_fences, fence, Profile::default());
 

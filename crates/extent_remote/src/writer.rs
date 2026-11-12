@@ -448,31 +448,37 @@ impl<B: Bucket> Writer<B> {
         Ok(bucket::create(&*self.bucket, key, bytes).await)
     }
 
-    /// Acknowledges the segments uploaded with every one before them, once the lease shows them
-    /// the branch's. Returns the last segment acknowledged. fxdax: to the last that goes on with no
-    /// commit, a commit spanning segments acknowledged with the segment it ends in, not part of
-    /// it (`extent_frame::segment::Continued`, TASK-92.41): what a store lets go of, once
-    /// acknowledged, the bucket has whole, and the state acknowledged, which checkpoints hold,
-    /// holds no commit begun.
+    /// Acknowledges the segments uploaded with every one before them: their creates are the
+    /// fencing, as a writer taken over finds its create failing at its successor's fence, which the
+    /// collector keeps (doc-7, Fencing; TASK-371). Those holding a fork, once the lease shows them
+    /// the branch's too: a deleted branch's fences go. Returns the last segment acknowledged.
+    /// fxdax: to the last that goes on with no commit, a commit spanning segments acknowledged with
+    /// the segment it ends in, not part of it (`extent_frame::segment::Continued`, TASK-92.41):
+    /// what a store lets go of, once acknowledged, the bucket has whole, and the state
+    /// acknowledged, which checkpoints hold, holds no commit begun.
     pub async fn acknowledge(&self) -> Result<Option<u64>, Error> {
-        let through = {
+        let (through, forks) = {
             let inner = self.inner();
             if let Some(error) = &inner.stopped {
                 return Err(error.clone());
             }
-            inner
-                .pending
-                .iter()
+            let created: Vec<_> = (inner.pending.iter())
                 .take_while(|(_, pending)| pending.objects.is_none())
-                .filter(|(_, pending)| pending.footer.contents.continued.is_none())
-                .map(|(seq, _)| *seq)
-                .last()
-        };
-        let Some(through) = through else {
-            return Ok(self.inner().state.through);
+                .collect();
+            let Some(end) = created
+                .iter()
+                .rposition(|(_, pending)| pending.footer.contents.continued.is_none())
+            else {
+                return Ok(inner.state.through);
+            };
+            let acknowledged = &created[..=end];
+            let forks =
+                acknowledged.iter().any(|(_, pending)| !pending.footer.contents.forks.is_empty());
+            (*acknowledged[end].0, forks)
         };
         let lease = layout::lease(self.branch);
-        if rules().acks_after_lease
+        if forks
+            && rules().forks_after_lease
             && !branch::holds_lease(&*self.bucket, &lease, self.epoch, self.holder).await?
         {
             return Err(self.stop(Error::Fenced));

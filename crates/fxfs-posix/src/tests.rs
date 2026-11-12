@@ -837,6 +837,41 @@ async fn syncs_make_what_fsyncs_ordered_durable() {
     }
 }
 
+/// fxdax: a sync makes one commit of the device durable, its last, after the journal's flushes,
+/// ordered alone: each durable commit waits for object storage, a round trip, where the guest's
+/// sync(2) made three, a write overwriting a block (the frees its flush records) then a sync, as
+/// a loop of them does (TASK-371: 3 a second at 25 ms of latency).
+#[fuchsia::test]
+async fn syncs_make_one_commit_durable() {
+    let wanted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let durable_barriers = Arc::new(AtomicU64::new(0));
+    let mut device = FakeDevice::new(16384, 4096);
+    let (counted, counting) = (wanted.clone(), durable_barriers.clone());
+    device.set_op_callback(move |op| {
+        let barrier = matches!(op, storage_device::fake_device::Op::Flush)
+            || matches!(op, storage_device::fake_device::Op::PostBarrier);
+        if barrier && counted.load(Ordering::SeqCst) > 0 {
+            counting.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(())
+    });
+    let filesystem = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("formatting");
+    let root_volume = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root_volume.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let root = volume.root_directory_object_id();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Durably(wanted));
+    let ino = fs.create(root, b"synced", FILE, 0, 0, 0, &[]).await.unwrap()[0].ino;
+    let mut durable = Vec::new();
+    for round in 0..4u64 {
+        fs.write(ino, round * 4096, &[round as u8; 4096]).await.unwrap();
+        fs.write(ino, 0, &[round as u8; 4096]).await.unwrap();
+        let before = durable_barriers.load(Ordering::SeqCst);
+        fs.sync().await.unwrap();
+        durable.push(durable_barriers.load(Ordering::SeqCst) - before);
+    }
+    assert_eq!(durable, [1, 1, 1, 1]);
+}
+
 /// fxdax: a file that filled the filesystem, removed, gives back all the data it took, but for the
 /// staging extent's reach; and statfs's free space changes by nothing else but Fxfs's metadata,
 /// held and reserved: with the journal near its reclaim size, as the guest's checks before

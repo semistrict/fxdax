@@ -463,11 +463,15 @@ async fn recover_live(
         let recoveries = round.into_iter().map(|(origin, branch)| {
             let checkpoints = &checkpoints;
             async move {
+                // Its lease, read after the listing and its recovery: what its writer may name
+                // ([`behind`]), and whether one is taking it over ([`Ended::taking`]).
                 let recovered = match recovery::recover_layers(checkpoints, branch, origin).await {
-                    Ok(recovered) => match behind(bucket, branch, &recovered).await {
-                        Ok(behind) => Ok((recovered, behind)),
-                        Err(error) => Err(error),
-                    },
+                    Ok(recovered) => {
+                        match branch::lease_epoch(bucket, &layout::lease(branch)).await {
+                            Ok(lease) => Ok((recovered, lease)),
+                            Err(error) => Err(error),
+                        }
+                    }
                     Err(error) => Err(error),
                 };
                 (branch, recovered)
@@ -475,7 +479,7 @@ async fn recover_live(
         });
         let mut inherited = Inherited::default();
         for (branch, recovered) in futures::future::join_all(recoveries).await {
-            let (recovered, behind) = match recovered {
+            let (recovered, lease) = match recovered {
                 Ok(recovered) => recovered,
                 // Deleted since its record was read, what it needed may be gone: it is not live.
                 // Nor is a failed fork's claim no writer has: nothing ever read what it names.
@@ -503,27 +507,20 @@ async fn recover_live(
                 queue.insert((origin, fork.child));
             }
             checkpointed |= recovered.checkpoint.is_some();
-            live.add(recovered, behind, &mut inherited);
+            live.add(recovered, lease, &mut inherited);
         }
         live.inherit(inherited);
     }
     Ok(checkpointed)
 }
 
-/// Whether the writer of `branch` may name the extents `recovered` holds anywhere on their ways
-/// from where they were sealed, before the moves its state followed: unless its state is from a
-/// checkpoint of the writer holding its lease, read now, after the checkpoint was listed. The
-/// extents it inherited, its writer may name so whatever this says ([`Live::inherit`]).
-async fn behind(
-    bucket: &impl Bucket,
-    branch: u64,
-    recovered: &Recovered<Layers>,
-) -> Result<bool, Error> {
-    if !rules().ways_from_seals {
-        return Ok(false);
-    }
-    let Some(checkpointer) = recovered.checkpointer else { return Ok(true) };
-    Ok(branch::lease_epoch(bucket, &layout::lease(branch)).await? != checkpointer)
+/// Whether the writer of the branch `recovered` is of may name the extents it holds anywhere on
+/// their ways from where they were sealed, before the moves its state followed: unless its state
+/// is from a checkpoint of the writer holding its lease, of epoch `lease`, read after the
+/// checkpoint was listed. The extents it inherited, its writer may name so whatever this says
+/// ([`Live::inherit`]).
+fn behind(recovered: &Recovered<Layers>, lease: u64) -> bool {
+    rules().ways_from_seals && recovered.checkpointer != Some(lease)
 }
 
 /// What a pass needs of the live branches' states, folded in as they are recovered.
@@ -543,14 +540,28 @@ struct Live {
 }
 
 /// What deciding what goes needs of a live branch's state, its extents but: where its segments end,
-/// the highest epoch of those applied, and the branch's next sequence number.
+/// the highest epoch of those applied, the branch's next sequence number, its fences, and whether
+/// a writer is taking it over.
 struct Ended {
     end: u64,
     epoch: u64,
     next_sequence: u64,
+    fences: Vec<u64>,
+    /// Whether its lease, read after the listing, is of an epoch past its state's: a writer taking
+    /// it over, which may have read it before the last writer's segment landed, fences where it
+    /// found its end, whatever covers it since (TASK-371).
+    taking: bool,
 }
 
 impl Ended {
+    /// fxdax: whether segment `seq` of the branch stays, whatever covers it (TASK-371): one of its
+    /// fences, which a writer taken over must find for as long as it lives, its creates being its
+    /// fencing (fences_kept); or any, while a writer takes the branch over (takeovers_kept).
+    fn keeps(&self, seq: u64) -> bool {
+        (rules().fences_kept && self.fences.binary_search(&seq).is_ok())
+            || (rules().takeovers_kept && self.taking)
+    }
+
     /// Whether segment `seq` of `branch`, which this recovery of it ended as it says, may land in
     /// it; or, with `writer`, an epoch and a sequence number, the extent that writer uploaded before
     /// that segment ([`Pass::may_land`]).
@@ -600,12 +611,13 @@ impl Live {
         !self.recovered(branch, origin) && self.taken.insert((branch, origin))
     }
 
-    /// Folds in `recovered`, a live branch's, whose writer may be `behind` it: its own layer, and
-    /// what it inherited into `inherited`, its round's, which [`Live::inherit`] folds in once for
-    /// all its forks.
-    fn add(&mut self, recovered: Recovered<Layers>, behind: bool, inherited: &mut Inherited) {
+    /// Folds in `recovered`, a live branch's, whose lease, read after it, is of epoch `lease`: its
+    /// own layer, and what it inherited into `inherited`, its round's, which [`Live::inherit`]
+    /// folds in once for all its forks.
+    fn add(&mut self, recovered: Recovered<Layers>, lease: u64, inherited: &mut Inherited) {
+        let behind = behind(&recovered, lease);
         let Recovered { state, end, touched, .. } = recovered;
-        let State { branch, extents, epoch, next_sequence, .. } = state;
+        let State { branch, extents, epoch, next_sequence, fences, .. } = state;
         let Layered { inherited: from, own, shadowed } = extents;
         self.touched.extend(touched);
         for (extent, location) in own {
@@ -620,7 +632,9 @@ impl Live {
                 None => inherited.states.push((from, shadowed)),
             }
         }
-        self.branches.entry(branch).or_default().push(Ended { end, epoch, next_sequence });
+        let taking = lease > epoch;
+        let ended = Ended { end, epoch, next_sequence, fences, taking };
+        self.branches.entry(branch).or_default().push(ended);
     }
 
     /// Folds in what forks inherited, `inherited`: each state once, but the extents of it none of
@@ -783,6 +797,12 @@ impl Pass {
         Ok(Self { objects, records, branches, touched, named, hops })
     }
 
+    /// fxdax: whether segment `seq` of `branch` stays whatever covers it, by any recovery of the
+    /// branch ([`Ended::keeps`], TASK-371).
+    fn keeps(&self, branch: u64, seq: u64) -> bool {
+        self.branches.get(&branch).into_iter().flatten().any(|ended| ended.keeps(seq))
+    }
+
     /// fxdax: whether the object of `kind`, which no live state names, may yet be named, by what
     /// its key declares (TASK-153.7): a segment, at or past the end of its branch, live, which may
     /// land in it; an extent stored on its own, its key naming the writer that uploaded it before
@@ -877,9 +897,11 @@ impl Pass {
             let kind = layout::kind(key);
             let goes = match kind {
                 Kind::Checkpoint { .. } => !self.touched.contains(key),
-                // Once a checkpoint covers it, if its extents are dead or moved.
-                Kind::Segment { .. } => {
+                // Once a checkpoint covers it, if its extents are dead or moved; but a fence, or one
+                // of a branch being taken over ([`Ended::keeps`]).
+                Kind::Segment { branch, seq } => {
                     !self.may_land(bucket, kind).await?
+                        && !self.keeps(branch, seq)
                         && !self.touched.contains(key)
                         && (!named || moved_long_ago(key))
                 }
@@ -1401,7 +1423,7 @@ mod tests {
 
     /// TASK-179: a writer of a branch deleted meanwhile, whose lease the collector removed and a
     /// taking created again, at the writer's epoch, before finding the branch deleted, acknowledges
-    /// nothing: the lease is another taking's. Found by the simulation, seed 9030 of its
+    /// nothing of a fork: the lease is another taking's. Found by the simulation, seed 9030 of its
     /// `bases_deleted_under_live_forks` at SIM_SOAK=100, where such a writer gave its forks'
     /// children records naming what the collector had reclaimed.
     #[test]
@@ -1418,16 +1440,21 @@ mod tests {
         assert_eq!(acknowledged, Ok(Some(1)));
     }
 
-    /// What a writer's acknowledgement of its segment gives, uploaded before its branch was
-    /// deleted, a pass removed its lease, and a taking that read the record before the deletion
-    /// took the lease again.
+    /// What a writer's acknowledgement of its segment of a fork gives, uploaded before its branch
+    /// was deleted, a pass removed its lease, and a taking that read the record before the deletion
+    /// took the lease again. A segment of a fork, which a writer acknowledges only once a read of
+    /// its lease shows it its (forks_after_lease): what it creates is its fencing otherwise
+    /// (TASK-371).
     async fn acknowledge_past_a_lease_taken_again() -> Result<Option<u64>, Error> {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
         let bucket = store();
         branch::create(&*bucket, 1, 0).await.unwrap();
         let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-        let objects =
-            Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut writer.chain()).frame();
-        let seq = writer.add_segment(objects).unwrap();
+        let footer =
+            writer.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         writer.upload(seq).await.unwrap();
         let record = branch::record(&*bucket, 1).await.unwrap().unwrap();
         let before = recovery::recover(&*bucket, 1, None).await.unwrap();
@@ -1438,6 +1465,93 @@ mod tests {
         assert_eq!(taken.err(), Some(Error::Deleted));
         assert_eq!(branch::lease_epoch(&*bucket, &layout::lease(1)).await, Ok(writer.epoch()));
         writer.acknowledge().await
+    }
+
+    /// TASK-371: a writer taken over, which acknowledges what it creates with no read of its lease,
+    /// finds its create failing at its successor's fence, though the successor's checkpoint covers
+    /// it and a pass ran: the collector keeps it. Its commit is not acknowledged, and the branch
+    /// holds the successor's.
+    #[test]
+    fn writers_taken_over_find_their_successors_fences_kept() {
+        let (uploaded, acknowledged, last) = block_on(create_where_a_successor_fenced());
+        assert_eq!(
+            (uploaded, acknowledged, last),
+            (Err(Error::Fenced), Err(Error::Fenced), Some(2))
+        );
+    }
+
+    /// The collector deleting the fence: the writer taken over creates its segment in its place,
+    /// and acknowledges a commit the branch doesn't hold (specs/bucket's NoFencesKept).
+    #[test]
+    fn writers_taken_over_finding_their_successors_fences_need_fences_kept() {
+        crate::set_rules(crate::Rules { fences_kept: false, ..crate::Rules::ALL });
+        let created = block_on(create_where_a_successor_fenced());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(created, (Ok(()), Ok(Some(1)), Some(2)));
+    }
+
+    /// What a writer taken over gets of the upload and the acknowledgement of its commit, made
+    /// after its successor fenced the branch, committed and checkpointed, and a pass ran; and the
+    /// branch's last commit then.
+    async fn create_where_a_successor_fenced()
+    -> (Result<(), Error>, Result<Option<u64>, Error>, Option<u64>) {
+        let bucket = store();
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let taken = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        let successor = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+        commit(&successor, Commit { tag: 2, ..Commit::default() }).await;
+        successor.checkpoint().await.unwrap();
+        collect(&*bucket, 1, &KEEP).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut taken.chain()).frame();
+        let seq = taken.add_segment(objects).unwrap();
+        let uploaded = taken.upload(seq).await;
+        let acknowledged = taken.acknowledge().await;
+        let last = recovery::recover(&*bucket, 1, None).await.unwrap().state.last_commit;
+        (uploaded, acknowledged, last)
+    }
+
+    /// TASK-371: a writer taking a branch over, which read it before the last writer's segment
+    /// landed, finds the segment where it fences, though the last writer acknowledged and
+    /// checkpointed it and a pass ran before it fenced: the collector keeps a branch's segments
+    /// while its lease is of an epoch past its state's. Found by specs/bucket's TLA+, the model of
+    /// NoFencesKept with fences_kept in.
+    #[test]
+    fn writers_taking_over_find_what_landed_after_they_read() {
+        assert_eq!(block_on(take_over_past_a_pass()), Some(1));
+    }
+
+    /// The collector deleting it, the checkpoint covering it: the fence lands in its place, and
+    /// the commit the last writer acknowledged is in no history (specs/bucket's NoTakeoversKept).
+    #[test]
+    fn writers_taking_over_finding_what_landed_after_they_read_need_takeovers_kept() {
+        crate::set_rules(crate::Rules { takeovers_kept: false, ..crate::Rules::ALL });
+        let last = block_on(take_over_past_a_pass());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(last, None);
+    }
+
+    /// The last commit of a writer taking branch 1 over, its last read before it fences, of the
+    /// segments' listing, after the last writer's segment, in flight as it read the branch,
+    /// landed, was acknowledged and checkpointed, and a pass ran.
+    async fn take_over_past_a_pass() -> Option<u64> {
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, 1, 0).await.unwrap();
+        let last = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut last.chain()).frame();
+        let seq = last.add_segment(objects).unwrap();
+        let taking = Arc::new(Hooked::new(direct.clone(), Hook::Listing(layout::segments(1), 1)));
+        let passing = direct.clone();
+        *taking.then.lock().unwrap() = Some(Box::new(move || {
+            last.upload(seq).now_or_never().unwrap().unwrap();
+            assert_eq!(last.acknowledge().now_or_never().unwrap(), Ok(Some(seq)));
+            last.checkpoint().now_or_never().unwrap().unwrap();
+            collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
+        }));
+        let taken = Writer::open(taking.clone(), 1, 11, 0).await.unwrap();
+        assert!(taking.then.lock().unwrap().is_none(), "the pass ran");
+        taken.state().last_commit
     }
 
     /// TASK-180: a pass that read a point live, its records listed again finding a fork being made
@@ -1540,6 +1654,9 @@ mod tests {
         let direct = Arc::new(Direct(SimBucket::new()));
         branch::create(&*direct, PARENT, 0).await.unwrap();
         let writer = Writer::open(direct.clone(), PARENT, 10, 0).await.unwrap();
+        // A commit after the writer's fence, which the collector keeps (TASK-371): what the
+        // restore's child needs that a pass may delete.
+        commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
         let restoring = direct.clone();
         let meanwhile = move || {
             let work = async {
@@ -1968,9 +2085,9 @@ mod tests {
             passes.push(asked(&rounds));
         }
         // Its record, its children's, the deleted ones' too; its checkpoint; the segments the
-        // checkpoint covers that hold no extent its branches hold, its extents freed, and the
-        // leases and deletions' fences of its children deleted (TASK-183).
-        assert_eq!(passes, [[vec![9], vec![1], vec![10]], [vec![], vec![1], vec![]]]);
+        // checkpoint covers that hold no extent its branches hold but its fence (TASK-371), its
+        // extents freed, and the leases and deletions' fences of its children deleted (TASK-183).
+        assert_eq!(passes, [[vec![9], vec![1], vec![9]], [vec![], vec![1], vec![]]]);
 
         // The fork deleted: its lease and its deletion's fence go.
         bucket.served(branch::delete(&*bucket, 2, 20, 0)).0.unwrap();
@@ -2439,11 +2556,12 @@ mod tests {
         writer.checkpoint().await.unwrap();
     }
 
-    /// The keys `garbage` makes that a pass deletes: the fence, the segment freeing, and the extent
-    /// stored on its own; not the segment of the small extent, which is live.
+    /// The keys `garbage` makes that a pass deletes: the segment freeing, and the extent stored on
+    /// its own; not the segment of the small extent, which is live, nor the fence, which the
+    /// collector keeps (TASK-371).
     fn garbage_doomed() -> Vec<String> {
         let own = layout::extent(1, 1, ExtentId::new(1, (1 << crate::EPOCH_SHIFT) + 2));
-        vec![own, layout::segment(1, 0), layout::segment(1, 2)]
+        vec![own, layout::segment(1, 2)]
     }
 
     /// TASK-264: a dry run writes nothing, not even the collector's lease, and compacts nothing; it
@@ -2468,7 +2586,7 @@ mod tests {
             let keys_before = keys(&*bucket).await;
             let now = Options { compact_below: 0.0, grace: 0 };
             let report = collect(&*bucket, 2, &now).await.unwrap();
-            assert_eq!(report, Report { deleted: 3, compacted: 0 });
+            assert_eq!(report, Report { deleted: 2, compacted: 0 });
             let after = keys(&*bucket).await;
             let deleted: Vec<String> =
                 keys_before.into_iter().filter(|key| !after.contains(key)).collect();
@@ -2506,7 +2624,7 @@ mod tests {
             garbage(&bucket).await;
             let before = keys(&*bucket).await;
             let report = collect(&*bucket, 2, &compacting).await.unwrap();
-            assert_eq!(report, Report { deleted: 3, compacted: 1 });
+            assert_eq!(report, Report { deleted: 2, compacted: 1 });
             let after = keys(&*bucket).await;
             before.into_iter().filter(|key| !after.contains(key)).collect::<Vec<_>>()
         });
@@ -2553,7 +2671,7 @@ mod tests {
             assert_eq!(marked, expected);
 
             let report = collect(&*bucket, 4, &compacting).await.unwrap();
-            assert_eq!(report, Report { deleted: 4, compacted: 0 });
+            assert_eq!(report, Report { deleted: 3, compacted: 0 });
             let marks: Vec<String> = (keys(&*bucket).await.into_iter())
                 .filter(|key| matches!(layout::kind(key), Kind::Marks { .. }))
                 .collect();

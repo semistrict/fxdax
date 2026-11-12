@@ -1785,13 +1785,13 @@ mod tests {
         }
     }
 
-    /// TASK-165.11: a durable commit, as a guest's fsync makes one, costs the bucket what doc-7's
-    /// Uploads and Fencing say it needs, one after the other: the create of the segment its commit
-    /// closes, and a read of the lease after it, which acknowledges it; nothing else, as no
-    /// checkpoint is due and no fork made. On GCS each is a round trip (GCE r740: a guest's
-    /// fdatasync about 130 ms).
+    /// TASK-165.11: a durable commit, as a guest's sync makes one, costs the bucket what doc-7's
+    /// Uploads and Fencing say it needs: the create of the segment its commit closes, which
+    /// acknowledges it, its create the fencing (TASK-371: it was followed by a read of the lease,
+    /// a second round trip); nothing else, as no checkpoint is due and no fork made. On GCS each
+    /// request is a round trip (GCE r740: a guest's fdatasync about 130 ms with the read).
     #[test]
-    fn durable_commits_cost_their_segments_create_and_a_lease_read() {
+    fn durable_commits_cost_their_segments_create() {
         use extent_remote::store::Request;
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
@@ -1809,7 +1809,7 @@ mod tests {
         assert_eq!(
             asked,
             [
-                ("get", 1),
+                ("get", 0),
                 ("get-range", 0),
                 ("head", 0),
                 ("list", 0),

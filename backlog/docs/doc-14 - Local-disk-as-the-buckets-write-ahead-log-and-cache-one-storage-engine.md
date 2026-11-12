@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-11 12:49'
+updated_date: '2026-11-12 08:12'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -241,7 +241,8 @@ rule), and nothing else can land in the writer's name.
   go.
 - **The uploader** (moved from remote.rs into extent_store, `upload.rs`) hands WAL segments to the
   writer (`Writer::add_segment`), uploads them within the host's budget, acknowledges them in order
-  after a lease read, and then moves each acknowledged file into the part cache (`Cache::adopt`, a
+  (after a lease read; since TASK-371 only a fork's, the creates the fencing, doc-7), and then
+  moves each acknowledged file into the part cache (`Cache::adopt`, a
   rename on the same filesystem; `store.rs`'s `leave`), its own extents with it, or removes it if
   the cache can't take it. `COMMIT_DURABLE` completes as now. Checkpoints are the writer's, every
   64 segments (`upload::CHECKPOINT_EVERY`), on clean shutdown, and as an acknowledgement carries
@@ -371,7 +372,8 @@ bucket's prefix, at least as late as the last acknowledged), reopening against a
 
 **TLA+** (`specs/bucket/Bucket.tla`, TASK-165.2, the task's AC #3; TASK-44.5's AC #1), written
 before the code that changes the protocol: leases with fencing tokens, the fence, dense
-create-only segments linked by `after`, acknowledging after a lease read, hosts crashing with or
+create-only segments linked by `after`, acknowledging after a lease read (since TASK-371, the
+creates the fencing, the collector keeping fences, and a fork's after a lease read), hosts crashing with or
 without their WAL and rebasing it after the fence, forks recorded after their acknowledgement,
 failed forks' deletions, points and their restores, placements, and passes of the collector,
 overlapping, listing first, compacting segments and moves. Invariants: no acknowledged commit is

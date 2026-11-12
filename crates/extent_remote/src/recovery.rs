@@ -50,6 +50,11 @@ pub struct State<P = Extents> {
     pub forks: Vec<Fork>,
     /// The highest epoch of the segments applied.
     pub epoch: u64,
+    /// fxdax: the branch's fences, in order: each segment applied of an epoch past those before
+    /// it, a writer's taking over (doc-7, Fencing), which the collector keeps, so that a writer
+    /// taken over finds its create failing there for as long as it lives (TASK-371). Its own, not
+    /// its parent's: a fork's child starts with none.
+    pub fences: Vec<u64>,
     /// The last segment applied.
     pub through: Option<u64>,
     /// The sequence numbers of the branch's own extents it freed, which it writes no more: one
@@ -121,6 +126,7 @@ impl<P> State<P> {
             last_segment: None,
             forks: Vec::new(),
             epoch: 0,
+            fences: Vec::new(),
             through: None,
             spent: Spent::default(),
             capacity: None,
@@ -150,6 +156,7 @@ impl<P> State<P> {
             last_segment,
             forks,
             epoch,
+            fences,
             through,
             spent,
             capacity,
@@ -165,6 +172,7 @@ impl<P> State<P> {
             last_segment,
             forks,
             epoch,
+            fences,
             through,
             spent,
             capacity,
@@ -182,6 +190,9 @@ impl<P: Places> State<P> {
             return false;
         }
         self.last_segment = Some((footer.seq, footer.epoch));
+        if footer.epoch > self.epoch {
+            self.fences.push(footer.seq);
+        }
         self.epoch = self.epoch.max(footer.epoch);
         self.apply_contents(footer.seq, footer.epoch, &footer.contents);
         true

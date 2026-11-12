@@ -2586,15 +2586,13 @@ static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *w
 	return err;
 }
 
-static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
+/*
+ * fxdax: makes what the volume of `sb` holds durable: the window's dirty pages written back before
+ * the sync seals them, which sync's writepages may not have been asked for; then one durable
+ * commit of the device, a round trip to object storage (TASK-371).
+ */
+static int fxfs_vfs_sync(struct super_block *sb)
 {
-	/* Frozen, it was made durable as it froze, and nothing has changed since. */
-	if (sb->s_writers.frozen == SB_FREEZE_COMPLETE)
-		return 0;
-	/*
-	 * fxdax: the window's dirty pages written back before the sync seals them, which sync's
-	 * writepages may not have been asked for.
-	 */
 	if (fxfs_vfs_info(sb)->dax) {
 		int err = fxfs_dax_settle(fxfs_vfs_info(sb)->dax);
 
@@ -2602,6 +2600,21 @@ static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 			return err;
 	}
 	return fxfs_nofs(fxfs_sync(fxfs_vfs_fs(sb)));
+}
+
+static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
+{
+	/* Frozen, it was made durable as it froze, and nothing has changed since. */
+	if (sb->s_writers.frozen == SB_FREEZE_COMPLETE)
+		return 0;
+	/*
+	 * fxdax: once, as the VFS asks waiting: it asks without first, then waiting (sync, syncfs,
+	 * freeze_super's sync_filesystem), and each durable commit waits for object storage
+	 * (TASK-371). Freezing, the freeze makes it durable (fxfs_vfs_freeze_fs).
+	 */
+	if (!wait || sb->s_writers.frozen == SB_FREEZE_FS)
+		return 0;
+	return fxfs_vfs_sync(sb);
 }
 
 /*
@@ -2733,14 +2746,24 @@ static int fxfs_vfs_volume_thaw(struct fxfs_vfs_info *info)
 	return 0;
 }
 
+/*
+ * fxdax: what the VFS synced as it froze the volume made durable, once (fxfs_vfs_sync_fs leaves
+ * it to the freeze, TASK-371): by the filesystem's freeze, if this volume is its last to freeze,
+ * else by a sync of its own, before the volume counts as frozen, which a sync failing leaves it
+ * not.
+ */
 static int fxfs_vfs_freeze_fs(struct super_block *sb)
 {
 	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
-	int err;
+	struct fxfs_vfs_filesystem *filesystem = info->filesystem;
+	int err = 0;
 
-	mutex_lock(&info->filesystem->lock);
-	err = fxfs_vfs_volume_freeze(info);
-	mutex_unlock(&info->filesystem->lock);
+	mutex_lock(&filesystem->lock);
+	if (filesystem->volumes_frozen + 1 < filesystem->volumes)
+		err = fxfs_vfs_sync(sb);
+	if (!err)
+		err = fxfs_vfs_volume_freeze(info);
+	mutex_unlock(&filesystem->lock);
 	return err;
 }
 

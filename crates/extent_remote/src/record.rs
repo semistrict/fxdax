@@ -279,9 +279,11 @@ mod tests {
             forking: None,
             claimed: false,
         };
-        let corrupt = "a branch's record of no kind: Flags { format: 3, owner: 9, origin: None, \
-                       forked: true, deleted: false, point: true, forking: None, claimed: false }";
+        let corrupt = format!(
+            "a branch's record of no kind: Flags {{ format: {FORMAT}, owner: 9, origin: None, \
+             forked: true, deleted: false, point: true, forking: None, claimed: false }}"
+        );
         let refused = Record::decode(2, &encode(&refused));
-        assert_eq!(refused, Err(Error::Corrupt(corrupt.to_owned())));
+        assert_eq!(refused, Err(Error::Corrupt(corrupt)));
     }
 }

@@ -182,7 +182,9 @@ export const invariants: Invariant[] = [
     evidence: [
       { kind: "doc", id: "doc-7" },
       { kind: "mutation", spec: "bucket", name: "NoFence" },
-      { kind: "mutation", spec: "bucket", name: "NoAcksAfterLease" },
+      { kind: "mutation", spec: "bucket", name: "NoFencesKept" },
+      { kind: "mutation", spec: "bucket", name: "NoTakeoversKept" },
+      { kind: "mutation", spec: "bucket", name: "NoForksAfterLease" },
       { kind: "mutation", spec: "bucket", name: "NoContinuity" },
     ],
     standing: "checked",

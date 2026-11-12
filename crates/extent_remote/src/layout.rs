@@ -21,8 +21,10 @@ pub use extent_frame::segment::{
 /// its segment's [`Contents`], with the capacity its commits set, and a checkpoint the branch's
 /// capacity (TASK-165.3); nothing reads 1's, as nothing keeps any (AGENTS.md). 3: a commit may
 /// span segments, a footer naming the runs in its data of the commit it goes on with
-/// (`Contents::continued`, TASK-92.41); nothing reads 2's.
-pub const FORMAT: u32 = 3;
+/// (`Contents::continued`, TASK-92.41); nothing reads 2's. 4: a checkpoint names the branch's
+/// fences, which the collector keeps ([`State::fences`](crate::recovery::State::fences),
+/// TASK-371); nothing reads 3's.
+pub const FORMAT: u32 = 4;
 
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";

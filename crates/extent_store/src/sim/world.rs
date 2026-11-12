@@ -2014,8 +2014,18 @@ impl World {
             needed.extend(recovered.touched);
             // Its writer may name its extents anywhere on their ways from where they were sealed,
             // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
-            let lease = block_on(branch::lease_epoch(&direct, &layout::lease(branch)));
-            let behind = lease.ok() != recovered.checkpointer;
+            let lease = block_on(branch::lease_epoch(&direct, &layout::lease(branch))).ok();
+            let behind = lease != recovered.checkpointer;
+            // Its fences, which a writer taken over must find; and, while a writer takes it over,
+            // its lease of an epoch past its state's, all its segments (TASK-371).
+            if rules().fences_kept {
+                let fences = recovered.state.fences.iter();
+                needed.extend(fences.map(|&seq| layout::segment(branch, seq)));
+            }
+            if rules().takeovers_kept && lease.is_some_and(|lease| lease > recovered.state.epoch) {
+                let prefix = layout::segments(branch);
+                needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
+            }
             for (extent, location) in &recovered.state.extents {
                 needed.insert(location.key.clone());
                 let mut key = location.key.as_str();

@@ -31,8 +31,9 @@ fn lists_and_deletes_branches() {
 }
 
 /// fxdax: a pass over a bucket on the host's filesystem (TASK-165.1), from a process of its own:
-/// it reclaims the branch's segments its checkpoint covers, which hold no live extent (its fence,
-/// the one holding what it freed, the one freeing it), and lists the branch.
+/// it reclaims the branch's segments its checkpoint covers, which hold no live extent (the one
+/// holding what it freed, the one freeing it), but its fence, which it keeps (TASK-371), and lists
+/// the branch.
 #[test]
 fn collects_a_file_bucket() {
     use extent_remote::batch::{Batch, Commit};
@@ -60,7 +61,7 @@ fn collects_a_file_bucket() {
         writer.checkpoint().await.unwrap();
     });
     let out = gc(&[&url, "--grace", "0"]);
-    assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 3, compacted 0\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 2, compacted 0\n");
     assert!(out.status.success());
     let left = futures::executor::block_on(async {
         use extent_remote::Bucket as _;
@@ -74,10 +75,12 @@ fn collects_a_file_bucket() {
     });
     let left: Vec<&str> = left.iter().map(String::as_str).collect();
     let branch = "0000000000000001";
+    // The writer's fence too, which a writer taken over must find (TASK-371).
     let kept = [
         format!("branches/{branch}"),
         format!("checkpoints/{branch}/0000000000000002"),
         format!("leases/{branch}"),
+        format!("segments/{branch}/0000000000000000"),
     ];
     assert_eq!(left, kept);
     let out = gc(&[&url, "--branches"]);
@@ -128,10 +131,11 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     let out = gc(&[&url, "--dry-run", "--grace", "0"]);
     let branch = "0000000000000001";
     let segment = |seq: u64| format!("segments/{branch}/{seq:016x}");
+    // Not the fence, which the collector keeps (TASK-371).
     let (fence, holding, freeing) = (segment(0), segment(1), segment(2));
     let listed = String::from_utf8_lossy(&out.stdout).into_owned();
     let sizes: Vec<&str> = listed.lines().map(|line| line.split(' ').nth(2).unwrap()).collect();
-    let expected: String = [&fence, &holding, &freeing]
+    let expected: String = [&holding, &freeing]
         .iter()
         .zip(&sizes)
         .map(|(key, size)| format!("{key} segment {size} delete\n"))
@@ -141,7 +145,7 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         format!(
-            "fxdax-gc: dry run: a pass would delete 3 objects ({bytes} bytes), and more: it would \
+            "fxdax-gc: dry run: a pass would delete 2 objects ({bytes} bytes), and more: it would \
              compact 0 (0 bytes), and delete what it compacts a grace period after, which a dry \
              run, compacting nothing, doesn't count\n"
         )
@@ -153,7 +157,7 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         format!(
-            "fxdax-gc: marked 3 ({bytes} bytes) in gc/marks/0000000000000001, deleted 0, \
+            "fxdax-gc: marked 2 ({bytes} bytes) in gc/marks/0000000000000001, deleted 0, \
              compacted 0, resurrected 0\n"
         )
     );
@@ -164,7 +168,7 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     assert!(names.contains(&"gc/marks/0000000000000001".to_owned()), "{names:?}");
 
     let out = gc(&[&url, "--grace", "0"]);
-    assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 3, compacted 0\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 2, compacted 0\n");
     let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
     // The bucket's lock, no object, then the objects.
     let kept = [
@@ -174,6 +178,7 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
         "gc/lease".to_owned(),
         "gc/marks/0000000000000001".to_owned(),
         format!("leases/{branch}"),
+        fence,
     ];
     assert_eq!(names, kept);
 }

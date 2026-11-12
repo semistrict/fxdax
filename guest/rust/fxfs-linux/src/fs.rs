@@ -287,23 +287,23 @@ impl Filesystem {
         journal.pause_compactions().await;
         let frozen = async {
             self.filesystem.graveyard().flush().await;
-            {
-                let _durable = self.durability.begin();
-                let options = SyncOptions { flush_device: true, ..Default::default() };
-                self.filesystem.sync(options).await?;
-            }
+            let options = SyncOptions { flush_device: true, ..Default::default() };
+            self.filesystem.sync(options).await?;
             let commits = hold_commits(&self.filesystem).await;
+            // As `commits` holds the commit lock: a sync recording reaches would wait for it for
+            // ever (TASK-233).
+            let options = SyncOptions {
+                flush_device: true,
+                background_frees: true,
+                holding_commits: true,
+                ..Default::default()
+            };
+            self.filesystem.sync(options).await?;
+            // Then durable, once: the syncs' flushes ordered, each durable commit waiting for
+            // object storage (TASK-371).
             {
                 let _durable = self.durability.begin();
-                // As `commits` holds the commit lock: a sync recording reaches would wait for it
-                // for ever (TASK-233).
-                let options = SyncOptions {
-                    flush_device: true,
-                    background_frees: true,
-                    holding_commits: true,
-                    ..Default::default()
-                };
-                self.filesystem.sync(options).await?;
+                self.filesystem.device().flush().await?;
             }
             self.freezer.freeze().await?;
             *self.frozen.lock().unwrap() = Some(Frozen::Closed { commits: Some(commits) });

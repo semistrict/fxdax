@@ -4,9 +4,11 @@ title: >-
   A durable sync takes 12 bucket round trips where one would do: sync(2) makes 3
   durable commits, each waits for 2 upload cycles, each a segment PUT then a
   lease GET, in series (3/s at 25 ms latency)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-12 01:53'
+updated_date: '2026-11-12 09:38'
 labels:
   - bug
   - extentd
@@ -33,9 +35,9 @@ The same run with cache_type Unsafe (bench-fs-fxfs-guest-dax-unsafe) does 3,470 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A durable commit with nothing new since the last durable one returns without an upload, or the guest sends none: sync(2) costs one durable commit, not three
-- [ ] #2 A durable commit waits for one upload cycle, not two
-- [ ] #3 The lease check of an acknowledgement goes beside the segment's PUT, or a lease held by time needs none: one round trip a durable commit
+- [x] #1 A durable commit with nothing new since the last durable one returns without an upload, or the guest sends none: sync(2) costs one durable commit, not three
+- [x] #2 A durable commit waits for one upload cycle, not two
+- [x] #3 The lease check of an acknowledgement goes beside the segment's PUT, or a lease held by time needs none: one round trip a durable commit
 - [ ] #4 bench-fs-fxfs-guest-dax's sync-loop on ubu1 at 25 ms bucket latency: 25/s or more
 <!-- AC:END -->
 
@@ -45,3 +47,26 @@ The same run with cache_type Unsafe (bench-fs-fxfs-guest-dax-unsafe) does 3,470 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Guest: one durable commit per sync. Fxfs::sync (fxfs-posix) holds the durability guard only over its final device flush, the journal's flushes ordered; fxfs_vfs_sync_fs does nothing for wait=0 (the VFS always asks again waiting) nor while the volume is freezing; freeze_fs makes it durable once, by the filesystem's freeze or, for a volume not the last to freeze, a sync of its own; Filesystem::freeze's two syncs ordered, then one durable flush.
+2. Protocol: acknowledge without reading the lease, the creates the fencing (doc-7 decision 4's explicit takeover kept). Two collector rules make that safe, found and checked in specs/bucket's TLA+: fences_kept (State::fences, the first segment of each epoch, kept for live branches; FORMAT 4 as checkpoints carry them) and takeovers_kept (all of a live branch's segments while its lease epoch is past its state's). forks_after_lease keeps the lease read for segments holding forks (deleted branches' fences go). acks_after_lease removed.
+3. Tests: fxfs-posix syncs_make_one_commit_durable; extent_remote tests replaying each TLA+ trace with its rule on and off; fxdax durable_commits_cost_their_segments_create (1 create, 0 gets); sim needs-tests per rule; TLA+ mutations NoFencesKept, NoTakeoversKept, NoForksAfterLease.
+4. Measure on ubu1: bench-fs-fxfs-guest-dax sync group at 25 ms.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Found (2026-11-12, ubu1, durable sync loop alone, branch sync-why e48bfc57): per sync(2), 2 WRITEs + 2 COMMITs, 3 of them durable (one WRITE carries its commit). Each durable commit = 1 segment create + 1 lease GET, in series (crates/fxdax remote.rs's durable_commits_cost_their_segments_create_and_a_lease_read pins exactly that), ~63 ms of bucket at 25 ms + local. Locally (macOS, file bucket, FXDAX_REMOTE_LATENCY_MS=25, bucket_round_trips_by_phase): durable-commit 70-83 ms, get 1 + create 1. fxfs-posix: 2 durable barriers per Fxfs::sync before, 1 after. The 'two upload cycles' guess in the description was wrong: one cycle of two requests, plus ~10-40 ms local.
+TLA+: fences kept alone isn't enough: a taker that read the branch before the last writer's segment landed fences where the collector deleted it after the last writer acknowledged and checkpointed it (TLC trace; extent_remote test writers_taking_over_finding_what_landed_after_they_read_need_takeovers_kept reproduces it in code, through the taker's segments listing). Hence takeovers_kept. With it, newest_checkpoint's writer case is covered too: NoNewestCheckpoint now removes both; NoNewestCheckpointInherited still shows the rule needed alone.
+
+Measured (ubu1, 2026-11-12, tree 6df0a95a0 = this change before its rebase, guest kernel from it, sync group alone, FXDAX_REMOTE_LATENCY_MS=25, results ~/src/fxdax-t350-results/t371):
+- bench-fs-fxfs-guest-dax (durable): sync-loop 3.2/s -> 15.9/s; syncfs 2.8 -> 7.1/s; freeze 2.2 -> 2.1/s. Durable device commits per round (FXFS device_durable_commits / 50): sync 3 -> 1, syncfs 3 -> 1, freeze 3 -> 2. Bucket over the whole run: get=6 (was 511: no lease reads), create=261 at 36.7 ms each, one per durable commit. A durable sync's commit took 62 ms at the device, syncfs's 140 ms, freeze's 159 ms: past the 37 ms create, the rest is local, the store's flush. That run was contended: fxdax-bench.slice stalled 43.9 s on CPU and 49.9 s on IO (runs.tsv), the Unsafe run after it 0.02 s and 0.5 s; TASK-369's traces put a flush's fdatasyncs behind ext4 journal commits under contention.
+- bench-fs-fxfs-guest-dax-unsafe: sync 4,351/s, syncfs 3,712/s, freeze 548/s (were 3,471, 3,255, 507).
+- Locally (macOS, file bucket at 25 ms, bucket_round_trips_by_phase): a durable commit's median 75.7 -> 45.1 ms, get 1 -> 0.
+AC #4 (25/s) not met: the bucket part is one round trip; what remains is the local flush (TASK-369, TASK-322's queue), and the run's contention. To re-measure in a quiet window and once TASK-369 lands.
+Checks: extent_store 242/242 (sim needs-tests: fences_kept seed 0 of recreated(), takeovers_kept seed 1702 of late_checkpoints(), forks_after_lease of deleted_bases(); each loses an acknowledged commit, or a child's segments, without its rule), extent_remote 210, fxfs-posix 102, fxdax remote:: 68, TLA+ all 83 models (scripts/check-tla.sh), scripts' Python 305, guide's anchors check.
+<!-- SECTION:NOTES:END -->

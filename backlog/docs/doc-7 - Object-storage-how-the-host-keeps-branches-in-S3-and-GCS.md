@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-11 13:35'
+updated_date: '2026-11-12 08:12'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -49,7 +49,7 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
   (WAL): each the very object it will be in the bucket, synced before its PUT. The **uploader**
   (`extent_store::upload`) PUTs them, and the extents of their own they name, up to 16 of a store's
   at once (`IN_FLIGHT`, 512 MiB of the host's upload budget over 32 MiB segments) and 64 requests
-  for the host, acknowledges them in order after a read of the lease, and moves each acknowledged
+  for the host, acknowledges them in order, their creates the fencing, and moves each acknowledged
   file into the host's **part cache** (`Cache::adopt`), or removes it. Commits stall at a lag bound
   in commits (4,096) and in bytes of WAL (1 GiB). What waits is on the host's disk; of it, the
   host holds in memory only what it uploads at once, its **upload memory** (512 MiB,
@@ -161,8 +161,9 @@ and its frees, and a branch's history can be rebuilt from its segments alone. A 
 Numbers are fixed-width hex, so listings sort.
 
 **Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 1).* A branch's record says first the
-format of its objects (`layout::FORMAT`, now 3: footers and checkpoints hold the capacity,
-TASK-165.3, and a footer the runs of a commit it goes on with, TASK-92.41), so that a reader of
+format of its objects (`layout::FORMAT`, now 4: footers and checkpoints hold the capacity,
+TASK-165.3, a footer the runs of a commit it goes on with, TASK-92.41, and a checkpoint the
+branch's fences, TASK-371), so that a reader of
 any format reads it before the rest: one of another format, newer or older, is refused (`Error::Format`, naming the branch and the format) before anything else of
 the branch is read or written. Every reader of a branch reads its record first: a
 writer taking it, a host attaching it, the collector, whose pass stops, deleting nothing in a
@@ -337,19 +338,35 @@ The lease says who should write a branch; the dense, create-only segments and th
   go of what it needs. A point, which no writer has, needs none.
 - **Gaps:** segments past the branch's end, an earlier writer's landed past a gap, are void; the new
   writer fills the gaps between them with empty segments, so that its own follow without one.
-- **A writer acknowledges a segment** once it and every one before it are created and a read of the
-  lease, after them, shows the lease still its. A later writer took the lease after that, and looked
-  for the branch's end after, so it found the segment and fenced after it. *Its* is its taking, the
-  lease's holder with its epoch, not its epoch alone: the collector removes a deleted branch's
-  lease, and a taking that read the record before the deletion creates it again, at epoch 1, before
-  it finds the branch deleted (TASK-179).
+- **A writer acknowledges a segment** once it and every one before it are created: its creates are
+  its fencing. *Revised 2026-11-12 (TASK-371):* it acknowledged them only once a read of the lease,
+  after them, showed the lease still its, a second round trip for every durable commit (a guest's
+  sync 3 a second at 25 ms of latency, of which these reads were a third). A writer taken over
+  creates its segments in order, and acknowledges them in order, so the first of them it can't
+  acknowledge is where its successor's fence is, or before: what it created before that, its
+  successor applied as it fenced. For that to hold for as long as the writer taken over lives, the
+  collector keeps two things (Garbage collection, step 7): **every fence of a live branch**, the
+  first segment of each epoch its state applied (`State::fences`, which checkpoints hold), else a
+  checkpoint covering the fence lets the collector delete it and the writer's create land in its
+  place (`fences_kept`); and **every segment of a live branch being taken over**, its lease, read
+  after the listing, of an epoch past its state's, else the writer taking over, having read the
+  branch before the last writer's segment landed, fences where that segment was, which the last
+  writer acknowledged and checkpointed and the collector deleted (`takeovers_kept`, found by the
+  TLA+ once the first alone was in). A deleted branch keeps neither, and its writer may then
+  acknowledge a commit no branch holds, which no one reads; but **a segment holding a fork is
+  acknowledged only once a read of the lease, after its creates, shows the lease still the
+  writer's** (`forks_after_lease`), as recording the fork's child would name segments the
+  collector let go of. *Its* is its taking, the lease's holder with its epoch, not its epoch alone:
+  the collector removes a deleted branch's lease, and a taking that read the record before the
+  deletion creates it again, at epoch 1, before it finds the branch deleted (TASK-179).
 - **Minting:** after recovering, the writer checks that the lease is still its, then mints extent IDs
   from its epoch's range, the epoch shifted above bit 40 (`EPOCH_SHIFT`). No later writer's segment,
   minted from a later range, is in what it recovered, and no other writer mints from its range, so
   no ID names two extents, even one an earlier writer uploaded after a later took over. Host caches
   keyed by extent ID rely on this.
-- **A writer finds out it was taken over** when a lease read after its creates shows another epoch,
-  or a create fails on a segment of a later epoch. It answers `EROFS` from then on (doc-4) and its
+- **A writer finds out it was taken over** when a create fails on a segment of a later epoch, its
+  successor's fence or after it; or, acknowledging a fork, when a lease read after its creates
+  shows another taking. It answers `EROFS` from then on (doc-4) and its
   VMM stops the guest. A create that fails on an earlier writer's segment, landed late where its own
   was to go, means its later segments are void: it takes the branch again, which keeps its guest.
   *Implemented 2026-11-06 (TASK-204):* the store's uploader (`extent_store::upload`) takes a lease
@@ -376,8 +393,8 @@ Each branch's commits go through:
    PUT (an extent is 64 MiB at most; no multipart upload), extents before the segments that name
    them, up to 16 segments of a store at once within the host's upload budget (64 requests, its
    upload memory: 512 MiB unless `FXDAX_EXTENTD_UPLOAD_MEMORY` says otherwise; Memory, below).
-5. **Acknowledged:** once every segment before it is uploaded too, and a read of the lease after
-   shows it still the writer's (Fencing); a segment going on with a commit, with the segment
+5. **Acknowledged:** once every segment before it is uploaded too, its create the fencing; one
+   holding a fork, once a read of the lease after shows it still the writer's (Fencing, TASK-371); a segment going on with a commit, with the segment
    ending it (Segments, TASK-92.41). Then `COMMIT_DURABLE` waiters up to it complete, the WAL's
    base moves past it, durably, and its files leave the store for the host's part cache.
 
@@ -646,7 +663,9 @@ one for the next pass to reclaim. A pass:
    finds an object gone reads its moves.
 7. **Deletes** what is listed and not needed:
    - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
-     never a live branch's segments at or past its end, which may be uploaded and not yet in it;
+     never a live branch's segments at or past its end, which may be uploaded and not yet in it,
+     nor its fences, nor any of its segments while a writer takes it over, its lease, read after
+     the listing, of an epoch past its state's (Fencing, TASK-371);
    - checkpoints no recovery read;
    - extents of their own no state names, once no segment will name them: by what their keys
      declare, the writer that uploaded each and the segment that names it, an earlier writer's once
@@ -753,7 +772,8 @@ extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
   15. branches forking, deleted twice at once, by a placement cut off and the latest one, their
      fork segments in flight (`branches_deleted_twice_while_forking`, TASK-183).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
-  links between segments, acknowledging after a lease read, minting from the epoch's range,
+  links between segments, the collector keeping fences and the segments of branches being taken
+  over, acknowledging a fork after a lease read, minting from the epoch's range,
   recording forks after their acknowledgement, listing before reading states, finding forks in
   states, deleting an earlier writer's extents only after a later one's segment, readers
   checking for a newer checkpoint, points refusing writers, forks of points reading the point after
@@ -776,8 +796,9 @@ extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
   doc-14's WAL, at the level of what each step reads and writes, and TLC exhausts small models of
   it (`specs/bucket/*.cfg`) where the simulation samples. Each rule above is a member of its
   `Rules`, and a mutation of `specs/bucket/mutations` removes it and must find the violation it
-  prevents, run by `scripts/check-tla.sh` (`make check-tla`): `acks_after_lease`
-  (`NoAcksAfterLease`), `fence` (`NoFence`), `continuity` (`NoContinuity`), `epoch_sequences`
+  prevents, run by `scripts/check-tla.sh` (`make check-tla`): `fences_kept` (`NoFencesKept`),
+  `takeovers_kept` (`NoTakeoversKept`) and `forks_after_lease` (`NoForksAfterLease`), which took
+  `acks_after_lease`'s place (`NoAcksAfterLease`, TASK-371), `fence` (`NoFence`), `continuity` (`NoContinuity`), `epoch_sequences`
   (`NoEpochSequences`), `records_after_ack` (`NoRecordsAfterAck`), `candidates_first`
   (`NoCandidatesFirst`), `newest_checkpoint` (`NoNewestCheckpoint`), `forks_from_states`
   (`NoForksFromStates`), `orphans_after_successor` (`NoOrphansAfterSuccessor`), `tokens`
