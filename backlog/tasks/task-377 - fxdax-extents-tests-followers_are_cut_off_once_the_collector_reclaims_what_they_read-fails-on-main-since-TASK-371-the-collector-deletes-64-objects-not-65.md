@@ -4,9 +4,11 @@ title: >-
   fxdax
   extents::tests::followers_are_cut_off_once_the_collector_reclaims_what_they_read
   fails on main since TASK-371: the collector deletes 64 objects, not 65
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-12 09:46'
+updated_date: '2026-11-12 09:58'
 labels:
   - fxdax
   - collector
@@ -25,7 +27,7 @@ main 3037d0772 (TASK-371), macOS, deterministic (5 of 5 runs; the same on TASK-3
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The count is justified under TASK-371's rules and the test passes
+- [x] #1 The count is justified under TASK-371's rules and the test passes
 <!-- AC:END -->
 
 ## Definition of Done
@@ -34,3 +36,15 @@ main 3037d0772 (TASK-371), macOS, deterministic (5 of 5 runs; the same on TASK-3
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The one object no longer deleted is segment 0, the writer's fence, which the collector keeps for as long as the branch lives (TASK-371's fences_kept); everything else the checkpoint covers still goes, and the follower is still cut off (ESTALE). Missed by TASK-371's checks, which ran fxdax's remote:: tests only.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The test expects 64 deletions: the writer's fence is kept by design (TASK-371). Fixed in a9ff28022; fxdax's whole suite on macOS, 337/337.
+<!-- SECTION:FINAL_SUMMARY:END -->
