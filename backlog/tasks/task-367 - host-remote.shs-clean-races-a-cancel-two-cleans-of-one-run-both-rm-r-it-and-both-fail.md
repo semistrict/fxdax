@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 22:21'
+updated_date: '2026-11-12 02:46'
 labels:
   - scripts
   - ubu1
@@ -32,3 +33,9 @@ Found 2026-11-11 (TASK-330.4): `scripts/bench-ab-host.sh cancel RUN` while that 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-12: again, the second cancel of TASK-330.4's A/B while its nohup'd driver waited: both cleaned, both failed, the directory left until a third clean.
+<!-- SECTION:NOTES:END -->
