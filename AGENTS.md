@@ -70,6 +70,16 @@ The user's rule (2026-11-05), not a phase: fxdax never migrates data. On-disk, b
 
 The user's rule (2026-11-11): when the cheap way of doing something can't work, fail hard (refuse to start or open, return the error) so the setup gets fixed. Never fall back, silently or with only a log line, to a way that costs vastly more: a copy where a rename failed, the bucket where a local file was meant to serve, a slow path on an unexpected error. Check such a precondition up front where it can be checked (two directories on one filesystem, a cache usable), and treat an existing warn-and-carry-on path that degrades performance as a bug. Found by TASK-350: the host cache's rename of uploaded WAL segments failed across filesystems (EXDEV), a warning hid it, and every read past the daemon's memory went to the bucket, ~30 ms each.
 
+## Never write a test around a bug
+
+The user's rule (2026-11-12): when a test only passes by steering clear of what the code under test
+gets wrong (inputs picked so the bug can't show, a bound loosened to match it, a check left out),
+that is a bug found. File it as a task first, and name the task in a comment at the workaround. A
+test bent around a bug with no task merges never. The workaround goes when the bug is fixed. Found
+by TASK-293: the collector never compacted compressed segments, as it measured live bytes against
+their compressed size. TASK-175's compaction test had fed it incompressible bytes "so that the
+objects' sizes are their extents'" a week before, with no task filed.
+
 ## Every bug exposes a blind spot: close it, then look around it
 
 A bug or crash, however it was found and whoever caused it, shows code the tests don't exercise
