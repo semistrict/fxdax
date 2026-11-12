@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-12 12:25'
+updated_date: '2026-11-12 14:08'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -429,11 +429,17 @@ The lease says who should write a branch; the dense, create-only segments and th
   sync 3 a second at 25 ms of latency, of which these reads were a third). A writer taken over
   creates its segments in order, and acknowledges them in order, so the first of them it can't
   acknowledge is where its successor's fence is, or before: what it created before that, its
-  successor applied as it fenced. For that to hold for as long as the writer taken over lives, the
-  collector keeps two things (Garbage collection, step 7): **every fence of a live branch**, the
-  first segment of each epoch its state applied (`State::fences`, which checkpoints hold), else a
-  checkpoint covering the fence lets the collector delete it and the writer's create land in its
-  place (`fences_kept`); and **every segment of a live branch being taken over**, its lease, read
+  successor applied as it fenced, or a **stray**: a segment of another writer's at its place, void
+  (an earlier writer's landed late) or following the fence before it though of an earlier epoch (an
+  earlier writer's fence, made late). For that to hold for as long as the writer taken over lives,
+  the collector keeps three things (Garbage collection, step 7): **every fence of a live branch**,
+  the first segment of each epoch its state applied (`State::fences`, which checkpoints hold), else
+  a checkpoint covering the fence lets the collector delete it and the writer's create land in its
+  place (`fences_kept`); **every stray** its state read, which `State::fences` counts too, else the
+  writer's create lands where the stray was, below its successor's fence, acknowledged and in no
+  history (`strays_kept`, *added 2026-11-12, TASK-383*: a writer's segment at a void one's place,
+  found by the simulation once its seeds replayed; at a late fence's, by the TLA+ once void
+  segments alone were kept); and **every segment of a live branch being taken over**, its lease, read
   after the listing, of an epoch past its state's, else the writer taking over, having read the
   branch before the last writer's segment landed, fences where that segment was, which the last
   writer acknowledged and checkpointed and the collector deleted (`takeovers_kept`, found by the
@@ -882,6 +888,7 @@ extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
   it (`specs/bucket/*.cfg`) where the simulation samples. Each rule above is a member of its
   `Rules`, and a mutation of `specs/bucket/mutations` removes it and must find the violation it
   prevents, run by `scripts/check-tla.sh` (`make check-tla`): `fences_kept` (`NoFencesKept`),
+  `strays_kept` (`NoStraysKept`, TASK-383),
   `takeovers_kept` (`NoTakeoversKept`) and `forks_after_lease` (`NoForksAfterLease`), which took
   `acks_after_lease`'s place (`NoAcksAfterLease`, TASK-371), `fence` (`NoFence`), `continuity` (`NoContinuity`), `epoch_sequences`
   (`NoEpochSequences`), `records_after_ack` (`NoRecordsAfterAck`), `candidates_first`

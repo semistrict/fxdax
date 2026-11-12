@@ -51,9 +51,11 @@ pub struct State<P = Extents> {
     /// The highest epoch of the segments applied.
     pub epoch: u64,
     /// fxdax: the branch's fences, in order: each segment applied of an epoch past those before
-    /// it, a writer's taking over (doc-7, Fencing), which the collector keeps, so that a writer
-    /// taken over finds its create failing there for as long as it lives (TASK-371). Its own, not
-    /// its parent's: a fork's child starts with none.
+    /// it, a writer's taking over (doc-7, Fencing); and the strays, every segment read that is
+    /// not of the epoch of the fence before it, void or an earlier writer's following it
+    /// (strays_kept, TASK-383): which the collector keeps, so that a writer taken over finds its
+    /// create failing there for as long as it lives (TASK-371). Its own, not its parent's: a fork's
+    /// child starts with none.
     pub fences: Vec<u64>,
     /// The last segment applied.
     pub through: Option<u64>,
@@ -186,7 +188,14 @@ impl<P: Places> State<P> {
     /// its footer names (doc-7, Fencing). Returns whether it applied it.
     pub fn apply(&mut self, footer: &Footer) -> bool {
         self.through = Some(footer.seq);
-        if footer.after != self.last_segment && rules().continuity {
+        // A stray, void or an earlier writer's following the fence before it, which none of its
+        // writer's: the writer of that fence's epoch, taken over, may still have a create in flight
+        // here, its successor fencing past it, which fails only while the stray stays (TASK-383).
+        let void = footer.after != self.last_segment && rules().continuity;
+        if (void || footer.epoch < self.epoch) && rules().strays_kept {
+            self.fences.push(footer.seq);
+        }
+        if void {
             return false;
         }
         self.last_segment = Some((footer.seq, footer.epoch));

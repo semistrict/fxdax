@@ -172,6 +172,14 @@ pub struct Rules {
     /// lease: a durable commit is one round trip (TASK-371).
     /// TLA+: `specs/bucket/mutations/NoFencesKept.cfg`.
     pub fences_kept: bool,
+    /// A branch's fences count its strays, every segment read that is not of the epoch of the
+    /// fence before it: void, or an earlier writer's following it, as that writer's late fence
+    /// does. The collector keeps them with the fences: a writer taken over may have its next
+    /// segment's create in flight where a stray is, its successor fencing past it; the collector
+    /// deleting the stray once a checkpoint covers it, the create lands there and is acknowledged,
+    /// below the fence, in no history (TASK-383).
+    /// TLA+: `specs/bucket/mutations/NoStraysKept.cfg`.
+    pub strays_kept: bool,
     /// The collector keeps every segment of a live branch whose lease, read after the listing, is
     /// of an epoch past its state's: a writer taking it over, which may have read the branch
     /// before the last writer's segment landed there, fences where it found the end, which that
@@ -335,6 +343,7 @@ pub struct Rules {
 impl Rules {
     pub const ALL: Self = Self {
         fences_kept: true,
+        strays_kept: true,
         takeovers_kept: true,
         forks_after_lease: true,
         fence: true,

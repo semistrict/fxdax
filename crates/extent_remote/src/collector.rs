@@ -556,7 +556,8 @@ struct Ended {
 impl Ended {
     /// fxdax: whether segment `seq` of the branch stays, whatever covers it (TASK-371): one of its
     /// fences, which a writer taken over must find for as long as it lives, its creates being its
-    /// fencing (fences_kept); or any, while a writer takes the branch over (takeovers_kept).
+    /// fencing (fences_kept), the strays among them (strays_kept, TASK-383); or
+    /// any, while a writer takes the branch over (takeovers_kept).
     fn keeps(&self, seq: u64) -> bool {
         (rules().fences_kept && self.fences.binary_search(&seq).is_ok())
             || (rules().takeovers_kept && self.taking)
@@ -1539,6 +1540,116 @@ mod tests {
         let acknowledged = taken.acknowledge().await;
         let last =
             recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
+        (uploaded, acknowledged, last)
+    }
+
+    /// TASK-383: a writer taken over, its next segment's create in flight where a stray is, an
+    /// earlier writer's segment landed late, void, its successor fencing past it, committing and
+    /// checkpointing, and a pass running: the collector keeps the void segment with the fence, and
+    /// the create fails there. Found by the simulation, seed 453 of
+    /// `stale_creates_landing_past_deletions`, once a seed replayed as it ran.
+    #[test]
+    fn writers_taken_over_find_void_segments_before_their_successors_fences_kept() {
+        let created = block_on(create_where_a_void_segment_was());
+        assert_eq!(created, (Err(Error::Displaced), Err(Error::Displaced), Some(4)));
+    }
+
+    /// The collector deleting the stray, covered: the writer taken over creates its
+    /// segment in its place, below its successor's fence, and acknowledges a commit the branch
+    /// doesn't hold (specs/bucket's NoStraysKept).
+    #[test]
+    fn writers_taken_over_finding_void_segments_before_their_successors_fences_need_strays_kept() {
+        crate::set_rules(crate::Rules { strays_kept: false, ..crate::Rules::ALL });
+        let created = block_on(create_where_a_void_segment_was());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(created, (Ok(()), Ok(Some(2)), Some(4)));
+    }
+
+    /// What a writer taken over, of lease epoch 2, gets of the upload and the acknowledgement of
+    /// its commit 3 at its segment 2, where the writer of epoch 1 before it, which it took the
+    /// branch from, landed a segment late, void; after a third writer took the branch, fencing past
+    /// that, committed 4 and checkpointed, and a pass ran. And the branch's last commit then.
+    async fn create_where_a_void_segment_was()
+    -> (Result<(), Error>, Result<Option<u64>, Error>, Option<u64>) {
+        let bucket = store();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let first = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
+        let taken = Writer::open(bucket.clone(), test_branch(1), 11, 0).await.unwrap();
+        // The first's segments 1 and 2, of which 2 alone lands, past its successor's fence at 1.
+        for tag in [1, 2] {
+            let objects =
+                Batch::from(Commit { tag, ..Commit::default() }).close(&mut first.chain()).frame();
+            let seq = first.add_segment(objects).unwrap();
+            if seq == 2 {
+                first.upload(seq).await.unwrap();
+            }
+        }
+        let successor = Writer::open(bucket.clone(), test_branch(1), 12, 0).await.unwrap();
+        commit(&successor, Commit { tag: 4, ..Commit::default() }).await;
+        successor.checkpoint().await.unwrap();
+        collect(&*bucket, 1, &KEEP).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 3, ..Commit::default() }).close(&mut taken.chain()).frame();
+        let seq = taken.add_segment(objects).unwrap();
+        assert_eq!(seq, 2);
+        let uploaded = taken.upload(seq).await;
+        let acknowledged = taken.acknowledge().await;
+        let last =
+            recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
+        (uploaded, acknowledged, last)
+    }
+
+    /// TASK-383, the other stray: a writer whose taking of the lease came before its successor's
+    /// fences late, after the successor's fence, which its fence follows, before finding the lease
+    /// taken; a third writer takes the branch, fencing past it, commits and checkpoints, and a pass
+    /// runs. The writer taken over, whose next segment goes where the late fence is, finds its
+    /// create failing there: the collector keeps it. Found by specs/bucket's TLA+, the model
+    /// BucketStrays once void segments alone were kept.
+    #[test]
+    fn writers_taken_over_find_late_fences_before_their_successors_fences_kept() {
+        let created = block_on(create_where_a_late_fence_was());
+        assert_eq!(created, (Err(Error::Displaced), Err(Error::Displaced), Some(4)));
+    }
+
+    /// The collector deleting the late fence, covered: the writer taken over creates its segment
+    /// in its place and acknowledges a commit the branch doesn't hold.
+    #[test]
+    fn writers_taken_over_finding_late_fences_before_their_successors_fences_need_strays_kept() {
+        crate::set_rules(crate::Rules { strays_kept: false, ..crate::Rules::ALL });
+        let created = block_on(create_where_a_late_fence_was());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(created, (Ok(()), Ok(Some(1)), Some(4)));
+    }
+
+    /// What the writer of lease epoch 2 gets of the upload and the acknowledgement of its commit 3
+    /// at its segment 1, where the writer of epoch 1 fenced late, after its fence at 0; after a
+    /// third writer took the branch, committed 4 and checkpointed, and a pass ran. And the branch's
+    /// last commit then.
+    async fn create_where_a_late_fence_was()
+    -> (Result<(), Error>, Result<Option<u64>, Error>, Option<u64>) {
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, test_branch(1), 0).await.unwrap();
+        // The first, its lease taken, waits to recover the branch.
+        let (late, open) =
+            Gated::new(direct.clone(), Gate::List(layout::checkpoints(test_branch(1))));
+        let late = Arc::new(late);
+        let mut first = Box::pin(Writer::open(late, test_branch(1), 10, 0));
+        assert!((&mut first).now_or_never().is_none());
+        let taken = Writer::open(direct.clone(), test_branch(1), 11, 0).await.unwrap();
+        open.send(()).unwrap();
+        assert_eq!(first.await.err(), Some(Error::Fenced));
+        let successor = Writer::open(direct.clone(), test_branch(1), 12, 0).await.unwrap();
+        commit(&successor, Commit { tag: 4, ..Commit::default() }).await;
+        successor.checkpoint().await.unwrap();
+        collect(&*direct, 1, &KEEP).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 3, ..Commit::default() }).close(&mut taken.chain()).frame();
+        let seq = taken.add_segment(objects).unwrap();
+        assert_eq!(seq, 1);
+        let uploaded = taken.upload(seq).await;
+        let acknowledged = taken.acknowledge().await;
+        let last =
+            recovery::recover(&*direct, test_branch(1), None).await.unwrap().state.last_commit;
         (uploaded, acknowledged, last)
     }
 

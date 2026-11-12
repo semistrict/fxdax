@@ -67,7 +67,13 @@ fn replays(profile: Profile, seeds: Range<u64>) {
 
 /// Runs `seeds`, failing at the first that finds a violation. `SIM_SOAK` multiplies how many.
 fn holds(profile: Profile, seeds: Range<u64>) {
-    for seed in soaked(seeds) {
+    holds_with(profile, seeds, &[]);
+}
+
+/// Runs `seeds` as [`holds`] does, and `found` first, seeds past them that found a bug once, which
+/// every run replays.
+fn holds_with(profile: Profile, seeds: Range<u64>, found: &[u64]) {
+    for seed in found.iter().copied().chain(soaked(seeds)) {
         let (found, description) = violations(seed, profile);
         assert!(found.is_empty(), "seed {seed}: {found:#?}\n{description}");
     }
@@ -89,12 +95,16 @@ fn needed(rules: Rules, profile: Profile, seeds: Range<u64>) {
     println!("seed {seed}: {found:#?}");
 }
 
-/// A test that 200 seeds of `$profile` find no violation.
+/// A test that 200 seeds of `$profile` find no violation, and the seeds past them `$found`, each of
+/// which found a bug once.
 macro_rules! test_holds {
     ($name:ident, $profile:expr) => {
+        test_holds!($name, $profile, []);
+    };
+    ($name:ident, $profile:expr, [$($found:expr),*]) => {
         #[test]
         fn $name() {
-            holds($profile, 0..200);
+            holds_with($profile, 0..200, &[$($found),*]);
         }
     };
 }
@@ -131,6 +141,7 @@ fn one() {
     {
         match name {
             "fences_kept" => rules.fences_kept = false,
+            "strays_kept" => rules.strays_kept = false,
             "takeovers_kept" => rules.takeovers_kept = false,
             "forks_after_lease" => rules.forks_after_lease = false,
             "fence" => rules.fence = false,
@@ -346,6 +357,10 @@ test_holds!(takeovers_while_uploading, takeovers());
 // fence, which a checkpoint covers, kept for as long as the writer taken over lives...
 test_needs!(takeovers_need_fences_kept, fences_kept, recreated());
 
+// ...and the void segments before that fence, earlier writers' landed late, where the writer taken
+// over may yet create, its successor fencing past them (TASK-383).
+test_needs!(takeovers_need_strays_kept, strays_kept, recreated());
+
 // ...and what the last writer landed after a later writer read the branch, until that one fenced.
 test_needs!(takeovers_need_takeovers_kept, takeovers_kept, late_checkpoints());
 
@@ -378,7 +393,9 @@ fn recreated() -> Profile {
     profile
 }
 
-test_holds!(stale_creates_landing_past_deletions, recreated());
+// Seed 453: a writer taken over creating where a void segment was, which a pass deleted below its
+// successor's fence (TASK-383).
+test_holds!(stale_creates_landing_past_deletions, recreated(), [453]);
 
 test_needs!(stale_creates_need_reads_by_footers, footers, recreated());
 

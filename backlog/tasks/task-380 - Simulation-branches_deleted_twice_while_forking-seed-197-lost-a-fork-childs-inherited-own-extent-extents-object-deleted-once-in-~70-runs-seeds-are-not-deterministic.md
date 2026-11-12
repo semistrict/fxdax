@@ -4,11 +4,11 @@ title: >-
   Simulation: branches_deleted_twice_while_forking seed 197 lost a fork child's
   inherited own extent (extents/ object deleted), once in ~70 runs; seeds are
   not deterministic
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-12 10:55'
-updated_date: '2026-11-12 12:27'
+updated_date: '2026-11-12 14:16'
 labels:
   - bug
   - simulation
@@ -75,15 +75,15 @@ Not reproduced since: 0 failures in ~70 more runs of the same test binary on the
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The nondeterminism is found and removed: a seed replays the same, its violations the same
-- [ ] #2 Seed 197 (or the replayed case) understood: a test that loses the extent without the fix, and passes with it
+- [x] #1 The nondeterminism is found and removed: a seed replays the same, its violations the same
+- [x] #2 Seed 197 (or the replayed case) understood: a test that loses the extent without the fix, and passes with it
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -106,4 +106,12 @@ Model: specs/bucket allowed it but could not reach it: a model segment never hel
 Fix: rule deletions_reread (deletionsReread): branch::delete reads the record again once its recovery is fenced; deleted (or gone) since, it is done. Found live, the read proves recovery and fence came before any mark, so before any pass let go of a fence, and the two deletions' fences agree (conditional creates). Model: Can 'forkOwn' lets a fork commit seal an own extent in its segment; the deletion recovers+fences+rereads in one step and records its forks' children in the next (proc.fs). New model BucketDeletions (3 branches) and mutation NoDeletionsReread (expect NothingNeededGone, found in 157 s). TASK-183's direct test was rebuilt on the new window (the second deletion rereads live, then the first marks and a pass runs before it records), since the reread alone now covered its old interleaving.
 
 Blind spot: the simulation's seeds didn't replay (random holders), so a 1-in-70 failure couldn't be debugged; and the model's granularity (segment contents, atomic deletion step) couldn't express the case. Class test: seeds_replay (any future nondeterminism fails it); model's forkOwn + split deletion step; direct test collector::tests::deletions_at_once_record_no_forks_landing_where_a_pass_deleted_a_fence and its rule-off twin (loses the extent). Looked around: Writer::take reads the record after taking the lease, which a deleted branch's taking can only do after a pass removed the lease, so its read follows any mark (safe); delete_fork goes through delete. Structure: third bug of deletions racing deletions (TASK-178, TASK-183, TASK-380); each deletion re-derives children from a recovery any pass may have undercut. A single deletion completing per branch is impossible as a dead deleter must be finished by another; the reread is the local answer. Noted for the user.
+
+Validation: macOS cargo nextest extent_remote+extent_store 421/421; sim SIM_SOAK=50 of branches_deleted_twice_while_forking (10,000 seeds) 0 failures; every sim test at SIM_SOAK=5 passes but stale_creates_landing_past_deletions seed 453, a separate bug filed as TASK-383 (fails with deletions_reread off too); TLA+: all 53 models and mutations pass, BucketDeletions holds (1,487,157 states), NoDeletionsReread finds NothingNeededGone. Main CI 43231642989 on 26241e965: test (sim), test (workspace) (Linux), macos (workspace) green; test (clippy scripts) failed in an unrelated host-migration script test, filed as TASK-385. scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Seeds replay (16b9f306a/36e19a327): the uploader's later holders and owners follow its first holder instead of rand::random(); SimBucket journals requests; sim::seeds_replay checks two runs per seed match. Root cause of seed 197: two concurrent deletions; the first's fence was deleted by a pass, a writer's fork segment landed in its place, and the second deletion recorded the fork's child, which named an extent the pass deleted. Fix (26241e965): rule deletions_reread, a deletion re-reads the record after its fenced recovery and is done if deleted. specs/bucket gained forkOwn, a split deletion step, BucketDeletions and NoDeletionsReread. Verified by direct tests (with rule-off twins), 10,000 sim seeds, all TLA+ models, and main CI's sim job.
+<!-- SECTION:FINAL_SUMMARY:END -->

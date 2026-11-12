@@ -52,7 +52,7 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 31 are the fields of extent_remote's    *)
+(* says which, and how). The first 32 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds with *)
 (* no field (TASK-178); then two doc-14's, its last two fields too         *)
 (* (TASK-165.5, crates/extent_remote/src/wal.rs); the last five those of   *)
@@ -68,6 +68,13 @@
 (*   segment land where the next writer's fence was, which that writer's   *)
 (*   checkpoint covered and the collector deleted, and acknowledges a      *)
 (*   commit no history holds.                                              *)
+(* - straysKept (NoStraysKept): a state's fences count its strays, every  *)
+(*   segment read that is not of the epoch of the fence before it: void,  *)
+(*   or an earlier writer's following it (its late fence). A writer taken  *)
+(*   over may have its next create in flight where a stray is, its         *)
+(*   successor fencing past it. Without it, the collector deletes the      *)
+(*   stray, covered, and the create lands in its place, below the fence,   *)
+(*   and is acknowledged: a commit no history holds (TASK-383).            *)
 (* - takeoversKept (NoTakeoversKept): the collector keeps every segment    *)
 (*   of a live branch whose lease, read after the listing, is of an epoch  *)
 (*   past its state's: a writer taking it over, which may have read the    *)
@@ -258,7 +265,7 @@ CONSTANTS
     None,           \* a model value: nothing
     Rules           \* the protocol's rules in force (all, but in a mutation)
 
-AllRules == {"fencesKept", "takeoversKept", "forksAfterLease", "fence", "continuity", "epochSequences", "recordsAfterAck",
+AllRules == {"fencesKept", "straysKept", "takeoversKept", "forksAfterLease", "fence", "continuity", "epochSequences", "recordsAfterAck",
              "candidatesFirst", "newestCheckpoint", "forksFromStates", "orphansAfterSuccessor",
              "tokens", "deleteTokens", "footers", "forkClaimsIds", "forkClaimsLanded",
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
@@ -382,7 +389,8 @@ Over(f, g) == [x \in DOMAIN f \cup DOMAIN g |-> IF x \in DOMAIN g THEN g[x] ELSE
 \* then, if o goes on with a commit, its run held until a segment ends it (spansHeld)
 \* (State::apply_contents).
 Apply(st, b, s, o) ==
-    IF ~Follows(st, o) THEN [st EXCEPT !.through = s]
+    IF ~Follows(st, o)
+    THEN [st EXCEPT !.through = s, !.fences = IF R("straysKept") THEN @ \cup {s} ELSE @]
     ELSE LET bg == st.begun
              ended == bg # None /\ Ends(o, bg.commit)
              held == IF bg = None \/ ended THEN None
@@ -410,7 +418,11 @@ Apply(st, b, s, o) ==
                                                       owner |-> o.fork.owner,
                                                       point |-> o.fork.point]},
                        !.epoch = IF o.epoch > st.epoch THEN o.epoch ELSE st.epoch,
-                       !.fences = IF o.epoch > st.epoch THEN st.fences \cup {s} ELSE st.fences,
+                       \* A fence; or a stray, an earlier writer's following it, which a
+                       \* writer taken over may yet create where (straysKept).
+                       !.fences = IF o.epoch > st.epoch
+                                     \/ (o.epoch < st.epoch /\ R("straysKept"))
+                                  THEN st.fences \cup {s} ELSE st.fences,
                        !.through = s]
 
 RECURSIVE ApplyAll(_, _, _)

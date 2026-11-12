@@ -2,6 +2,11 @@
 
 # Decisions
 
+## Writers' creates as their fencing need the collector to keep strays too (TASK-383, 2026-11-12)
+
+- **Fix: `strays_kept`**, the collector keeps every segment a state read that is not of its fence's epoch (void, or a late fence of an earlier epoch), counted in `State::fences`; checkpoint FORMAT 5 -> 6. Undo: drop the rule; then TASK-371's "creates are the fencing" loses acknowledged commits as seed 453 did.
+- **Structure, for you:** since TASK-371 (no lease read after a durable commit's create), the invariant "every position a writer taken over may still create at stays occupied while it lives" is held by three collector rules (`fences_kept`, `takeovers_kept`, `strays_kept`), each found by a lost acknowledged commit. If another hole appears, the alternative is to state it once: keep every segment from the first fence of an epoch whose writer may live to the branch's end; or restore the lease read for commits (a round trip each, TASK-371's cost).
+
 ## Concurrent deletions read the record again before recording children (TASK-380, 2026-11-12)
 
 - **The fix is a deletion's second read of the record** (`deletions_reread`), once its recovery is fenced: deleted since, it is done. Other options: the collector keeping a deleted branch's deletion fence (forever, as nothing tells it no deletion is still in flight; empty objects left per deleted branch), or deletions serialised per branch (a dead deleter's work must still be finished by another, so it can't be exclusive). Undo: drop the rule and its read.
