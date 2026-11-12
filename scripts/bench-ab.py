@@ -20,6 +20,11 @@ Without one, it says too which workloads moved, their ranges apart, and lists th
 alone measured. And each side's failures: of each kind, how many of its directories (its rounds)
 had one, and what each said, if they say (a qualification's checks, scripts/qualify.sh, TASK-330.4).
 
+A round that lacks a result another round has (a case's bench-*.json), or whose part says it didn't
+run (a failure of a kind `PART.not-run`), compared nothing for it: that fails the comparison, said
+first, before the tables, and it exits 1. A qualification's A/B ran hours with its sandboxes' part
+started on neither side, the tables just without its rows.
+
 Usage: scripts/bench-ab.py [--control CASE] A_NAME A_DIR... -- B_NAME B_DIR...
 """
 
@@ -166,6 +171,26 @@ def failure_table(a_name, a_dirs, b_name, b_dirs):
     return "\n".join(lines)
 
 
+def not_run(directories):
+    """What `directories`' rounds didn't run, a line each: each result another round has that a
+    round lacks, and each part a round says didn't run (`PART.not-run`)."""
+    results = {Path(directory): {path.name for path in Path(directory).glob("bench-*.json")}
+               for directory in directories}
+    every = set().union(*results.values()) if results else set()
+    said = []
+    for directory, has in results.items():
+        if not has:
+            said.append(f"{directory.name}: no result at all")
+        for name in sorted(every - has):
+            said.append(f"{directory.name}: no {name}")
+        for name in sorted(has):
+            report = json.loads((directory / name).read_text())
+            for kind, count in sorted(report.get("failures", {}).items()):
+                if count and kind.endswith(".not-run"):
+                    said.append(f"{directory.name}: {kind.removesuffix('.not-run')} not run")
+    return said
+
+
 def main():
     args = sys.argv[1:]
     control = None
@@ -175,6 +200,11 @@ def main():
         sys.exit(__doc__.strip().splitlines()[-1])
     cut = args.index("--")
     a_name, a_dirs, b_name, b_dirs = args[0], args[1:cut], args[cut + 1], args[cut + 2 :]
+    missing = not_run(a_dirs + b_dirs)
+    if missing:
+        print("## NOT RUN: this comparison is incomplete\n")
+        print("\n".join(f"- {line}" for line in missing) + "\n")
+        print("NOT RUN: " + "; ".join(missing), file=sys.stderr)
     if control:
         print(control_table(a_name, a_dirs, b_name, b_dirs, control))
     else:
@@ -183,7 +213,8 @@ def main():
     failed = failure_table(a_name, a_dirs, b_name, b_dirs)
     if failed:
         print(f"\n{failed}")
+    return 1 if missing else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

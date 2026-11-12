@@ -72,12 +72,13 @@ class Budgets(unittest.TestCase):
         status, said, report = self.summary("sandboxes", "soak")
         self.assertEqual(status, 1)
         self.assertEqual(report["failures"], {"budgets.unreported": 1, "budgets.memory": 1,
-                                              "budgets.missing": 1})
+                                              "budgets.not-run": 1})
         self.assertEqual(said, "budgets: sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: says "
                                "nothing its budgets weigh\n"
                                "budgets: sandboxes/extentd-stats.txt: memory: anonymous memory "
                                "4 GiB\n"
-                               "budgets: soak: no budgets.json: its run ended before its budgets\n")
+                               "budgets: soak: not run: no budgets.json, its run ended before "
+                               "its budgets\n")
 
 
 def side(results, *, failures=None, failed=(), **workloads):
@@ -121,6 +122,59 @@ class Report(unittest.TestCase):
         self.assertEqual(lines[5], f"- {a[0].name}: framings: host-a framed 4 segments slower "
                                    "than 1000 ms")
         self.assertEqual(bench_ab.failure_table("pin", b, "main", b), "")
+
+
+class NotRun(unittest.TestCase):
+    """TASK-330.4: a part of the qualification that left no result didn't run, a failed check, not
+    a metric left out: its A/B ran hours with the sandboxes' part started on neither side, and its
+    tables just lacked their rows."""
+
+    def test_a_round_lacking_another_rounds_result_did_not_run_it(self):
+        rounds = [side("fxfs-guest-sandboxes", vms=(False, [100])) for _ in range(3)]
+        for directory in rounds:
+            (directory / "bench-budgets.json").write_text('{"results": []}')
+        (rounds[1] / "bench-fxfs-guest-sandboxes.json").unlink()
+        self.assertEqual(bench_ab.not_run(rounds),
+                         [f"{rounds[1].name}: no bench-fxfs-guest-sandboxes.json"])
+        empty = Path(tempfile.mkdtemp(prefix="r"))
+        self.assertEqual(bench_ab.not_run([rounds[0], empty]), [
+            f"{empty.name}: no result at all", f"{empty.name}: no bench-budgets.json",
+            f"{empty.name}: no bench-fxfs-guest-sandboxes.json"])
+
+    def test_a_part_that_says_it_did_not_run_did_not(self):
+        a = [side("fxfs-guest-sandboxes", failures={"sandboxes.not-run": 1},
+                  failed=["sandboxes: not run: it left no result"])]
+        b = [side("fxfs-guest-sandboxes", vms=(False, [90]))]
+        self.assertEqual(bench_ab.not_run(a + b), [f"{a[0].name}: sandboxes not run"])
+        self.assertEqual(bench_ab.not_run(b), [])
+
+    def test_the_comparison_fails_saying_so_first(self):
+        a = [side("fxfs-guest-sandboxes", failures={"sandboxes.not-run": 1})]
+        b = [side("fxfs-guest-sandboxes", vms=(False, [90]))]
+        done = subprocess.run([str(SCRIPTS / "bench-ab.py"), "pin", *map(str, a), "--", "main",
+                               *map(str, b)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertEqual(done.stdout.splitlines()[:3], [
+            "## NOT RUN: this comparison is incomplete", "", f"- {a[0].name}: sandboxes not run"])
+        self.assertEqual(done.stderr, f"NOT RUN: {a[0].name}: sandboxes not run\n")
+
+    def test_qualify_fails_a_part_that_left_no_result_as_not_run(self):
+        """Its sandboxes refused at once (no ext4 disk, or no findmnt): exit 3, and a result in
+        the part's place whose one check, sandboxes.not-run, failed."""
+        results = Path(tempfile.mkdtemp())
+        disk = "/dev/shm" if Path("/dev/shm").is_dir() else tempfile.mkdtemp()
+        status, _, err = bash(f"{SCRIPTS / 'qualify.sh'} {results}",
+                              {"FXDAX_QUALIFY_SOAK_SECS": "0", "FXDAX_SANDBOX_DISK": disk})
+        self.assertEqual(status, 3, err)
+        self.assertIn(f"qualify: NOT RUN: sandboxes left no result (bench-fxfs-guest-sandboxes.json): "
+                      f"see its log, {results}/sandboxes\n", err)
+        report = json.loads((results / "bench-fxfs-guest-sandboxes.json").read_text())
+        self.assertEqual(report["failures"], {"sandboxes.not-run": 1})
+        self.assertEqual(json.loads((results / "bench-budgets.json").read_text())["failures"],
+                         {"budgets.not-run": 1})
+        self.assertEqual(bench_ab.not_run([results]), [f"{results.name}: budgets not run",
+                                                       f"{results.name}: sandboxes not run"])
+        self.assertTrue(err.endswith(f"qualify: exit 3, results in {results}\n"), err)
 
 
 def bash(command, env=None):

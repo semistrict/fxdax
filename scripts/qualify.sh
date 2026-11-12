@@ -21,8 +21,13 @@
 # results are (bench-*.json): the cases' measurements and the checks they failed, and the
 # daemons' budgets' (bench-budgets.json, scripts/qualify-budgets.py), which scripts/bench-ab.py
 # compares, a pin's rounds against the next's (scripts/bench-ab-host.sh's FXDAX_AB_SUITE=qualify,
-# TASK-330.4). Not the stores, images and caches a failed case leaves, gigabytes of them. Exits 0
-# if every part passed, 1 if one failed, 2 if it couldn't start.
+# TASK-330.4). Not the stores, images and caches a failed case leaves, gigabytes of them.
+#
+# A part that leaves no result of its own (its bench-*.json) didn't run, whatever it said: that is
+# a failed check of its own (PART.not-run, in the part's place), said loudly, never a metric left
+# out. A run of the A/B ran hours with its sandboxes' part never started on either side (its
+# daemon's socket path too long), the comparison missing them without a word. Exits 0 if every part
+# passed, 1 if a check failed, 3 if a part didn't run, 2 if it couldn't start.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 results=${1:?usage: qualify.sh RESULTS}
@@ -43,9 +48,23 @@ fi
 export FXDAX_BENCH_RESULTS=$results
 export FXDAX_SANDBOX_DISK=${FXDAX_SANDBOX_DISK:-$results}
 
+# not_run PART FILE: unless the part PART left its result, RESULTS/FILE, writes one in its place
+# whose one check, PART.not-run, failed, and says so.
+not_run=0
+not_run() {
+    local part=$1 file=$results/$2
+    [[ ! -f $file ]] || return 0
+    echo "qualify: NOT RUN: $part left no result ($2): see its log, $results/$part" >&2
+    printf '{"case": "%s", "backend": "%s", "results": [], "failures": {"%s.not-run": 1},
+ "failed": ["%s: not run: it left no result; see %s/"]}\n' \
+        "$part" "$part" "$part" "$part" "$part" > "$file"
+    not_run=1
+}
+
 status=0 parts=(sandboxes)
 echo "== sandboxes ($mode)" >&2
 FXDAX_E2E_RESULTS="$results/sandboxes" "$root/scripts/sandboxes.sh" "$mode" || status=1
+not_run sandboxes bench-fxfs-guest-sandboxes.json
 if (( soak_secs > 0 )); then
     parts+=(soak)
     echo "== bucket soak (${soak_secs} s)" >&2
@@ -56,12 +75,15 @@ if (( soak_secs > 0 )); then
         FXDAX_RUSTFS_DATA="$soak_bucket" FXDAX_RUSTFS_LOG="$results/soak-rustfs.log" \
         "$root/scripts/test-e2e-rustfs.sh" fxfs-guest-bucket-soak || status=1
     rm -r "$soak_bucket"
+    not_run soak bench-fxfs-guest-bucket-soak.json
 fi
 "$root/scripts/qualify-budgets.py" "$results" "${parts[@]}" || status=1
+not_run budgets bench-budgets.json
 # What a failed case leaves of its stores, buckets, caches, images and roots: not results.
 find "$results" -mindepth 2 -type d \( -name '*.root' -o -name '*.data' -o -name '*.base' \
     -o -name '*-cache' -o -name '.extentd-cache.*' -o -name '*.bucket' -o -name 'store-*' \
     -o -name sandbox-image -o -name rootfs -o -name extents \) -prune -exec rm -rf {} +
 find "$results" -type f \( -name '*.ext4' -o -name '*.img' \) -delete
+if (( not_run )); then status=3; fi
 echo "qualify: exit $status, results in $results" >&2
 exit "$status"

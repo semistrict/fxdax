@@ -184,11 +184,21 @@ round() {
         2> "$results/$name-r$round.log"
 }
 
+# A round of the qualification one of whose parts didn't run (qualify.sh's 3) ends the A/B there:
+# what follows would compare nothing for that part, for hours (TASK-330.4).
 status=0 r=0
 while read -r first second; do
     r=$((r + 1))
-    round "$first" "$r" || status=1
-    round "$second" "$r" || status=1
+    for side in "$first" "$second"; do
+        ran=0
+        round "$side" "$r" || ran=$?
+        if (( ran )); then status=1; fi
+        if [[ $suite == qualify ]] && (( ran == 3 )); then
+            echo "Round $r: side $side didn't run every part of the qualification: the A/B stops" \
+                "(see its log)" >&2
+            break 2
+        fi
+    done
 done < <(ab_order "$rounds")
 
 control=${FXDAX_AB_CONTROL-ext4-guest-kernel}

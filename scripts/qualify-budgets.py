@@ -10,9 +10,10 @@ scripts/bench-ab.py compares, a pin's rounds against the next's (RESULTS/bench-b
 - of each part, the most anonymous memory one of its daemons held (`budgets.PART.max_anon`, MiB),
   and what its daemons had their kernels write for each byte their guests wrote
   (`budgets.PART.io_per_guest_byte`), of the daemons that say them;
-- as failures, each budget a daemon passed (`budgets.BUDGET`), and each daemon that says nothing
-  its budgets weigh, as a pin's from before them does (`budgets.unreported`, TASK-330.2), whose
-  costs the cases' own measurements, its kernel's counts, still say.
+- as failures, each budget a daemon passed (`budgets.BUDGET`), each daemon that says nothing its
+  budgets weigh, as a pin's from before them does (`budgets.unreported`, TASK-330.2), whose costs
+  the cases' own measurements, its kernel's counts, still say; and each part whose run left no
+  budgets.json (`budgets.not-run`): it didn't run, which scripts/bench-ab.py fails the A/B on.
 
     qualify-budgets.py RESULTS PART...    exits 1 if a budget failed, a daemon said none, or a part
                                           has no budgets.json
@@ -34,7 +35,8 @@ def summary(results, parts):
     for part in parts:
         path = results / part / "budgets.json"
         if not path.exists():
-            fail("budgets.missing", f"{part}: no budgets.json: its run ended before its budgets")
+            fail("budgets.not-run", f"{part}: not run: no budgets.json, its run ended before its "
+                                    "budgets")
             continue
         anon, io, raw = [], 0, 0
         for daemon in json.loads(path.read_text()):
