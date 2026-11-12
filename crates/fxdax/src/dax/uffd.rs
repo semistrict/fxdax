@@ -2719,13 +2719,18 @@ mod tests {
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
     }
 
-    /// TASK-12: a window of more scattered pages than the process may make mappings
-    /// (`vm.max_map_count`), each a run of its own, read through whole, twice: within the default
-    /// budget, every page reads as it should, where a mapping each would fail.
+    /// TASK-12: a window of more scattered pages than a process may make mappings
+    /// (`vm.max_map_count`), each a run of its own, read through whole, twice: within the budget a
+    /// VM process keeps there, every page reads as it should, where a mapping each would fail.
+    /// The count is Linux's default, or the host's if lower: at the host's own, Ubuntu's 1,048,576,
+    /// its pages took ~8 GiB of shared memory, past a test's 8 GiB limit (TASK-342).
     #[test]
     fn windows_larger_than_the_map_count_read_whole() {
-        let max = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
-        let pages = max.trim().parse::<usize>().unwrap() + MAPPINGS_RESERVED;
+        const LINUX_DEFAULT: u64 = 65_530;
+        let max = host_max_map_count().map_or(LINUX_DEFAULT, |host| host.min(LINUX_DEFAULT));
+        let budget = budget(Some(max));
+        let pages = max as usize + MAPPINGS_RESERVED;
+        assert!(pages > budget, "{pages} pages, a budget of {budget} runs");
         let ps = page_size() as usize;
         // Room for the file and the pages between its pages.
         let memory = (4 * pages * ps).next_multiple_of(1 << 30) as u64;
@@ -2747,8 +2752,16 @@ mod tests {
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(pages as u64, |page| tag(page as usize)).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage =
-            unsafe { UffdSecondStage::in_process(base, (pages * ps) as u64, None) }.unwrap();
+        let stage = unsafe {
+            UffdSecondStage::with_budget(
+                base,
+                (pages * ps) as u64,
+                Memories::InProcess,
+                None,
+                budget,
+            )
+        }
+        .unwrap();
         let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (pages * ps) as u64);
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
@@ -2758,7 +2771,6 @@ mod tests {
                 assert_eq!(load(page), tag(page), "round {round}, page {page}");
             }
             let runs = stage.installed() as usize;
-            let budget = budget(host_max_map_count());
             assert!(runs <= budget, "round {round}: {runs} runs installed");
         }
         drop(dax);
