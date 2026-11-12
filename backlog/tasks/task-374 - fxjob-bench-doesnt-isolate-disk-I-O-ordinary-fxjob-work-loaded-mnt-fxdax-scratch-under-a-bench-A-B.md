@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-12 07:45'
+updated_date: '2026-11-12 07:46'
 labels:
   - testing
   - bug
@@ -23,7 +24,6 @@ On ubu1 (2026-11-12), TASK-369's disk loader (loader.sh: dd of 1 GiB random with
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A disk-heavy ordinary fxjob running beside an fxjob --bench job is limited (or queued) while the bench job runs, shown by iostat or the cgroup's io.stat
-- [ ] #2 A bench round run while another job writes heavily to its disk says so in its results
 <!-- AC:END -->
 
 ## Definition of Done
@@ -32,3 +32,9 @@ On ubu1 (2026-11-12), TASK-369's disk loader (loader.sh: dd of 1 GiB random with
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+AC #2 (bench rounds recording other jobs' disk I/O) moved to TASK-375, filed the same hour by the TASK-330.4 agent; this task is the fxjob-side limit only.
+<!-- SECTION:NOTES:END -->
