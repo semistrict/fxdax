@@ -753,10 +753,9 @@ fn stores_made_of_images_fork_where_no_daemon_is() {
     block_on(fxdax::import::store(&base, STORAGE_SIZE, &layout, Some("fork:1"))).unwrap();
     let manifest = store_manifest(&base);
     let fork = dir.path().join("fork");
-    fxdax::ExtentStore::open(&base)
-        .unwrap()
-        .fork(&fork, extent_remote::layout::test_branch(0x1405))
-        .unwrap();
+    let base_store = fxdax::ExtentStore::open(&base).unwrap();
+    base_store.fork(&fork, fxdax::new_cell(base_store.branch().cell.tenant)).unwrap();
+    drop(base_store);
     assert_eq!(store_manifest(&fork), manifest);
     assert_eq!(store_manifest(&base), manifest);
 }

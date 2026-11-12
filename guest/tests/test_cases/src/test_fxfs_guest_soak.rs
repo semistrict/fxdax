@@ -110,7 +110,7 @@ mod host {
         /// The placement's fencing token, which each lost host's successor's exceeds.
         token: u64,
         /// The base's branch, once made.
-        base: Option<u64>,
+        base: Option<fxdax::Branch>,
         slots: Vec<SlotState>,
         measures: Vec<Measure>,
     }
@@ -120,7 +120,7 @@ mod host {
     struct SlotState {
         /// How many times it was forked again.
         generation: u32,
-        branch: Option<u64>,
+        branch: Option<fxdax::Branch>,
         /// Its writers' runs, by name.
         runs: BTreeMap<String, RunState>,
         /// The fsx script whose files and models it holds, synced, if any.
@@ -434,7 +434,7 @@ mod host {
         }
 
         /// The live branches the collector finds in the bucket.
-        fn live_branches(&self) -> anyhow::Result<BTreeSet<u64>> {
+        fn live_branches(&self) -> anyhow::Result<BTreeSet<fxdax::Branch>> {
             let output = std::process::Command::new(&self.paths.gc)
                 .args([&self.paths.bucket, "--branches"])
                 .output()?;
@@ -446,7 +446,9 @@ mod host {
             );
             (String::from_utf8(output.stdout)?.lines())
                 .filter_map(|line| line.split_whitespace().next())
-                .map(|branch| u64::from_str_radix(branch, 16).context("a branch"))
+                .map(|branch| {
+                    branch.parse().map_err(|err: String| anyhow::anyhow!("a branch: {err}"))
+                })
                 .collect()
         }
 
@@ -535,9 +537,9 @@ mod host {
             );
             let control = control(&self.paths.socket)?;
             control.sync_store(&base)?;
-            let branch = control.stat_store(&base)?.branch;
+            let branch = control.branch(&base)?;
             self.ledger.base = Some(branch);
-            self.say(format_args!("the base made: branch {branch:x}"));
+            self.say(format_args!("the base made: branch {branch}"));
             Ok(())
         }
 
@@ -558,7 +560,7 @@ mod host {
                     let generation = state.generation;
                     self.say(format_args!(
                         "slot {slot} forked from the base: generation {generation}, branch \
-                         {branch:x}"
+                         {branch}"
                     ));
                 }
             }
@@ -720,10 +722,10 @@ mod host {
             if happened.host_lost {
                 // As another host takes what was the lost host's, from the bucket alone.
                 let base = self.ledger.base.context("no base")?;
-                control.create_store(&self.paths.base(), CAPACITY, Some(base), token)?;
+                control.create_store(&self.paths.base(), CAPACITY, base, token)?;
                 for slot in 0..SLOTS {
                     let branch = self.ledger.slots[slot].branch.context("a slot with no store")?;
-                    control.create_store(&self.paths.slot(slot), CAPACITY, Some(branch), token)?;
+                    control.create_store(&self.paths.slot(slot), CAPACITY, branch, token)?;
                 }
                 self.say("every branch taken again from the bucket");
             }
@@ -814,7 +816,7 @@ mod host {
             for branch in branches {
                 if !live.contains(&branch) {
                     failures.add(format!(
-                        "the collector finds branch {branch:x} dead, which a store holds"
+                        "the collector finds branch {branch} dead, which a store holds"
                     ));
                 }
             }
@@ -864,7 +866,7 @@ mod host {
 
         /// The branches whose uploads the round's daemons failed, as their logs say: those stores'
         /// uploaders stopped, and their commits fail until they are attached again (remote.rs).
-        fn uploads_stopped(&self) -> anyhow::Result<BTreeSet<u64>> {
+        fn uploads_stopped(&self) -> anyhow::Result<BTreeSet<fxdax::Branch>> {
             let mut stopped = BTreeSet::new();
             for daemon in 1..=self.daemons {
                 let log = self.setup.tmp_dir.join(format!("extentd-{daemon}.log"));
@@ -1000,11 +1002,11 @@ mod host {
 
     /// The branches a daemon's log, `log`, says it failed an upload of (FAILPOINTS'
     /// `writer::upload`).
-    fn upload_failures(log: &str) -> BTreeSet<u64> {
+    fn upload_failures(log: &str) -> BTreeSet<fxdax::Branch> {
         (log.lines())
             .filter(|line| line.contains("failpoint writer::upload"))
             .filter_map(|line| line.split("uploading branch ").nth(1)?.split(':').next())
-            .filter_map(|branch| u64::from_str_radix(branch, 16).ok())
+            .filter_map(|branch| branch.parse().ok())
             .collect()
     }
 
@@ -1162,10 +1164,12 @@ RUN apk add --no-cache postgresql postgresql-contrib
         /// Only a store whose uploads were failed may see EIO, and its guest give up.
         #[test]
         fn loads_fail_only_where_uploads_stopped() {
-            let log = "ERROR fxdax::remote: fxdax: uploading branch fb232d4739d569c0: reading \
-                       failpoint writer::upload\nERROR fxdax::extents: fxdax: uploading the \
-                       store's commits: reading failpoint writer::upload\n";
-            assert_eq!(upload_failures(log), BTreeSet::from([0xfb23_2d47_39d5_69c0]));
+            let log = "ERROR fxdax::remote: fxdax: uploading branch 0/7a/fb232d4739d569c0: \
+                       reading failpoint writer::upload\nERROR fxdax::extents: fxdax: uploading \
+                       the store's commits: reading failpoint writer::upload\n";
+            let cell = fxdax::Cell { tenant: 0, id: 0x7a };
+            let branch = fxdax::Branch { cell, id: 0xfb23_2d47_39d5_69c0 };
+            assert_eq!(upload_failures(log), BTreeSet::from([branch]));
             let failed = "base ok\nfsx script 7\nscript failed: operation 989: errno 5: fsync: \
                           I/O error (os error 5)\n";
             let died = Some(Ended::Exited(Some(0)));

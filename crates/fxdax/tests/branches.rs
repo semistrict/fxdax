@@ -77,8 +77,7 @@ fn forks_and_takes_branches_in(url: &str) {
     let path = |name: &str| dir.path().join(name);
 
     // Made by fxdaxctl, naming the bucket at `url`.
-    let made = format!("0/1/{:x}", rand::random::<u64>().max(1));
-    branch(&url, &["take", path("parent").to_str().unwrap(), &(1u64 << 30).to_string(), &made]);
+    branch(&url, &["create", path("parent").to_str().unwrap(), &(1u64 << 30).to_string()]);
     let parent = attached(&path("parent"));
     let data = pattern(7, 5 << 20);
     let extent = ExtentId { branch: parent.branch().id, sequence: 1 };
@@ -148,11 +147,11 @@ fn places_and_syncs_stores_in(url: &str) {
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
 
-    // Made by fxdaxctl, naming the bucket at `url`.
-    let made = format!("0/1/{:x}", rand::random::<u64>().max(1));
-    branch(&url, &["take", &path("first"), &(1u64 << 30).to_string(), &made]);
+    // Made by fxdaxctl, naming the bucket at `url`, its branch the bucket's to name (TASK-364).
+    let made = branch(&url, &["create", &path("first"), &(1u64 << 30).to_string()]);
     let store = ExtentStore::open(path("first")).unwrap();
     let branch_id = store.branch();
+    assert_eq!(made.parse::<fxdax::Branch>(), Ok(branch_id));
     let extent = ExtentId { branch: branch_id.id, sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&pattern(3, 1 << 20)[..])]).unwrap();
     store.commit(Some(b"synced")).unwrap();

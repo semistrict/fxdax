@@ -137,9 +137,11 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
 /// TASK-154: `fxdaxctl drop` deletes what `take` made, a copy of a branch this host holds nothing
 /// of, and a second finds nothing there.
 fn copies_are_dropped(fxdaxctl: Fxdaxctl, dir: &Path) {
-    let path = dir.join("taken");
-    let (take, capacity, branch) = (Path::new("take"), Path::new("16777216"), Path::new("0/1/ab"));
-    fxdaxctl.run(&[take, &path, capacity, branch]).unwrap();
+    let (made, path) = (dir.join("made"), dir.join("taken"));
+    let capacity = Path::new("16777216");
+    let branch = fxdaxctl.run(&[Path::new("create"), &made, capacity]).unwrap();
+    let branch = Path::new(branch.trim());
+    fxdaxctl.run(&[Path::new("take"), &path, capacity, branch]).unwrap();
     assert!(path.exists(), "nothing was taken");
     fxdaxctl.run(&[Path::new("drop"), &path]).unwrap();
     assert!(!path.exists(), "the copy stayed");
@@ -149,7 +151,10 @@ fn copies_are_dropped(fxdaxctl: Fxdaxctl, dir: &Path) {
 #[test]
 fn copies_are_dropped_locally() {
     let dir = tempfile::tempdir().unwrap();
-    copies_are_dropped(Fxdaxctl::with_env(&[]), dir.path());
+    // A host's bucket, which the copy takes the branch from.
+    let bucket = format!("file://{}", dir.path().join("bucket").display());
+    std::fs::create_dir(dir.path().join("bucket")).unwrap();
+    copies_are_dropped(Fxdaxctl::with_env(&[("FXDAX_EXTENTD_REMOTE", &bucket)]), dir.path());
 }
 
 #[cfg(target_os = "linux")]
@@ -451,10 +456,11 @@ fn tenants_are_granted_and_revoked() {
     // SAFETY: Reads the process's own ids.
     let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
     let (uid, gid) = (uid.to_string(), gid.to_string());
-    let grant = [Path::new("grant"), Path::new("acme"), &acme, Path::new(&uid), Path::new(&gid)];
+    let (uid, gid) = (Path::new(&uid), Path::new(&gid));
+    let grant = [Path::new("grant"), Path::new("acme"), Path::new("a"), &acme, uid, gid];
     let socket = dir.path().join("tenants/acme.sock");
     assert_eq!(fxdaxctl.run(&grant).unwrap(), format!("{}\n", socket.display()));
-    assert_eq!(fxdaxctl.run(&grant[..3]).unwrap(), format!("{}\n", socket.display()));
+    assert_eq!(fxdaxctl.run(&grant[..4]).unwrap(), format!("{}\n", socket.display()));
     let vm = RemoteExtentStore::connect(&socket, acme.join("vm"), 1 << 24).unwrap();
     let refused = RemoteExtentStore::connect(&socket, other.join("vm"), 1 << 24);
     assert_eq!(refused.err().and_then(|err| err.errno()), Some(Errno::EACCES));
@@ -476,7 +482,7 @@ fn grants_need_the_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let fxdaxctl = Fxdaxctl::local();
     for args in [
-        [Path::new("grant"), Path::new("acme"), dir.path()].as_slice(),
+        [Path::new("grant"), Path::new("acme"), Path::new("a"), dir.path()].as_slice(),
         &[Path::new("revoke"), Path::new("acme")],
     ] {
         let error = fxdaxctl.run(args).expect_err("granted without a daemon");
@@ -523,11 +529,9 @@ fn existing_stores_change_only_with_a_bucket_and_a_token() {
     let imported = dir.path().join("imported");
     let import = [Path::new("import"), &imported, Path::new("67108864"), &image];
     Fxdaxctl::with_env(&[]).run(&import).unwrap();
-    let taken = dir.path().join("taken");
-    Fxdaxctl::with_env(&[])
-        .run(&[Path::new("take"), &taken, Path::new("67108864"), Path::new("0/1/1f")])
-        .unwrap();
-    assert!(ExtentStore::open(&imported).is_ok() && taken.exists());
+    let created = dir.path().join("created");
+    Fxdaxctl::with_env(&[]).run(&[Path::new("create"), &created, Path::new("67108864")]).unwrap();
+    assert!(ExtentStore::open(&imported).is_ok() && created.exists());
 
     // With both.
     Fxdaxctl::local().run(&delete).unwrap();

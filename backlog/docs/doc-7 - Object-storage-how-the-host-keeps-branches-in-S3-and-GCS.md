@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-12 08:12'
+updated_date: '2026-11-12 09:21'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -160,13 +160,14 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `gc/lease` | the collector's epoch | likewise |
 | `gc/marks/<epoch>` | what the mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
+| `objectid/<block>` | a block of object IDs taken by one allocator, which gives its IDs out, each once (Object IDs) | create-only; kept for good |
 
 A branch is named by its cell and its ID (`layout::Branch`, displayed `TENANT/CELL/ID`): footers,
 fork children (`Child`) and origins (`Origin`) name branches so, so that recovery and the collector
 reach a parent or a child in another cell, or another tenant's. An extent's ID names its branch by
-the ID alone, so a fork's child takes no ID of a branch its parent holds extents of, its parent's
-own among them (`extent_store::Inherited`). Branch IDs are unique within their cells by their
-records' conditional creates. The collector lists `tenants/` whole for the records it reads again
+the ID alone, as forks share their parents' extents by it and a host's extent cache keys them by
+it, so a branch's ID is unique in its bucket, whatever its cell (Object IDs). The collector lists
+`tenants/` whole for the records it reads again
 (Garbage collection). A checkpoint's table stores its keys front-coded (`extent_frame::table`), as
 a branch's keys share their cell's prefix and their kind's.
 
@@ -200,6 +201,34 @@ a branch whose lease a higher epoch took unopenable.
 A store made alone, a VM's disk or an image, is the one volume of a new cell; a fork of one is the
 one volume of a new cell of its tenant's. Forking a cell of several volumes whole, at one cut, is
 the next step (TASK-364.1).
+
+The extent daemon's tenants are the bucket's: a tenant's grant (the control API's `Grant`) names
+its ID, and the stores in its directory are volumes of its own cells. Its VM processes make stores
+of new cells of its own, and its VM manager the same (`CreateStore` and `ImportImage` of a new cell
+there of another tenant are refused, `EPERM`; `ForkStore` into its directory makes a cell of its
+own, whatever the parent's); they open no store of another tenant's cell (`EACCES`), refused by its
+description before its opening would take its branch from the other tenant's writer. A point of
+another tenant's the VM manager gives it (TASK-154), they restore from, each restore a store of a
+new cell of their own. The daemon's own socket's VM processes, its user's, reach any store, and
+make stores of tenant 0.
+
+### Object IDs
+
+Every new branch's ID is an object ID of its bucket's (`extent_remote::objectid`, TASK-364), which
+no other branch of the bucket has, nor will: a store made, a fork, a point, a restore's child, a
+volume a FUSE mount makes. Nothing names a new branch's ID itself: a VM process's `FORK` and the
+control API's `ForkStore` name none, and are told the one given; `CreateStore` of a branch the
+bucket has not is refused (`ENOENT`). Before cells, a branch's record, keyed by its ID alone, was
+what refused a second branch of one ID; under cells, records are keyed by their cells too, and two
+branches of one ID in two cells would share a host's cache entries, the one's VM reading the
+other's pages.
+
+An allocator, one per bucket in a process, takes a block of 2^24 IDs by creating its object,
+`objectid/<block>`, which only one taking does; it gives the block's IDs in order, each once, an ID
+costing no request but its block's first. A block is chosen at random, so that allocators taking
+blocks at once seldom meet, and kept for good, as an ID is never given again: an allocator going,
+its block's IDs not given go with it. A fork's child takes no ID of a branch its parent holds
+extents of all the same (`extent_store::Inherited`), as a test's fork may name its child.
 
 doc-2's separate `index/` deltas and `frees/` objects are gone: a segment's footer is its delta,
 and its frees, and a branch's history can be rebuilt from its segments alone. A batch with no data

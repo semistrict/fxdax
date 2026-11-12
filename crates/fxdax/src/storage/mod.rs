@@ -17,7 +17,6 @@ use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
 use crate::host_store;
 use anyhow::Context as _;
-use extent_remote::layout::Branch;
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::errors::FsckIssue;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
@@ -92,17 +91,18 @@ impl Storage {
         Self::make(path.as_ref(), (size, host_store::NO_TENANT), true, Self::keeping()?)
     }
 
-    /// fxdax: the image at `path` of `branch`, kept in the bucket at `bucket` (TASK-302), an Fxfs
-    /// volume of its branch's cell named as its directory is (TASK-364). If no image is at `path`,
-    /// or what an image's making left unmade, a new one of `capacity` bytes holding what the
-    /// branch holds in the bucket, its lease taken, as `fxdaxctl take` takes a branch, and its
-    /// cell held: with `token`'s placement, which it is placed at, if given, as `Storage::open`
-    /// takes leases otherwise. A branch the bucket has nothing of holds nothing: a filesystem must
-    /// be formatted on it. If an image is at `path`, it is opened as [`Storage::open`] opens it,
-    /// and must be of `branch`: `EEXIST` otherwise.
+    /// fxdax: the image at `path` of the branch `of` says, kept in the bucket at `bucket`
+    /// (TASK-302), an Fxfs volume of its branch's cell named as its directory is (TASK-364). If no
+    /// image is at `path`, or what an image's making left unmade, a new one of `capacity` bytes:
+    /// of a branch the bucket has, holding what it holds there, its lease taken, as `fxdaxctl take`
+    /// takes a branch; or of a new branch of a cell, its ID the bucket's to give, which holds
+    /// nothing: a filesystem must be formatted on it. Its cell is held with `token`'s placement,
+    /// which it is placed at, if given, as `Storage::open` takes leases otherwise. If an image is at
+    /// `path`, it is opened as [`Storage::open`] opens it, and must be of the branch taken:
+    /// `EEXIST` otherwise, and for a new branch.
     pub fn take(
         path: impl AsRef<Path>,
-        (branch, capacity): (Branch, u64),
+        (of, capacity): (host_store::BranchOf, u64),
         bucket: &str,
         token: Option<u64>,
     ) -> Result<Self, Error> {
@@ -119,18 +119,24 @@ impl Storage {
             let keeping =
                 extent_store::upload::Options { token: token.unwrap_or(keeping.token), ..keeping };
             let kept = (extent_remote::cell::Kind::Fxfs, Some(bucket), keeping);
-            let opened = host_store::create_unmade(path, capacity, branch, kept.0, kept.1, kept.2)?;
+            let opened = host_store::create_unmade(path, capacity, of, kept.0, kept.1, kept.2)?;
             opened.made().map_err(Error::new)?;
             // Closed before it is placed, as `CreateStore` places a store, and opened again.
             drop(opened);
             if let Some(token) = token {
                 extent_store::place_host(path, token).map_err(Error::new)?;
             }
-        }
-        let found = extent_store::host_branch(path).map_err(Error::new)?;
-        if found != branch {
-            let error = anyhow::anyhow!("{} holds branch {found}, not {branch}", path.display());
-            return Err(Error::new(error.context(crate::Errno::EEXIST)));
+        } else {
+            let found = extent_store::host_branch(path).map_err(Error::new)?;
+            let not = match of {
+                host_store::BranchOf::Taken(branch) if found == branch => None,
+                host_store::BranchOf::Taken(branch) => Some(format!("{branch}")),
+                _ => Some("a new branch".to_owned()),
+            };
+            if let Some(not) = not {
+                let error = anyhow::anyhow!("{} holds branch {found}, not {not}", path.display());
+                return Err(Error::new(error.context(crate::Errno::EEXIST)));
+            }
         }
         Self::open(path)
     }
@@ -183,8 +189,7 @@ impl Storage {
             return Err(Error::msg("the image is smaller than a block"));
         }
         let writes = Arc::new(WriteGate::default());
-        let branch = host_store::new_branch(host_store::new_cell(tenant));
-        let made = (size, branch, whole);
+        let made = (size, host_store::BranchOf::New(host_store::new_cell(tenant)), whole);
         let device =
             ImageDevice::create(path, made, keeping, writes.clone()).map_err(Error::new)?;
         Ok(Self::image(path.to_owned(), writes, device))

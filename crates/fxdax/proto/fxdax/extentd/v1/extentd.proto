@@ -72,7 +72,8 @@
 // Cells (TASK-364): every branch is a volume of a tenant's cell, kept under the cell's prefix in
 // the bucket, and a host takes a cell whole, its volumes' leases with it. A branch is named by its
 // tenant, its cell and its ID: `tenant`, `cell` and `branch` beside one another. Tenants and cells
-// are IDs alone, which the caller keeps the meaning of.
+// are IDs alone, which the caller keeps the meaning of. A granted tenant's ID is its grant's
+// (Grant's `id`); the daemon's own socket's VM processes make stores of tenant 0.
 
 syntax = "proto3";
 
@@ -184,13 +185,18 @@ message CreateStoreRequest {
   string path = 1;
   // The most bytes it holds.
   uint64 capacity = 2;
-  // The branch kept in the daemon's bucket to take, or 0 for a new branch.
+  // The branch kept in the daemon's bucket to take, of `cell` (NOT_FOUND, ENOENT, if it has none;
+  // INVALID_ARGUMENT, EINVAL, of a cell of 0); or 0 for a new branch, its ID the bucket's to give
+  // (TASK-364), which the response says.
   uint64 branch = 3;
   // The fencing token to place it at (PlaceStore), if any: of a placement no earlier than the
   // last writer's of the branch to take, or the take fails (FAILED_PRECONDITION, ESTALE). A point
   // has no writer, and needs none.
   optional uint64 token = 4;
-  // The tenant whose cell the branch is a volume of.
+  // The tenant whose cell the branch is a volume of. Of a new cell in a granted tenant's
+  // directory, that tenant's ID (Grant's `id`), or 0 for it; another is refused
+  // (PERMISSION_DENIED, EPERM). A point of another tenant's there is the VM manager's to give: the
+  // tenant's VM processes restore from it, each restore a cell of their tenant's.
   uint64 tenant = 5;
   // The cell, or 0 for a new one: the store is a new volume of it, named as `path`'s last name
   // is, unless it takes a branch it has.
@@ -229,7 +235,8 @@ message ImportImageRequest {
   string image = 3;
   // The image in the layout to import, by its reference; empty for its only image.
   string reference = 4;
-  // The tenant of the new cell the store is the one volume of.
+  // The tenant of the new cell the store is the one volume of. In a granted tenant's directory,
+  // that tenant's ID, or 0 for it; another is refused (PERMISSION_DENIED, EPERM).
   uint64 tenant = 5;
 }
 
@@ -255,9 +262,10 @@ message ForkStoreRequest {
   // if its commit was made; its host crashing part way, `to` is left unmade, which DeleteStore of
   // `to` deletes, and the fork stands or never was, as the bucket has it.
   string to = 2;
-  // The fork's branch, or 0 for a new one: the one volume of a new cell of `from`'s tenant
-  // (TASK-364).
-  uint64 branch = 3;
+  // Once the fork's branch, named; now always a new one, its ID the bucket's to give (TASK-364):
+  // the one volume of a new cell of the granted tenant's whose directory `to` is in, or else of
+  // `from`'s tenant.
+  reserved 3;
   // Whether the fork is a point (TASK-158): a name of `from`'s state as it is, which any number of
   // hosts read and fork at once, and none writes, as a snapshot's is. Forks of it on another host:
   // CreateStore of its branch there, then ForkStore from that copy, as many and on as many hosts
@@ -564,6 +572,10 @@ message GrantRequest {
   optional uint32 uid = 3;
   // The group to give its socket to; the daemon's own, if not given.
   optional uint32 gid = 4;
+  // Its ID in the bucket, not 0 (TASK-364): the stores in its directory are volumes of its cells,
+  // under its prefix, and its VM processes open no store of another tenant's cells
+  // (PERMISSION_DENIED, EACCES). Granting it again with another ID is refused (ALREADY_EXISTS).
+  uint64 id = 5;
 }
 
 // The tenant's VM socket.

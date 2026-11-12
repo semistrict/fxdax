@@ -77,8 +77,8 @@ fn tenants_past_their_disk_limits_are_refused_while_others_write() {
     let (acme, globex) = (dir.path().join("acme"), dir.path().join("globex"));
     std::fs::create_dir(&acme).unwrap();
     std::fs::create_dir(&globex).unwrap();
-    let acme_socket = daemon.grant("acme", &acme, None).unwrap();
-    let globex_socket = daemon.grant("globex", &globex, None).unwrap();
+    let acme_socket = daemon.grant("acme", 1, &acme, None).unwrap();
+    let globex_socket = daemon.grant("globex", 2, &globex, None).unwrap();
 
     // Acme's base, which its VMs' stores are forks of, uploaded, as its VM manager makes them.
     let base = acme.join("base");

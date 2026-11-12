@@ -293,6 +293,23 @@ struct Control {
     grants: Arc<Grants>,
 }
 
+impl Control {
+    /// The tenant of a new cell whose store is made at `path`, that the caller names `tenant`
+    /// (TASK-364): in a granted tenant's directory, that tenant's, which `tenant` is or is 0 for
+    /// (`EPERM` otherwise); elsewhere, `tenant`. A store of a cell there already, a point the VM
+    /// manager gives a tenant to restore from (TASK-154), may be another tenant's: the tenant's VM
+    /// processes write no store of it (`Tenant::reaches`), and its restores are of their own.
+    fn new_cell_at(&self, path: &Path, tenant: u64) -> Result<u64, Status> {
+        match self.grants.tenant_at(path) {
+            Some(granted) if tenant == crate::host_store::NO_TENANT || tenant == granted => {
+                Ok(granted)
+            }
+            Some(_) => Err(status(Errno::EPERM)),
+            None => Ok(tenant),
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl Extentd for Control {
     async fn create_store(
@@ -306,6 +323,10 @@ impl Extentd for Control {
             Ok(VolumeKind::Fxfs) => Kind::Fxfs,
             Ok(VolumeKind::Sqlite) => Kind::Sqlite,
             Err(_) => return Err(status(Errno::EINVAL)),
+        };
+        let tenant = match cell {
+            0 => self.new_cell_at(&store, tenant)?,
+            _ => tenant,
         };
         let branch = crate::Branch { cell: crate::Cell { tenant, id: cell }, id: branch };
         let made = stores::create(store, capacity, branch, (token, kind)).await;
@@ -324,6 +345,7 @@ impl Extentd for Control {
             request.into_inner();
         let (store, image) = (path(store)?, path(image)?);
         let reference = Some(reference).filter(|reference| !reference.is_empty());
+        let tenant = self.new_cell_at(&store, tenant)?;
         let made = stores::import(store, capacity, image, reference, tenant).await;
         reply(made.map(|made| ImportImageResponse {
             branch: made.id,
@@ -336,9 +358,10 @@ impl Extentd for Control {
         &self,
         request: Request<ForkStoreRequest>,
     ) -> Result<Response<ForkStoreResponse>, Status> {
-        let ForkStoreRequest { from, to, branch, point } = request.into_inner();
+        let ForkStoreRequest { from, to, point } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
-        let forked = stores::fork(from, to, branch, point).await;
+        let tenant = self.grants.tenant_at(&to);
+        let forked = stores::fork(from, to, tenant, point).await;
         reply(forked.map(|forked| ForkStoreResponse {
             branch: forked.id,
             tenant: forked.cell.tenant,
@@ -532,11 +555,11 @@ impl Extentd for Control {
         &self,
         request: Request<GrantRequest>,
     ) -> Result<Response<GrantResponse>, Status> {
-        let GrantRequest { tenant, dir, uid, gid } = request.into_inner();
+        let GrantRequest { tenant, dir, uid, gid, id } = request.into_inner();
         let dir = path(dir)?;
         let grants = self.grants.clone();
         let granted = stores::blocking(move || {
-            let socket = grants.grant(&tenant, &dir, uid, gid)?;
+            let socket = grants.grant(&tenant, id, &dir, (uid, gid))?;
             let socket = socket.into_os_string().into_string().map_err(|_| Errno::EINVAL)?;
             Ok(GrantResponse { socket })
         });
@@ -699,7 +722,7 @@ impl Client {
         to: &Path,
         point: bool,
     ) -> Result<crate::Branch, crate::Error> {
-        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, branch: 0, point };
+        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, point };
         let what = format!("forking the store at {} to {}", from.display(), to.display());
         let response = self.call(what, |mut c| async move { c.fork_store(request).await })?;
         Ok(branched(response.tenant, response.cell, response.branch))
@@ -770,6 +793,13 @@ impl Client {
         Ok(listed.stores)
     }
 
+    /// The branch of the store at `path`, in its cell (`StatStore`'s `tenant`, `cell` and
+    /// `branch`, TASK-364).
+    pub fn branch(&self, path: &Path) -> Result<crate::Branch, crate::Error> {
+        let stat = self.stat_store(path)?;
+        Ok(branched(stat.tenant, stat.cell, stat.branch))
+    }
+
     /// The epoch of the latest commit of the store at `path` (`StatStore`'s `committed`).
     pub fn committed(&self, path: &Path) -> Result<u64, crate::Error> {
         Ok(self.stat_store(path)?.committed)
@@ -782,16 +812,16 @@ impl Client {
         self.call(what, |mut c| async move { c.sync_store(request).await }).map(drop)
     }
 
-    /// Grants the tenant `tenant`, whose stores are in `dir`, its VM socket, given to `uid` and
-    /// `gid` where named, and returns its path (`Grant`).
+    /// Grants the tenant `tenant`, of the ID `id` in the bucket (TASK-364), whose stores are in
+    /// `dir`, its VM socket, given to `uid` and `gid` where named, and returns its path (`Grant`).
     pub fn grant(
         &self,
-        tenant: &str,
+        (tenant, id): (&str, u64),
         dir: &Path,
         uid: Option<u32>,
         gid: Option<u32>,
     ) -> Result<PathBuf, crate::Error> {
-        let request = GrantRequest { tenant: tenant.to_owned(), dir: name(dir)?, uid, gid };
+        let request = GrantRequest { tenant: tenant.to_owned(), dir: name(dir)?, uid, gid, id };
         let response =
             self.call(format!("granting {tenant}"), |mut c| async move { c.grant(request).await })?;
         Ok(response.socket.into())

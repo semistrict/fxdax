@@ -24,6 +24,8 @@ extent_store.workspace = true
 rand.workspace = true
 fxdax = { path = "../fxdax" }
 tempfile.workspace = true
+extent_remote.workspace = true
+tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fxdax = { path = "../fxdax" }

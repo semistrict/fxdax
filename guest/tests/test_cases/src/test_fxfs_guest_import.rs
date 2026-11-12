@@ -116,10 +116,11 @@ mod host {
             oci_layout(&layout, "fxdax/test:import", &layers()?)?;
             let base = dir.join("base");
             block_on(fxdax::import::store(&base, CAPACITY, &layout, Some("fxdax/test:import")))?;
-            // A branch of each case's own: one run's daemon keeps both cases' branches in its
-            // bucket, where the second's would find the first's moved on (stale).
-            let branch = if self.dax { 0x1406 } else { 0x1405 };
-            fxdax::ExtentStore::open(&base)?.fork(dir.join("extents"), branch)?;
+            // A branch of each case's own, as each fork's is, its ID its bucket's to give: the
+            // one volume of a new cell of the base's tenant (TASK-364).
+            let base = fxdax::ExtentStore::open(&base)?;
+            base.fork(dir.join("extents"), fxdax::new_cell(base.branch().cell.tenant))?;
+            drop(base);
 
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;

@@ -6,8 +6,8 @@
 //! stores, extent cache and kernel.
 
 use super::codec::{
-    self, Advanced, Data, Fault, Info, Made, Opened, ReadInto, Request, Stage, StageOp, Told,
-    stream_bytes,
+    self, Advanced, Data, Fault, Forked, Info, Made, Opened, ReadInto, Request, Stage, StageOp,
+    Told, stream_bytes,
 };
 use super::pool::Pool;
 use super::snapshot;
@@ -187,6 +187,9 @@ pub(super) fn stop_accepting() {
 /// stores opened in its arena, and what reads into the extent cache for them (`pages::Arena`).
 pub struct Tenant {
     name: String,
+    /// fxdax: its ID in the bucket (TASK-364), whose cells its stores are volumes of: a granted
+    /// tenant's, its grant's; the default tenant's, [`NO_TENANT`](crate::host_store::NO_TENANT).
+    id: u64,
     policy: Policy,
     memory: Memory,
     /// fxdax: the host's disk its directory takes, a granted tenant's (TASK-94).
@@ -305,17 +308,23 @@ pub(super) fn default_tenant() -> Result<Arc<Tenant>, Errno> {
         Errno::EIO
     })?;
     let (name, policy, disk) = (String::new(), Policy::default_tenant(), None);
-    let tenant = Tenant { name, policy, memory, disk };
+    let id = crate::host_store::NO_TENANT;
+    let tenant = Tenant { name, id, policy, memory, disk };
     Ok(DEFAULT.get_or_init(|| Arc::new(tenant)).clone())
 }
 
 impl Tenant {
-    /// A new tenant named `name`, granted, whose stores are in `dir`, with an arena of its own.
-    pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
+    /// A new tenant named `name`, granted, of the ID `id` in the bucket (TASK-364), whose stores
+    /// are in `dir`, with an arena of its own.
+    pub fn new(
+        name: impl Into<String>,
+        id: u64,
+        dir: impl AsRef<Path>,
+    ) -> std::io::Result<Arc<Self>> {
         let (name, dir) = (name.into(), dir.as_ref().canonicalize()?);
         let disk = Some(super::disk::Disk::new(&name, &dir));
         let policy = Policy::granted(dir);
-        let tenant = Arc::new(Self { name, policy, memory: Memory::new()?, disk });
+        let tenant = Arc::new(Self { name, id, policy, memory: Memory::new()?, disk });
         super::memory::register(&tenant);
         Ok(tenant)
     }
@@ -323,6 +332,31 @@ impl Tenant {
     /// Its name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// fxdax: its ID in the bucket (TASK-364).
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// fxdax: its ID, if it is granted (TASK-364): the default tenant's VM processes are the
+    /// daemon's user's (TASK-155), which reach any tenant's stores, and make them of tenant 0.
+    fn granted(&self) -> Option<u64> {
+        self.dir().map(|_| self.id)
+    }
+
+    /// fxdax: `EACCES` if it is granted and the store at `path` is a volume of another tenant's
+    /// cell (TASK-364), as its description says, read before it is opened, which would take its
+    /// branch from its writer: the daemon makes its own cells' stores alone in its directory, but
+    /// for the points of others' its VM manager gives it, which it restores from, as forks of its
+    /// own; and a store put there by other means is no more its than it was.
+    fn reaches(&self, path: &Path) -> Result<(), Errno> {
+        let Some(id) = self.granted() else { return Ok(()) };
+        match extent_store::host_branch(path) {
+            Ok(branch) if branch.cell.tenant != id => Err(Errno::EACCES),
+            // No store yet, which it makes of its own cell; or one its opening fails, saying why.
+            _ => Ok(()),
+        }
     }
 
     /// Its stores' directory, if it is a granted tenant's: the default tenant has none
@@ -1353,27 +1387,28 @@ impl Connection {
             Request::Pin(extent) => store.pin(*extent),
             Request::Unpin(extent) => store.unpin(*extent),
             // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
-            Request::Fork { path, branch, quiescent } => {
+            Request::Fork { path, quiescent } => {
                 // fxdax: a store made, within its tenant's disk (TASK-94).
                 let _admitted = self.tenant.admit_to_disk(super::disk::STORE_MADE)?;
                 // fxdax: a snapshot's point, refused while the window holds private pages, whose
                 // bytes no extent holds (ExtentStore::point, TASK-203). Each refusal says why
                 // here, as the VMM's error can't (TASK-92.14).
-                // fxdax: the one volume of a new cell of the store's tenant, of the ID the guest
-                // gives (TASK-364).
-                let child = crate::host_store::fork_of(store.branch(), *branch);
+                // fxdax: the one volume of a new cell of the store's tenant, of an ID of the
+                // bucket's giving, which the reply says (TASK-364).
+                let cell = crate::host_store::fork_cell(store.branch());
                 let forked =
-                    if *quiescent { store.point(path, child) } else { store.fork(path, child) };
+                    if *quiescent { store.point(path, cell) } else { store.fork(path, cell) };
                 if let Err(err) = &forked
                     && err.errno() == Some(Errno::EBUSY)
                 {
                     log::warn!("extentd: forking to {} refused: {err:#}", path.display());
                 }
-                forked.map_err(|err| {
+                let branch = forked.map_err(|err| {
                     stores::errno_of(format_args!("forking to {}", path.display()), err)
                 })?;
                 // fxdax: the fork made, its reply lost: its guest takes it to have failed.
                 fail::fail_point!("extentd::forked", |_| Err(Errno::EIO));
+                reply.args = Forked { branch: branch.id }.args();
                 Ok(())
             }
             Request::Info => store.info().map(|info| reply.args = Info(info).args()),
@@ -1492,6 +1527,7 @@ impl Connection {
     /// process of the writer's commits after its view's ([`COMMITTED`]); and returns its branch.
     fn follow(&self, path: &Path) -> Result<u64, Errno> {
         let opening = self.opening()?;
+        self.tenant.reaches(path)?;
         let follower = stores::followed(path, self.arena())?;
         if follower.access().public && !self.tenant.policy.follows_public_bases {
             return Err(Errno::EPERM);
@@ -1550,6 +1586,8 @@ impl Connection {
         }
         let opening = self.opening()?;
         let hold = stores::hold_to_write(&store_key(path), self.this.clone()).await?;
+        // fxdax: nor one of another tenant's cells (TASK-364).
+        self.tenant.reaches(path)?;
         // fxdax: a store it makes, within its tenant's disk (TASK-94).
         let makes = matches!(how, codec::Opening::Create(..) | codec::Opening::ForkFrom { .. });
         let _admitted = match makes && !path.exists() {
@@ -1607,11 +1645,12 @@ impl Connection {
             // store: removed first, as deleting it would (TASK-79.84).
             (None, codec::Opening::ForkFrom { from, capacity, .. }) => {
                 stores::removed_if_unmade(path)?;
-                stores::fork_from(from, *capacity, path).await?;
+                stores::fork_from(from, *capacity, (path, self.tenant.granted())).await?;
                 Arc::new(open_store(path, None, Some(arena))?)
             }
             (None, codec::Opening::Create(capacity, kind)) => {
-                Arc::new(open_store(path, Some((*capacity, *kind)), Some(arena))?)
+                let new = stores::New { capacity: *capacity, kind: *kind, tenant: self.tenant.id };
+                Arc::new(open_store(path, Some(new), Some(arena))?)
             }
             (None, _) => Arc::new(open_store(path, None, Some(arena))?),
         };

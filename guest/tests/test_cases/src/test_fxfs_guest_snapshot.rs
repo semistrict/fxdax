@@ -240,22 +240,24 @@ mod host {
     /// What a VM manager does for a tenant's VM to restore the snapshot at `snapshot` where its
     /// point isn't (TASK-154): the tenant granted `dir`, and the point's branch, as the daemon says
     /// it, not as the snapshot does, made a store at `point` in it. Returns the tenant's socket,
-    /// given to the jail's user, if Firecracker runs in one.
+    /// given to the jail's user, if Firecracker runs in one. The tenant is named and of an ID in
+    /// the bucket (TASK-364); the point stays the snapshot's tenant's, and the restores are the
+    /// tenant's.
     fn take_for_tenant(
         extentd: &Path,
         snapshot: &Path,
         point: &Path,
         dir: &Path,
-        tenant: &str,
+        tenant: (&str, u64),
     ) -> anyhow::Result<PathBuf> {
         let control = crate::common::control(extentd)?;
         let mut taken = snapshot.as_os_str().to_owned();
         taken.push(".extent-extents");
         // In the bucket once taken: no sync.
-        let branch = control.stat_store(Path::new(&taken))?.branch;
+        let branch = control.branch(Path::new(&taken))?;
         let id = |name: &str| std::env::var(name).ok().map(|id| id.parse()).transpose();
         let socket = control.grant(tenant, dir, id("FXDAX_JAIL_UID")?, id("FXDAX_JAIL_GID")?)?;
-        control.create_store(point, CAPACITY, Some(branch), None)?;
+        control.create_store(point, CAPACITY, branch, None)?;
         Ok(socket)
     }
 
@@ -383,7 +385,8 @@ mod host {
             // Restored, told its name: each into its own store, but resuming.
             let mut restored = Vec::new();
             let mut loads = Vec::new();
-            for &name in self.restores(phase) {
+            // Each restore's tenant, of an ID of its own (TASK-364), where it has one.
+            for (&name, id) in self.restores(phase).iter().zip(1..) {
                 let elsewhere = dir.join(format!("elsewhere-{name}"));
                 let overrides = match self.mode {
                     Mode::Zygote => serde_json::json!([
@@ -407,8 +410,13 @@ mod host {
                         std::fs::create_dir_all(&elsewhere)?;
                         let point = elsewhere.join("point");
                         let tenant = format!("restored-{name}");
-                        let socket =
-                            take_for_tenant(&extentd, &snapshot, &point, &elsewhere, &tenant)?;
+                        let socket = take_for_tenant(
+                            &extentd,
+                            &snapshot,
+                            &point,
+                            &elsewhere,
+                            (&tenant, id),
+                        )?;
                         serde_json::json!([{
                             "id": "extents",
                             "path_on_host": store(&elsewhere, name),

@@ -80,7 +80,7 @@ pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
         Failure::Remote(Error::Stale | Error::Diverged) => Some(Errno::ESTALE),
         Failure::Remote(Error::NoBranch | Error::NoCell | Error::NoVolume(_))
         | Failure::PointDeleted => Some(Errno::ENOENT),
-        Failure::Remote(Error::ChildTaken(_) | Error::VolumeExists(_)) => Some(Errno::EEXIST),
+        Failure::Remote(Error::IdTaken(_) | Error::VolumeExists(_)) => Some(Errno::EEXIST),
         Failure::Remote(Error::VolumeName(_)) => Some(Errno::EINVAL),
         // A branch of a newer format than this host reads, until it is upgraded (doc-11).
         Failure::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
@@ -568,7 +568,7 @@ mod tests {
         }
         parent.commit(None).unwrap();
         let child = dir.path().join("child");
-        parent.fork(&child, crate::host_store::fork_of(branch, branch.id + 1)).unwrap();
+        parent.fork_to(&child, crate::host_store::fork_child(branch)).unwrap();
         drop(parent);
         crate::host_store::delete(&path, Some(&bucket), crate::host_store::token).unwrap();
         // The fork's store, open all along: the segment compacted, 1 to 3 in its moves.
@@ -729,7 +729,7 @@ mod tests {
         let opened = crate::host_store::create_unmade(
             &path,
             1 << 30,
-            extent_remote::layout::test_branch(7),
+            crate::host_store::BranchOf::Named(extent_remote::layout::test_branch(7)),
             extent_remote::cell::Kind::Fxfs,
             Some(&url_of(&bucket)),
             options,
@@ -791,7 +791,7 @@ mod tests {
         let opened = crate::host_store::create(
             &path,
             1 << 30,
-            branch,
+            crate::host_store::BranchOf::Named(branch),
             extent_remote::cell::Kind::Fxfs,
             idle(),
         )
@@ -1826,7 +1826,7 @@ mod tests {
         let forks: Vec<_> = (0..10).map(|fork| dir.path().join(format!("fork-{fork}"))).collect();
         for fork in &forks {
             let child = crate::host_store::new_alone();
-            measure("fork", &mut || store.fork(fork, child).unwrap());
+            measure("fork", &mut || store.fork_to(fork, child).unwrap());
         }
         drop(store);
         for fork in &forks {
@@ -2206,9 +2206,7 @@ mod tests {
         let extent = write(&source, 1, &pattern(1, BLOCK));
         source.commit(Some(b"root")).unwrap();
         let path = dir.path().join("point");
-        source
-            .point(&path, crate::host_store::fork_of(source.branch(), source.branch().id + 1))
-            .unwrap();
+        source.point_to(&path, crate::host_store::fork_child(source.branch())).unwrap();
         drop(source);
 
         let point = reopened(&path, idle()).unwrap();
@@ -2229,10 +2227,7 @@ mod tests {
         assert_eq!(point.info().unwrap().capacity, capacity);
         assert_eq!(point.root().unwrap(), b"root");
         point
-            .fork(
-                dir.path().join("fork"),
-                crate::host_store::fork_of(point.branch(), point.branch().id + 1),
-            )
+            .fork_to(dir.path().join("fork"), crate::host_store::fork_child(point.branch()))
             .unwrap();
         point.make_public().unwrap();
     }
@@ -2248,13 +2243,13 @@ mod tests {
         let own = write(&parent, 2, &large);
         // Committed, not yet durable: the fork makes it so, and uploads it, first.
         parent.commit_ordered(Some(b"root")).unwrap();
-        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
+        let child = crate::host_store::fork_child(parent.branch());
         let checkpoints = || {
             let prefix = extent_remote::layout::checkpoints(parent.branch());
             futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix)).unwrap()
         };
         assert_eq!(checkpoints().len(), 0);
-        parent.fork(dir.path().join("child"), child).unwrap();
+        parent.fork_to(dir.path().join("child"), child).unwrap();
         // A checkpoint at the fork, which the child recovers from.
         assert_eq!(checkpoints().len(), 1);
         write(&parent, 3, &pattern(3, BLOCK));
@@ -2323,10 +2318,10 @@ mod tests {
         let segment = |seq| extent_remote::layout::segment(branch, seq);
         let (forking, next) = (segment(2), segment(3));
         gated.hold.send_replace(Hold::Key(forking));
-        let child = crate::host_store::fork_of(branch, branch.id + 1);
+        let child = crate::host_store::fork_child(branch);
         let fork = {
             let (parent, path) = (parent.clone(), dir.path().join("child"));
-            std::thread::spawn(move || parent.fork(path, child))
+            std::thread::spawn(move || parent.fork_to(path, child))
         };
         gated.wait_held(1);
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -2505,7 +2500,7 @@ mod tests {
     ) -> extent_remote::record::Record {
         write(parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
-        parent.fork(path, child).unwrap();
+        parent.fork_to(path, child).unwrap();
         futures::executor::block_on(branch::record(&**bucket, child)).unwrap().unwrap()
     }
 
@@ -2519,10 +2514,10 @@ mod tests {
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent =
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
-        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
+        let child = crate::host_store::fork_child(parent.branch());
         forked(&parent, &bucket, &dir.path().join("child"), child);
         let again = dir.path().join("again");
-        let forked = parent.fork(&again, child);
+        let forked = parent.fork_to(&again, child);
         let errno = forked.as_ref().map(drop).map_err(crate::Error::errno);
         let forked = forked.map_err(|err| err.to_string());
         assert_eq!((forked, again.exists()), (anothers(child), false));
@@ -2662,10 +2657,10 @@ mod tests {
             let forking = extent_remote::layout::segment(branch, 2);
             gated.hold.send_replace(Hold::Key(forking.clone()));
             next.hold.send_replace(Hold::Key(forking));
-            let child = crate::host_store::fork_of(branch, branch.id + 1);
+            let child = crate::host_store::fork_child(branch);
             let fork = {
                 let path = dir.join("child");
-                std::thread::spawn(move || parent.fork(path, child))
+                std::thread::spawn(move || parent.fork_to(path, child))
             };
             gated.wait_held(1);
             let taking = {
@@ -2805,12 +2800,12 @@ mod tests {
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent =
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
-        let other = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
+        let other = crate::host_store::fork_child(parent.branch());
         let others = others(&dir.path().join("other"), &bucket, other);
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
         let path = dir.path().join("child");
-        let forked = parent.fork(&path, other).map_err(|err| err.errno());
+        let forked = parent.fork_to(&path, other).map_err(|err| err.errno());
         assert_eq!((forked, path.exists()), (Err(Some(crate::Errno::EEXIST)), false));
 
         // The parent commits and uploads on, its branch naming no fork.
@@ -2843,10 +2838,10 @@ mod tests {
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
         gated.hold.send_replace(Hold::Key(extent_remote::layout::segment(branch, 2)));
-        let child = crate::host_store::fork_of(branch, branch.id + 1);
+        let child = crate::host_store::fork_child(branch);
         let fork = {
             let path = path.to_owned();
-            std::thread::spawn(move || parent.fork(path, child))
+            std::thread::spawn(move || parent.fork_to(path, child))
         };
         gated.wait_held(1);
         (branch, child, fork)
@@ -2900,10 +2895,10 @@ mod tests {
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
-        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
+        let child = crate::host_store::fork_child(parent.branch());
         let path = dir.path().join("child");
         let flushed = fail::FailGuard::new("fork::flushed", "return").unwrap();
-        let forked = parent.fork(&path, child).map_err(|err| format!("{err:#}"));
+        let forked = parent.fork_to(&path, child).map_err(|err| format!("{err:#}"));
         drop(flushed);
         assert!(!path.exists(), "the fork's directory is left");
 

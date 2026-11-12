@@ -91,7 +91,7 @@ impl Daemon {
         to: &Path,
         point: bool,
     ) -> Result<fxdax::Branch, tonic::Status> {
-        let request = ForkStoreRequest { from: name(from), to: name(to), branch: 0, point };
+        let request = ForkStoreRequest { from: name(from), to: name(to), point };
         let response = self.runtime.block_on(self.client.fork_store(request))?.into_inner();
         let cell = fxdax::Cell { tenant: response.tenant, id: response.cell };
         Ok(fxdax::Branch { cell, id: response.branch })
@@ -140,14 +140,17 @@ impl Daemon {
         Ok(fxdax::Branch { cell, id: response.branch })
     }
 
-    /// Grants `tenant`, whose stores are in `dir`, its socket, given to `uid`, if named.
+    /// Grants `tenant`, of the ID `id` in the bucket (TASK-364), whose stores are in `dir`, its
+    /// socket, given to `uid`, if named.
     pub fn grant(
         &mut self,
         tenant: &str,
+        id: u64,
         dir: &Path,
         uid: Option<u32>,
     ) -> Result<PathBuf, tonic::Status> {
-        let request = GrantRequest { tenant: tenant.to_owned(), dir: name(dir), uid, gid: None };
+        let (tenant, dir) = (tenant.to_owned(), name(dir));
+        let request = GrantRequest { tenant, dir, uid, gid: None, id };
         Ok(self.runtime.block_on(self.client.grant(request))?.into_inner().socket.into())
     }
 

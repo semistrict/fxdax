@@ -66,7 +66,7 @@ pub(crate) enum Request<'a> {
     /// [`FAULT`].
     Fault(Fault),
     /// [`FORK`]: to `branch`, a new directory at `path`; a point if `quiescent`.
-    Fork { path: PathBuf, branch: u64, quiescent: bool },
+    Fork { path: PathBuf, quiescent: bool },
     /// [`RESIZED`]: the guest's answer to a shrink to `capacity` bytes.
     Resized { capacity: u64, took: bool },
     /// [`MAPPINGS`].
@@ -337,9 +337,9 @@ impl<'a> Request<'a> {
                     | flag(*probe, FAULT_PROBE);
                 message(flags, [*offset, 0, 0, 0, 0])
             }
-            Request::Fork { path, branch, quiescent } => {
+            Request::Fork { path, quiescent } => {
                 let flags = flag(*quiescent, FORK_QUIESCENT);
-                message(flags, [*branch, 0, 0, 0, 0]).carrying(path.as_os_str().as_bytes())
+                message(flags, [0; 5]).carrying(path.as_os_str().as_bytes())
             }
             Request::Resized { capacity, took } => {
                 message(0, [*capacity, u64::from(*took), 0, 0, 0])
@@ -523,7 +523,7 @@ impl<'a> Request<'a> {
             }
             FORK => {
                 let quiescent = has(FORK_QUIESCENT);
-                Request::Fork { path: path(payload)?, branch: args[0], quiescent }
+                Request::Fork { path: path(payload)?, quiescent }
             }
             RESIZED => {
                 nothing()?;
@@ -915,6 +915,21 @@ pub(crate) struct Advanced {
     pub epoch: u64,
 }
 
+/// fxdax: a [`FORK`]'s reply: the fork's branch's ID, the bucket's to give (TASK-364).
+pub(crate) struct Forked {
+    pub branch: u64,
+}
+
+impl Forked {
+    pub fn args(&self) -> [u64; 5] {
+        [self.branch, 0, 0, 0, 0]
+    }
+
+    pub fn from_args(args: [u64; 5]) -> Self {
+        Self { branch: args[0] }
+    }
+}
+
 impl Advanced {
     pub fn args(&self) -> [u64; 5] {
         [self.epoch, 0, 0, 0, 0]
@@ -1062,7 +1077,7 @@ mod tests {
             },
             Request::Fault(Fault { offset: a, access: fields.access, page: one, probe: false }),
             Request::Fault(Fault { offset: a, access: Access::Read, page: true, probe: true }),
-            Request::Fork { path: path.clone(), branch: b, quiescent: one },
+            Request::Fork { path: path.clone(), quiescent: one },
             Request::Resized { capacity: a, took: one },
             Request::Mappings,
             Request::Advance,
@@ -1421,8 +1436,8 @@ mod tests {
                 vec![],
             ),
             (
-                Request::Fork { path: "p".into(), branch: 3, quiescent: true },
-                header(FORK, FORK_QUIESCENT, &[3]),
+                Request::Fork { path: "p".into(), quiescent: true },
+                header(FORK, FORK_QUIESCENT, &[]),
                 b"p".to_vec(),
             ),
             (
@@ -1624,7 +1639,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (6, 0x95bb_5555_9d83_050c);
+        const WIRE: (u64, u64) = (7, 0xc62b_cc79_f4d1_1e11);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),

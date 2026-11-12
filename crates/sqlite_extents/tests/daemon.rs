@@ -22,9 +22,14 @@ use storage_device::DeviceHolder;
 /// directory, which lives as long as the one returned: a socket's path is short (SUN_LEN), and one
 /// under the target directory of a checkout deep in a host's scratch disk was not (TASK-344).
 fn serve() -> (tempfile::TempDir, PathBuf) {
+    serve_from("memory:///sqlite-extents")
+}
+
+/// A daemon as [`serve`] runs it, of the bucket at `url`.
+fn serve_from(url: &str) -> (tempfile::TempDir, PathBuf) {
     // SAFETY: before this process starts any other thread.
     unsafe {
-        std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///sqlite-extents");
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", url);
         std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
     }
     let sockets = tempfile::tempdir().unwrap();
@@ -130,7 +135,7 @@ fn a_fork_of_a_store_and_the_store_go_their_own_ways() {
     let (path, forked) = (dir.path().join("store"), dir.path().join("fork"));
     let parent = Mounted::new(&socket, &path, "fxdax-daemon-parent");
     let mut parent_rows = common::fill(&parent.connection);
-    parent.store.fork(&forked, rand::random::<u64>().max(2)).unwrap();
+    parent.store.fork(&forked).unwrap();
     let fork = Mounted::new(&socket, &forked, "fxdax-daemon-fork");
     let mut fork_rows = parent_rows.clone();
     common::check(&fork.connection, &fork_rows);
@@ -147,4 +152,57 @@ fn a_fork_of_a_store_and_the_store_go_their_own_ways() {
         common::check(&mounted.connection, rows);
         mounted.close();
     }
+}
+
+/// TASK-364: a SQLite volume is a volume of its cell, fenced with it. Another host, of a later
+/// placement, takes the cell, and the volume's branch with it: the first host's commit, durable on
+/// its disk alone, is not in the bucket, its wait for it failing; its commits after it fail.
+#[test]
+fn a_database_is_fenced_with_its_cell() {
+    use extent_remote::cell;
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let bucket = dir.path().join("bucket");
+    std::fs::create_dir(&bucket).unwrap();
+    let url = format!("file://{}", bucket.display());
+    let (sockets, socket) = serve_from(&url);
+    let control_socket = sockets.path().join("control.sock");
+    let listener = UnixListener::bind(&control_socket).unwrap();
+    let tenants = sockets.path().join("tenants");
+    std::fs::create_dir(&tenants).unwrap();
+    std::thread::spawn(move || fxdax::extentd::control::serve_control(listener, tenants));
+    let control = fxdax::extentd::control::Client::connect(&control_socket).unwrap();
+
+    let store = dir.path().join("store");
+    let volume = daemon::open(&socket, &store, 1 << 30, 1 << 30, Options::default()).unwrap();
+    let _registration = register("fxdax-fenced", volume.clone()).unwrap();
+    let connection =
+        Connection::open_with_flags_and_vfs("app.db", OpenFlags::default(), "fxdax-fenced")
+            .unwrap();
+    connection.execute_batch("CREATE TABLE t (k INTEGER PRIMARY KEY, v TEXT)").unwrap();
+    connection.execute("INSERT INTO t VALUES (1, 'ours')", []).unwrap();
+    control.sync_store(&store).unwrap();
+    let ours = control.branch(&store).unwrap();
+    let objects = extent_remote::store::Store::from_url(&url).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let held = runtime.block_on(cell::read(&objects, ours.cell)).unwrap().unwrap();
+    let named = cell::Volume { branch: ours.id, kind: cell::Kind::Sqlite };
+    assert_eq!(held.volumes, std::collections::BTreeMap::from([("store".to_owned(), named)]));
+    assert_eq!((held.epoch, held.token), (1, 1));
+
+    // Another host's, placed later.
+    let objects = std::sync::Arc::new(objects);
+    runtime.block_on(async {
+        let (held, _) = cell::hold(&*objects, ours.cell, (2, 2), false, None).await.unwrap();
+        // Its writer fences the branch (TASK-371).
+        drop(extent_remote::Writer::open(objects.clone(), ours, 0x22, held.epoch).await.unwrap());
+    });
+    connection.execute("INSERT INTO t VALUES (2, 'cut off')", []).unwrap();
+    let fenced = control.sync_store(&store).unwrap_err();
+    assert_eq!(fenced.errno(), Some(fxdax::Errno::EROFS), "{fenced:#}");
+    let refused = connection.execute("INSERT INTO t VALUES (3, 'refused')", []).unwrap_err();
+    assert_eq!(
+        refused.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::SystemIoFailure),
+        "{refused}"
+    );
 }

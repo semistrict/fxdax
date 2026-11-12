@@ -671,8 +671,8 @@ impl World {
                 }
             }
             Event::Twinned { child, taken } => match taken {
-                [(owner, Ok(())), (lost, Err(Error::ChildTaken(_)))]
-                | [(lost, Err(Error::ChildTaken(_))), (owner, Ok(()))] => {
+                [(owner, Ok(())), (lost, Err(Error::IdTaken(_)))]
+                | [(lost, Err(Error::IdTaken(_))), (owner, Ok(()))] => {
                     // Its fork's VM manager told: a branch from now on. The other's host deletes
                     // what it thinks its fork made.
                     self.branches.insert(child, Branch::forked(None, None, false, owner));
@@ -700,7 +700,7 @@ impl World {
                     }
                     // The fork whose child's ID it took recorded it first: the fork's child, as it
                     // was.
-                    Err(Error::ChildTaken(_)) if restore.taken.is_some() => {
+                    Err(Error::IdTaken(_)) if restore.taken.is_some() => {
                         drop(self.branches.insert(child, restore.taken.take().unwrap()))
                     }
                     // The point went, or the fork was given up on: its host deletes it.
@@ -2044,7 +2044,8 @@ impl World {
             needed.extend(recovered.touched);
             // Its writer may name its extents anywhere on their ways from where they were sealed,
             // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
-            let lease = block_on(branch::lease_epoch(&direct, &layout::lease(sim_branch(branch)))).ok();
+            let lease =
+                block_on(branch::lease_epoch(&direct, &layout::lease(sim_branch(branch)))).ok();
             let behind = lease != recovered.checkpointer;
             // Its fences, which a writer taken over must find; and, while a writer takes it over,
             // its lease of an epoch past its state's, all its segments (TASK-371).
@@ -2084,8 +2085,8 @@ impl World {
                 continue;
             }
             // fxdax: cells' objects stay, as their branches' records do, their epochs fencing
-            // their volumes' leases (TASK-364).
-            if let layout::Kind::Cell { .. } = layout::kind(&key) {
+            // their volumes' leases; and blocks of object IDs taken, for good (TASK-364).
+            if let layout::Kind::Cell { .. } | layout::Kind::ObjectIds { .. } = layout::kind(&key) {
                 continue;
             }
             if !needed.contains(&key) {

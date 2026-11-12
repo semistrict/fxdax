@@ -7,8 +7,8 @@
 
 pub(crate) use super::codec::Opening;
 use super::codec::{
-    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, PrivateCosts, ReadInto, Request,
-    StageCounts, StageOp, Told, stream_bytes,
+    Advanced, Area, Data, Encoded, Fault, Forked, Info, Made, Opened, PrivateCosts, ReadInto,
+    Request, StageCounts, StageOp, Told, stream_bytes,
 };
 use super::wire::*;
 use crate::dax::Faults;
@@ -430,21 +430,24 @@ impl RemoteExtentStore {
         Ok(self.client.request(&Request::Root).await?.payload)
     }
 
-    /// Forks the store, as of its last commit made durable, to a new branch `branch`, whose handle
-    /// is a new directory at `path`, which the daemon serves sharing the store's pages (`FORK`).
-    pub fn fork(&self, path: &Path, branch: u64) -> Result<()> {
-        let fork = Request::Fork { path: path.to_owned(), branch, quiescent: false };
-        self.client.request_blocking(&fork).map(drop)
+    /// Forks the store, as of its last commit made durable, to a new branch, whose handle is a new
+    /// directory at `path`, which the daemon serves sharing the store's pages (`FORK`), and returns
+    /// the branch's ID, the bucket's to give (TASK-364).
+    pub fn fork(&self, path: &Path) -> Result<u64> {
+        let fork = Request::Fork { path: path.to_owned(), quiescent: false };
+        let reply = self.client.request_blocking(&fork)?;
+        Ok(Forked::from_args(reply.header.args).branch)
     }
 
     /// Makes a point of the store ([`ExtentStore::point`](crate::ExtentStore::point)), at `path`,
-    /// `branch`, once nothing is open
+    /// and returns its branch's ID, once nothing is open
     /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)), as with its guest's
     /// filesystem frozen, `EBUSY` otherwise: what a snapshot of the VM is taken at, which any
     /// number of hosts restore at once, and none writes.
-    pub fn fork_quiescent(&self, path: &Path, branch: u64) -> Result<()> {
-        let point = Request::Fork { path: path.to_owned(), branch, quiescent: true };
-        self.client.request_blocking(&point).map(drop)
+    pub fn fork_quiescent(&self, path: &Path) -> Result<u64> {
+        let point = Request::Fork { path: path.to_owned(), quiescent: true };
+        let reply = self.client.request_blocking(&point)?;
+        Ok(Forked::from_args(reply.header.args).branch)
     }
 
     /// The window's mappings, which a snapshot of the VM records (`MAPPINGS`).

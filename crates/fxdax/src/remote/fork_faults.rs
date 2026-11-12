@@ -243,7 +243,7 @@ impl World {
     /// happening; and lets go of the parent, whatever its uploader has left to do.
     fn fork(&mut self, faults: &[Fault]) -> Result<(), crate::Error> {
         let guards: Vec<_> = faults.iter().filter_map(|fault| self.arm(*fault)).collect();
-        let forked = self.parent.as_ref().unwrap().fork(self.path("child"), self.child);
+        let forked = self.parent.as_ref().unwrap().fork_to(self.path("child"), self.child);
         self.parent = None;
         drop(guards);
         if self.dead.load(Ordering::SeqCst) {
@@ -377,7 +377,7 @@ impl World {
         // A fork to the same child, and to the same place, makes it if nothing has its ID, or fails
         // cleanly; one to a new child forks.
         let spent = self.record(self.child).is_some() || !children.is_empty();
-        let again = parent.fork(&path, self.child).map_err(|err| err.errno());
+        let again = parent.fork_to(&path, self.child).map_err(|err| err.errno());
         assert_eq!(again, if spent { Err(Some(Errno::EEXIST)) } else { Ok(()) }, "{case}: again");
         if !spent {
             children.push(path.clone());
@@ -385,7 +385,7 @@ impl World {
         }
         let retried = crate::host_store::new_alone();
         assert_eq!(
-            parent.fork(self.path("retried"), retried).map_err(|err| err.to_string()),
+            parent.fork_to(self.path("retried"), retried).map_err(|err| err.to_string()),
             Ok(()),
             "{case}: a fork to a new child"
         );
@@ -439,7 +439,9 @@ impl World {
                             .is_some_and(|record| record.deleted && !record.may_drop())
                 }
                 // A cell's object stays, as its records do (TASK-364).
-                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } => false,
+                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } | Kind::ObjectIds { .. } => {
+                    false
+                }
                 Kind::Moves { .. } | Kind::Unknown => true,
             })
             .collect();

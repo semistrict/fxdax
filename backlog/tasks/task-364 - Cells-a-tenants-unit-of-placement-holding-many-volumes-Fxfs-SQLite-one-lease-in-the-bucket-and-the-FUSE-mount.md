@@ -3,11 +3,11 @@ id: TASK-364
 title: >-
   Cells: a tenant's unit of placement, holding many volumes (Fxfs, SQLite), one
   lease, in the bucket and the FUSE mount
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-11 20:12'
-updated_date: '2026-11-12 05:00'
+updated_date: '2026-11-12 09:45'
 labels:
   - fuse
   - host
@@ -37,19 +37,19 @@ Design work for the worker: a volume's fork within its cell or into another; a w
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Bucket objects live under tenants/<tenant>/cells/<cell>/; one lease per cell carries the fencing token; a volume's writer commits only while its host holds its cell's lease, and a second host's take of a held cell is refused (ESTALE), shown by tests
-- [ ] #2 A cell's set of volumes (name, kind: fxfs or sqlite) is in the bucket, changed only by its lease holder with a conditional update; adding and removing a volume shown by tests
-- [ ] #3 fxdax-mount Attach(tenant, cell) takes the cell's lease and shows each Fxfs volume at MOUNT/<tenant>/<cell>/<volume>/; Detach writes every volume back and then lets the lease go; end-to-end test on Linux with two cells of two tenants
-- [ ] #4 sqlite_extents opens a cell's SQLite volumes on the host holding the cell, fenced by the same lease; a host not holding it cannot commit, shown by a test
-- [ ] #5 extentd's tenant grants and the bucket's tenants are one: a tenant's connection reaches only its own cells, shown by a test
-- [ ] #6 doc-7's layout section describes the cell layout; buckets in the old flat layout are refused by format
+- [x] #1 Bucket objects live under tenants/<tenant>/cells/<cell>/; one lease per cell carries the fencing token; a volume's writer commits only while its host holds its cell's lease, and a second host's take of a held cell is refused (ESTALE), shown by tests
+- [x] #2 A cell's set of volumes (name, kind: fxfs or sqlite) is in the bucket, changed only by its lease holder with a conditional update; adding and removing a volume shown by tests
+- [x] #3 fxdax-mount Attach(tenant, cell) takes the cell's lease and shows each Fxfs volume at MOUNT/<tenant>/<cell>/<volume>/; Detach writes every volume back and then lets the lease go; end-to-end test on Linux with two cells of two tenants
+- [x] #4 sqlite_extents opens a cell's SQLite volumes on the host holding the cell, fenced by the same lease; a host not holding it cannot commit, shown by a test
+- [x] #5 extentd's tenant grants and the bucket's tenants are one: a tenant's connection reaches only its own cells, shown by a test
+- [x] #6 doc-7's layout section describes the cell layout; buckets in the old flat layout are refused by format
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -78,4 +78,14 @@ The user 2026-11-11: the FUSE tree shows only the Fxfs volumes this host mounts;
 The user 2026-11-11: within one cell some volumes are attached to VMs and others mounted through FUSE, all on the host holding the cell. So every process of that host (extentd, fxdax-mount) takes the cell as one holder, the host's: a second taking by the same holder joins the epoch held (cell::take stops at it) rather than fencing the first.
 
 Implemented 2026-11-12 (one batch): extent_frame Cell/Branch, Branch Display/FromStr TENANT/CELL/ID, front-coded checkpoint keys; extent_remote layout under tenants/<t>/cells/<c>/ (FORMAT 4), cell module (hold = take/make/add-volume in one CAS, add/remove/forget/delete), deletions end leases at their cell's epoch (Stale for a cut-off placement, idempotent once final); extent_store description names branch as TENANT/CELL/ID plus volume/kind (store format 11), uploader holds the cell before the lease (not for points), lineage check refusing fork children with inherited IDs (Inherited); fxdax: forks into new cells (host_store::fork_of), extentd v1 grew tenant/cell/kind, wire OPEN_SQLITE (wire version 6), restores on another host need the point store made first (ENOENT), sqlite_extents opens SQLite volumes; FUSE server nests stores at paths with directories of its own, fxdax-mount control API of cells (Attach/CreateVolume/Detach/List), fxdaxctl and fxdax-gc take TENANT/CELL/ID; Go bindings regenerated; doc-7 and doc-14 updated. Found and fixed on the way: volume names must be the branch's (not the store dir's), cell objects must stay (their epochs fence leases), the sim's stale deletions must stay idempotent once final (else deletions_need_fences loses its race).
+
+2026-11-12, closing AC4 and AC5: extentd grants carry the tenant's bucket ID (Grant's id, fxdaxctl grant TENANT ID DIR): a granted tenant's VM processes make stores of new cells of its own, the VM manager's CreateStore/ImportImage of a new cell in its directory must be of it (EPERM otherwise), ForkStore into its directory makes a cell of its; its VM processes open no store of another tenant's cell (EACCES), checked from the store's description before opening, which would take the branch from the other tenant's writer; points of others' the VM manager gives it restore into cells of its own (fork_from takes the restoring tenant). Tests: grants.rs tenants_stores_are_their_own_cells, tenants_reach_no_store_of_another_tenants_cell, tenants_restore_points_given_them_into_cells_of_their_own; sqlite_extents daemon.rs a_database_is_fenced_with_its_cell (a later placement takes the SQLite volume's cell and lease: sync fails EROFS, the next SQLite commit fails). Guest harness (guest/tests) moved to Branch (soak ledger, snapshot TenantMigrate tenants with IDs, import fork into its own cell).
+
+2026-11-12, object IDs (decided with the user): with cells, branch records are keyed by cell too, so nothing refused a second branch of one ID, which extent IDs, forks' shared extents and the host's extent cache key by. New extent_remote::objectid: an allocator per bucket per process takes a block of 2^24 IDs (objectid/<block>, created if absent, kept for good) and gives them in order. Every new branch's ID comes from it (host_store::new_branch, BranchOf::{New,Taken}); nothing names a new branch's ID: the wire's FORK names none and its reply carries the ID (wire version 7), ForkStore's branch field is reserved, Firecracker takes the snapshot's point ID from the reply (rand_branch and its two tests removed, approved by the user), CreateStore/take of a branch the bucket lacks is ENOENT, fxdaxctl create makes a new store. Tests naming children use fork_to/point_to with random IDs (sequential allocation made parent+1 children collide with the next store's ID, as the tests showed). Hand mutant forks-take-branches-claimed now killed by remote::tests::forks_to_a_branch_the_bucket_has_fail_with_eexist (verified). Also: daemon Commit::Local fails once the uploader failed (EROFS when fenced), as kept images did. Validation: macOS scripts/test.sh clippy+workspace(2264)+sim(48)+shuttle+scripts+go all green, mutants 0 broken; Linux (ubu1) fxdax+sqlite_extents 625 (only builds_are_stamped_with_their_commit, no .git in the rsync copy), extent_remote+extent_store(no sim)+sqlite 446 (only durable_commits_keep_the_open_segments_pages_cached_on_the_host, ZFS, TASK-309), guest harness host 127 + guest 99 + runner 9, firecracker part 30+31, Linux clippy clean; scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Tenants' cells: every branch is a volume of a tenant's cell, kept under tenants/<tenant>/cells/<cell>/ (format 4, the flat layout refused); a cell's object holds its volumes (fxfs, sqlite) and is taken whole by one placement, its epoch the token of its volumes' leases, so a later taking fences every volume. Stores, forks and points are volumes of cells; the FUSE mount shows TENANT/CELL/VOLUME and attaches and detaches cells; SQLite volumes open through the daemon fenced with their cells; extentd's grants carry the bucket tenant, a tenant's VM processes reaching only its own cells. Branch IDs are object IDs, unique per bucket, given out in blocks by extent_remote::objectid, so no two branches share an ID whatever their cells. Verified by the macOS suite and the Linux suite on ubu1 (all green but two environmental failures: no .git in the synced copy, ZFS page cache, TASK-309), with tests per acceptance criterion: cell take/fence/volumes (extent_remote::cell, extent_store::upload), FUSE end-to-end of two tenants' cells (fuse_mount), SQLite fencing (sqlite_extents daemon), tenant isolation (grants), object IDs (objectid, host_store). Whole-cell forks of several volumes are TASK-364.1.
+<!-- SECTION:FINAL_SUMMARY:END -->

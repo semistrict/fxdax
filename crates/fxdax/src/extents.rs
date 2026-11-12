@@ -30,14 +30,14 @@ use crate::dax::{Dax, DaxMapping, DaxWindow, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
 use crate::fence::{Fence, Held, StoreMutex, StoreRwLock};
-use crate::host_store;
+use crate::host_store::{self, BranchOf};
 use crate::memory::{VolatileSlice, VolatileSliceMut, gather, scatter};
 use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
 use crate::store_dir;
 use extent_remote::cell::Kind;
-use extent_remote::layout::Branch;
+use extent_remote::layout::{Branch, Cell};
 use extent_remote::trace;
 use extent_store::{HostDir, NoSpace, NotHeld, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
@@ -501,31 +501,38 @@ impl ExtentStore {
     /// file bucket of its own, which its description names (`host_store::create`, TASK-165.6),
     /// opened as this process opens stores ([`Opening::here`]).
     pub fn create(path: impl AsRef<Path>, capacity: u64) -> Result<Self, Error> {
-        Self::create_for_branch(path, capacity, host_store::new_alone())
+        Self::create_in(path, capacity, host_store::new_cell(host_store::NO_TENANT))
     }
 
-    /// fxdax: a new store at `path`, as [`ExtentStore::create`] makes, of `branch`: one kept in
-    /// object storage, made on a host without it, is the branch the bucket holds, recovered as it
-    /// opens (TASK-165.9).
+    /// fxdax: a new store at `path`, as [`ExtentStore::create`] makes, of a new branch of `cell`,
+    /// its ID its bucket's to give (`extent_remote::objectid`, TASK-364).
+    pub fn create_in(path: impl AsRef<Path>, capacity: u64, cell: Cell) -> Result<Self, Error> {
+        Self::create_with(path, capacity, BranchOf::New(cell), Opening::here()?)
+    }
+
+    /// fxdax: a new store at `path`, as [`ExtentStore::create`] makes, of `branch`, which its
+    /// bucket holds (`ENOENT` otherwise): made on a host without it, recovered as it opens
+    /// (TASK-165.9).
     pub fn create_for_branch(
         path: impl AsRef<Path>,
         capacity: u64,
         branch: Branch,
     ) -> Result<Self, Error> {
-        Self::create_with(path, capacity, branch, Opening::here()?)
+        Self::create_with(path, capacity, BranchOf::Taken(branch), Opening::here()?)
     }
 
-    /// fxdax: a new store at `path`, as [`ExtentStore::create_for_branch`] makes, opened as
-    /// `opening` says ([`ExtentStore::open_with`]): an Fxfs volume of its branch's cell, named as
-    /// its directory is (`host_store::volume_at`, TASK-364). fxdax: in a span of its own,
-    /// `store.create` (`extent_remote::trace`, TASK-258).
+    /// fxdax: a new store at `path`, of the branch `of` says, as [`ExtentStore::create_in`] or
+    /// [`ExtentStore::create_for_branch`] makes it, opened as `opening` says
+    /// ([`ExtentStore::open_with`]): an Fxfs volume of its branch's cell, named as its directory
+    /// is (`host_store::volume_at`, TASK-364). fxdax: in a span of its own, `store.create`
+    /// (`extent_remote::trace`, TASK-258).
     pub fn create_with(
         path: impl AsRef<Path>,
         capacity: u64,
-        branch: Branch,
+        of: BranchOf,
         opening: Opening,
     ) -> Result<Self, Error> {
-        Self::create_kind_with(path, capacity, (branch, Kind::Fxfs), opening)
+        Self::create_kind_with(path, capacity, (of, Kind::Fxfs), opening)
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_with`] makes, a volume of `kind` of
@@ -534,29 +541,28 @@ impl ExtentStore {
     pub fn create_kind_with(
         path: impl AsRef<Path>,
         capacity: u64,
-        (branch, kind): (Branch, Kind),
+        (of, kind): (BranchOf, Kind),
         opening: Opening,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
-        Self::creating(path, branch, || {
+        Self::creating(path, |span| {
             let keeping = opening.keeping.clone();
-            let opened = host_store::create(path, capacity, branch, kind, keeping)?;
+            let opened = host_store::create(path, capacity, of, kind, keeping)?;
+            span.set_branch(opened.store.description().branch);
             Self::new(path, opened, opening)
         })
     }
 
-    /// fxdax: `make`'s making of a new store of `branch` at `path`, in a span of its own,
-    /// `store.create` (`extent_remote::trace`, TASK-258): a store made, opened, or made closed
-    /// ([`ExtentStore::create_placed`]).
+    /// fxdax: `make`'s making of a new store at `path`, in a span of its own, `store.create`
+    /// (`extent_remote::trace`, TASK-258), which it names the store's branch in once it knows it:
+    /// a store made, opened, or made closed ([`ExtentStore::create_placed`]).
     fn creating<T>(
         path: &Path,
-        branch: Branch,
-        make: impl FnOnce() -> Result<T, Error>,
+        make: impl FnOnce(&trace::Span) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let span = trace::Span::start("store.create");
         span.set_with(trace::STORE, || path.display().to_string());
-        span.set_branch(branch);
-        span.run(make)
+        span.run(|| make(&span))
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_with`] makes, of `branch`, kept in
@@ -572,7 +578,8 @@ impl ExtentStore {
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         let kept = (Kind::Fxfs, Some(url), keeping.clone());
-        let opened = host_store::create_unmade(path, capacity, branch, kept.0, kept.1, kept.2)?;
+        let of = BranchOf::Named(branch);
+        let opened = host_store::create_unmade(path, capacity, of, kept.0, kept.1, kept.2)?;
         opened.made().map_err(Error::new)?;
         Self::new(path, opened, Opening { keeping, ..Opening::here()? })
     }
@@ -585,10 +592,9 @@ impl ExtentStore {
         capacity: u64,
         url: &str,
     ) -> Result<Self, Error> {
-        let (path, branch, opening) = (path.as_ref(), host_store::new_alone(), Opening::here()?);
-        let keeping = opening.keeping.clone();
-        let opened =
-            host_store::create_unmade(path, capacity, branch, Kind::Fxfs, Some(url), keeping)?;
+        let (path, opening) = (path.as_ref(), Opening::here()?);
+        let (of, keeping) = (BranchOf::New(host_store::new_cell(0)), opening.keeping.clone());
+        let opened = host_store::create_unmade(path, capacity, of, Kind::Fxfs, Some(url), keeping)?;
         opened.made().map_err(Error::new)?;
         Self::new(path, opened, opening)
     }
@@ -918,8 +924,9 @@ impl ExtentStore {
         Some((recorder, stop))
     }
 
-    /// fxdax: forks the store, as of its last commit, made durable first: `branch`, a new branch
-    /// holding what it holds, whose store is a new directory at `path`, which
+    /// fxdax: forks the store, as of its last commit, made durable first, and returns the fork's
+    /// branch: a new branch of `cell`, its ID the bucket's to give (`extent_remote::objectid`,
+    /// TASK-364), holding what it holds, whose store is a new directory at `path`, which
     /// [`ExtentStore::open`] opens: `EEXIST` if anything is at `path`. The fork is made in the
     /// bucket alone, by the store's uploader, which keeps its branch in the bucket its
     /// description names: a commit naming the child, whose acknowledgement gives the child its
@@ -929,16 +936,27 @@ impl ExtentStore {
     /// A fork that fails is deleted in the bucket, as the fork's alone, and leaves nothing at
     /// `path`.
     ///
-    /// The guest names the child: a fork to a child whose ID another branch has in object storage
-    /// fails with `EEXIST`, making nothing; and so does one whose child's ID another branch took
-    /// as it was made, its commit standing, which names a child its parent's writers leave be
-    /// (TASK-79.82).
-    ///
     /// A fork of a point commits nothing in object storage: its child's record is the fork, which
     /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
     ///
     /// fxdax: in a span of its own, `store.fork` (`extent_remote::trace`, TASK-258).
-    pub fn fork(&self, path: impl AsRef<Path>, branch: Branch) -> Result<(), Error> {
+    pub fn fork(&self, path: impl AsRef<Path>, cell: Cell) -> Result<Branch, Error> {
+        let branch = self.new_child(cell)?;
+        self.fork_to(path, branch)?;
+        Ok(branch)
+    }
+
+    /// fxdax: a fork's child, a new branch of `cell` of the store's bucket's. A follower's uploader
+    /// is its writer's, which forks nothing of it (`EROFS`).
+    fn new_child(&self, cell: Cell) -> Result<Branch, Error> {
+        let remote = self.remote.as_ref().ok_or(Errno::EROFS)?;
+        Ok(host_store::new_branch(remote.bucket(), cell).map_err(remote_errno)?)
+    }
+
+    /// fxdax: forks the store as [`ExtentStore::fork`] does, to `branch`, whatever its ID: so the
+    /// tests make a fork whose child's ID another branch took, which IDs given out by the bucket
+    /// never are, to show a fork refuses it (`EEXIST`) and harms no other branch (TASK-79.82).
+    pub(crate) fn fork_to(&self, path: impl AsRef<Path>, branch: Branch) -> Result<(), Error> {
         self.fork_span(branch, false).run(|| {
             self.access().may_manage()?;
             self.make_durable()?;
@@ -1008,7 +1026,8 @@ impl ExtentStore {
         let path = path.as_ref();
         if !path.exists() {
             let kept = opening.keeping.clone();
-            Self::create_placed(path, (capacity, branch, token), Kind::Fxfs, kept)?;
+            let of = BranchOf::Taken(branch);
+            Self::create_placed(path, (capacity, of, token), Kind::Fxfs, kept)?;
         } else if extent_store::host_branch(path).map_err(Error::new)? != branch {
             let refused = format!("{} holds another branch than {branch}", path.display());
             return Err(Error::new(anyhow::Error::new(Errno::EEXIST).context(refused)));
@@ -1019,28 +1038,33 @@ impl ExtentStore {
         Self::new(path, opened, opening)
     }
 
-    /// fxdax: makes a new store at `path`, which must not exist, of `capacity` bytes and `branch`,
-    /// a volume of `kind` of its branch's cell (TASK-364), its uploader as `keeping` says, placed
-    /// at `token`'s placement if given, and closes it: what [`ExtentStore::take_with`] takes a
-    /// branch into, and the daemon's `CreateStore` makes. Its lease is taken as it is made with the
+    /// fxdax: makes a new store at `path`, which must not exist, of `capacity` bytes and the branch
+    /// `of` says, a volume of `kind` of its branch's cell (TASK-364), its uploader as `keeping`
+    /// says, placed at `token`'s placement if given, closes it, and returns its branch: what
+    /// [`ExtentStore::take_with`] takes a branch into, and the daemon's `CreateStore` makes. Its lease is taken as it is made with the
     /// token of the placement it is given, not `keeping`'s, this host's: a new copy placed later
     /// took no branch from an earlier placement (`ESTALE`), the lease taken before the placement
     /// was recorded (TASK-149.20, TASK-266).
     pub fn create_placed(
         path: impl AsRef<Path>,
-        (capacity, branch, token): (u64, Branch, Option<u64>),
+        (capacity, of, token): (u64, BranchOf, Option<u64>),
         kind: Kind,
         keeping: extent_store::upload::Options,
-    ) -> Result<(), Error> {
+    ) -> Result<Branch, Error> {
         let path = path.as_ref();
         let keeping =
             extent_store::upload::Options { token: token.unwrap_or(keeping.token), ..keeping };
-        let made = || Ok(host_store::create(path, capacity, branch, kind, keeping)?);
-        drop(Self::creating(path, branch, made)?);
-        match token {
-            Some(token) => Self::place(path, token),
-            None => Ok(()),
+        let branch = Self::creating(path, |span| {
+            let opened = host_store::create(path, capacity, of, kind, keeping)?;
+            let branch = opened.store.description().branch;
+            span.set_branch(branch);
+            drop(opened);
+            Ok(branch)
+        })?;
+        if let Some(token) = token {
+            Self::place(path, token)?;
         }
+        Ok(branch)
     }
 
     /// fxdax: places the store at `path` at the placement
@@ -1338,6 +1362,17 @@ impl ExtentStore {
         self.store.flush().map_err(errno)
     }
 
+    /// fxdax: `Ok` unless the store's uploader stopped, failed: the store's commits are its
+    /// branch's no more, as once a later placement took its cell (`EROFS`, TASK-364), so a commit
+    /// durable on the host's disk alone fails rather than be taken for one a bucket will hold, as
+    /// a kept image's does (`storage::kept`).
+    fn uploading(&self) -> Result<()> {
+        match self.remote.as_ref().and_then(|remote| remote.failed()) {
+            Some(failure) => Err(remote_errno(failure)),
+            None => Ok(()),
+        }
+    }
+
     /// Makes the commits ordered so far durable: uploaded, if the store has a remote.
     fn make_durable(&self) -> Result<()> {
         let epoch = self.durable_epoch()?;
@@ -1435,7 +1470,7 @@ impl ExtentStore {
         let waiting = std::time::Instant::now();
         let waited = match commit {
             Commit::Durable => self.make_durable(),
-            Commit::Local => self.flush(),
+            Commit::Local => self.flush().and_then(|()| self.uploading()),
             Commit::Ordered => match self.remote.as_ref() {
                 // Within the lag the remote allows.
                 Some(remote) => {
@@ -1757,7 +1792,20 @@ impl ExtentStore {
     /// ([`ExtentStore::is_quiescent`]), and no write comes between that and the fork, which would
     /// seal it under its writer: `EBUSY` otherwise. So a running VM's store forks,
     /// its guest's filesystem frozen (TASK-39.3), as a snapshot of the VM does (TASK-39.1).
-    pub fn fork_quiescent(&self, path: impl AsRef<Path>, branch: Branch) -> Result<(), Error> {
+    pub fn fork_quiescent(&self, path: impl AsRef<Path>, cell: Cell) -> Result<Branch, Error> {
+        let branch = self.new_child(cell)?;
+        self.fork_at_rest(path.as_ref(), branch, false)?;
+        Ok(branch)
+    }
+
+    /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] does, to `branch`, whatever its
+    /// ID, as [`ExtentStore::fork_to`] forks it.
+    #[cfg(test)]
+    pub(crate) fn fork_quiescent_to(
+        &self,
+        path: impl AsRef<Path>,
+        branch: Branch,
+    ) -> Result<(), Error> {
         self.fork_at_rest(path.as_ref(), branch, false)
     }
 
@@ -1767,7 +1815,16 @@ impl ExtentStore {
     /// fork at once, written by none: what a snapshot of a VM is taken at, and what a base forked
     /// on several hosts is made (ForkStore's `point`). Once it returns, the point is in object
     /// storage. A point makes none of its own (`EINVAL`).
-    pub fn point(&self, path: impl AsRef<Path>, branch: Branch) -> Result<(), Error> {
+    pub fn point(&self, path: impl AsRef<Path>, cell: Cell) -> Result<Branch, Error> {
+        let branch = self.new_child(cell)?;
+        self.fork_at_rest(path.as_ref(), branch, true)?;
+        Ok(branch)
+    }
+
+    /// fxdax: makes a point of the store as [`ExtentStore::point`] does, to `branch`, whatever its
+    /// ID, as [`ExtentStore::fork_to`] forks it.
+    #[cfg(test)]
+    pub(crate) fn point_to(&self, path: impl AsRef<Path>, branch: Branch) -> Result<(), Error> {
         self.fork_at_rest(path.as_ref(), branch, true)
     }
 
@@ -2169,10 +2226,7 @@ mod tests {
             (Failure::Remote(Error::Diverged), Errno::ESTALE),
             (Failure::Remote(Error::NoBranch), Errno::ENOENT),
             (Failure::PointDeleted, Errno::ENOENT),
-            (
-                Failure::Remote(Error::ChildTaken(extent_remote::layout::test_branch(3))),
-                Errno::EEXIST,
-            ),
+            (Failure::Remote(Error::IdTaken(extent_remote::layout::test_branch(3))), Errno::EEXIST),
             (
                 Failure::Remote(Error::Format {
                     branch: extent_remote::layout::test_branch(3),
@@ -2343,9 +2397,7 @@ mod tests {
         assert_eq!((first.read_stored_bytes, first.page_ins), (0, 1));
 
         let path = dir.path().join("fork");
-        store
-            .fork(&path, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.fork_to(&path, crate::host_store::fork_child(store.branch())).unwrap();
         let fork = ExtentStore::open(&path).unwrap();
         let before = stats::stats();
         assert_eq!(read(&fork, extent, 0, 2 * BLOCK), Ok(pattern(1, 2 * BLOCK)));
@@ -2447,7 +2499,7 @@ mod tests {
         assert_eq!(follower.commit(None), Err(Errno::EROFS));
         assert_eq!(follower.commit_ordered(None), Err(Errno::EROFS));
         assert_eq!(follower.set_capacity(2 << 20), Err(Errno::EROFS));
-        let forked = follower.fork(dir.path().join("fork"), host_store::new_alone());
+        let forked = follower.fork_to(dir.path().join("fork"), host_store::new_alone());
         assert_eq!(forked.map_err(|err| err.errno()), Err(Some(Errno::EROFS)));
         // fxdax: a window that copies on write, nor so.
         let copying = follower.create_copying_dax_window(4 * page_size(), None, 1);
@@ -2823,7 +2875,7 @@ mod tests {
         let fork = dir.path().join("fork");
         let made = fail::FailGuard::new("fork::made", "return").unwrap();
         let failed = store
-            .fork(&fork, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
+            .fork_to(&fork, crate::host_store::fork_child(store.branch()))
             .expect_err("the fork was made");
         drop(made);
         assert_eq!(failed.errno(), None, "{failed:#}");
@@ -2867,9 +2919,7 @@ mod tests {
         );
 
         let path = dir.path().join("fork");
-        store
-            .fork(&path, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.fork_to(&path, crate::host_store::fork_child(store.branch())).unwrap();
         let fork = ExtentStore::open(&path).unwrap();
         let fork_window = fork.create_dax_window(8 * ps, None).unwrap();
         for mapping in &mappings {
@@ -3048,9 +3098,8 @@ mod tests {
         write(&base, extent, 0, &pattern(5, len)).unwrap();
         base.commit(None).unwrap();
         let (first, second) = (dir.path().join("first"), dir.path().join("second"));
-        base.fork(&first, crate::host_store::fork_of(base.branch(), base.branch().id + 1)).unwrap();
-        base.fork(&second, crate::host_store::fork_of(base.branch(), base.branch().id + 2))
-            .unwrap();
+        base.fork_to(&first, crate::host_store::fork_child(base.branch())).unwrap();
+        base.fork_to(&second, crate::host_store::fork_child(base.branch())).unwrap();
         let profile = profile::path(&dir.path().join("store"), base.branch().id);
         drop(base);
 
@@ -3126,8 +3175,7 @@ mod tests {
         let window = base.create_dax_window(len, None).unwrap();
         base.commit(None).unwrap();
         let forked = dir.path().join("fork");
-        base.fork(&forked, crate::host_store::fork_of(base.branch(), base.branch().id + 1))
-            .unwrap();
+        base.fork_to(&forked, crate::host_store::fork_child(base.branch())).unwrap();
         base.map(extent, 0, len, 0).unwrap();
         // Each part paged in by a fault of its own, at once, as a guest's threads fault.
         std::thread::scope(|scope| {
@@ -3224,7 +3272,7 @@ mod tests {
                         Request::Fork => {
                             let (path, fork) = forks.next().unwrap();
                             store
-                                .fork(
+                                .fork_to(
                                     path,
                                     crate::Branch {
                                         id: store.branch().id + fork,
@@ -3416,9 +3464,7 @@ mod tests {
         write(&store, extent, 0, &pattern(6, ps as usize)).unwrap();
         store.commit(None).unwrap();
         let copy_path = dir.path().join("copy");
-        store
-            .fork(&copy_path, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.fork_to(&copy_path, crate::host_store::fork_child(store.branch())).unwrap();
         let copy = ExtentStore::open(&copy_path).unwrap();
         let (window, copy_window) =
             (store.create_dax_window(ps, None).unwrap(), copy.create_dax_window(ps, None).unwrap());
@@ -3468,9 +3514,7 @@ mod tests {
         write(&store, extent, 0, &pattern(6, ps as usize)).unwrap();
         store.commit(None).unwrap();
         let fork_path = dir.path().join("fork");
-        store
-            .fork(&fork_path, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.fork_to(&fork_path, crate::host_store::fork_child(store.branch())).unwrap();
         let fork = ExtentStore::open(&fork_path).unwrap();
         assert_eq!(read(&fork, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
 
@@ -3496,11 +3540,7 @@ mod tests {
         let forks: Vec<ExtentStore> = (1..=2)
             .map(|fork| {
                 let path = dir.path().join(format!("fork-{fork}"));
-                base.fork(
-                    &path,
-                    crate::host_store::fork_of(base.branch(), base.branch().id + fork),
-                )
-                .unwrap();
+                base.fork_to(&path, crate::host_store::fork_child(base.branch())).unwrap();
                 ExtentStore::open(&path).unwrap()
             })
             .collect();
@@ -3775,7 +3815,7 @@ mod tests {
         write(&publisher, extent, 0, data).unwrap();
         publisher.commit(None).unwrap();
         publisher
-            .fork(path, extent_remote::layout::test_branch(rand::random::<u64>().max(1)))
+            .fork_to(path, extent_remote::layout::test_branch(rand::random::<u64>().max(1)))
             .unwrap();
         let ancestry = ExtentStore::open(path).unwrap().ancestry();
         (extent, ancestry)
@@ -3882,9 +3922,7 @@ mod tests {
         let extent = id(&publisher, 1);
         write(&publisher, extent, 0, &data).unwrap();
         publisher.commit(None).unwrap();
-        publisher
-            .fork(&base, crate::host_store::fork_of(publisher.branch(), publisher.branch().id + 1))
-            .unwrap();
+        publisher.fork_to(&base, crate::host_store::fork_child(publisher.branch())).unwrap();
         drop(publisher);
         ExtentStore::open(&base).unwrap().make_generation_public().unwrap();
         let tenant = Arena::new();
@@ -3938,9 +3976,7 @@ mod tests {
         let extent = id(&publisher, 1);
         write(&publisher, extent, 0, &data).unwrap();
         publisher.commit(None).unwrap();
-        publisher
-            .fork(&base, crate::host_store::fork_of(publisher.branch(), publisher.branch().id + 1))
-            .unwrap();
+        publisher.fork_to(&base, crate::host_store::fork_child(publisher.branch())).unwrap();
         drop(publisher);
         let tenant = Arena::new();
         let publisher = ExtentStore::open_in(&publisher_path, Some(tenant.clone())).unwrap();
@@ -3980,9 +4016,7 @@ mod tests {
         let extent = id(&publisher, 1);
         write(&publisher, extent, 0, &pattern(5, BLOCK)).unwrap();
         publisher.commit(None).unwrap();
-        publisher
-            .fork(&base, crate::host_store::fork_of(publisher.branch(), publisher.branch().id + 1))
-            .unwrap();
+        publisher.fork_to(&base, crate::host_store::fork_child(publisher.branch())).unwrap();
         publisher.free(extent).unwrap();
         publisher.commit(None).unwrap();
         assert_eq!(read(&publisher, extent, 0, BLOCK), Err(Errno::ENOENT));
@@ -4007,9 +4041,7 @@ mod tests {
         store.commit(None).unwrap();
 
         let fork = dir.path().join("fork");
-        store
-            .fork(&fork, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.fork_to(&fork, crate::host_store::fork_child(store.branch())).unwrap();
         let forked = ExtentStore::open(&fork).unwrap();
         forked.open_bases(open.clone()).unwrap();
         assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(6, BLOCK)));
@@ -4072,16 +4104,13 @@ mod tests {
         write(&store, inherited, 0, &pattern(9, BLOCK)).unwrap();
         store.commit(None).unwrap();
         let (fork, base) = (dir.path().join("fork"), dir.path().join("base"));
-        store
-            .fork(&fork, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
-        store
-            .fork(&base, crate::host_store::fork_of(store.branch(), store.branch().id + 2))
-            .unwrap();
+        store.fork_to(&fork, crate::host_store::fork_child(store.branch())).unwrap();
+        let base_branch = crate::host_store::fork_child(store.branch());
+        store.fork_to(&base, base_branch).unwrap();
         let forked = ExtentStore::open(&fork).unwrap();
         forked.attach_base(&base, &ExtentStore::open(&base).unwrap().ancestry()).unwrap();
         assert!(!forked.bases.routes(inherited.branch));
-        assert!(forked.bases.routes(store.branch().id + 2));
+        assert!(forked.bases.routes(base_branch.id));
         forked.free(inherited).unwrap();
         forked.commit(None).unwrap();
         assert_eq!(read(&forked, inherited, 0, BLOCK), Err(Errno::ENOENT));
@@ -4167,14 +4196,13 @@ mod tests {
         unsafe { *window.host_base() = 0xee };
         assert_eq!(store.private_pages(), Ok(1));
         let point = dir.path().join("point");
-        let refused = store
-            .point(&point, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap_err();
+        let refused =
+            store.point_to(&point, crate::host_store::fork_child(store.branch())).unwrap_err();
         assert_eq!(refused.errno(), Some(Errno::EBUSY));
         assert!(format!("{refused:#}").contains("holds 1 private pages"), "{refused:#}");
-        let forked = store.fork_quiescent(
+        let forked = store.fork_quiescent_to(
             dir.path().join("fork"),
-            crate::host_store::fork_of(store.branch(), store.branch().id + 2),
+            crate::host_store::fork_child(store.branch()),
         );
         assert_eq!(forked.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
         assert_eq!(store.window_mappings(), Err(Errno::EBUSY));
@@ -4191,8 +4219,6 @@ mod tests {
             store.window_mappings(),
             Ok(vec![WindowMapping { window_offset: 0, len: ps, contents }])
         );
-        store
-            .point(&point, crate::host_store::fork_of(store.branch(), store.branch().id + 1))
-            .unwrap();
+        store.point_to(&point, crate::host_store::fork_child(store.branch())).unwrap();
     }
 }

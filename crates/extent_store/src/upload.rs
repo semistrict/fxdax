@@ -141,7 +141,7 @@ pub enum Failure {
     /// What object storage's protocol found of the branch, as `extent_remote` says it: another
     /// writer took it (`Fenced`, `Displaced`), it was deleted, a later placement holds it
     /// (`Stale`, TASK-39.7), another writer's commits moved it on from the store's write-ahead log
-    /// (`Diverged`), another branch has a fork's child's ID (`ChildTaken`, TASK-79.82), or what it
+    /// (`Diverged`), another branch has a fork's child's ID (`IdTaken`, TASK-79.82), or what it
     /// needs is gone or corrupt.
     #[error(transparent)]
     Remote(#[from] extent_remote::Error),
@@ -499,7 +499,7 @@ impl<D: Dir> Remote<D> {
     /// fork are uploaded: the segment the fork's commit ends names `child`, whose record the
     /// acknowledgement makes, naming the branch and the segment as its origin, and a checkpoint at
     /// the fork is where its recovery starts. `child`'s ID may be another branch's by then, which
-    /// took it after [`Remote::child_free`] found it free (`extent_remote::Error::ChildTaken`): the
+    /// took it after [`Remote::child_free`] found it free (`extent_remote::Error::IdTaken`): the
     /// fork failed, and the uploader goes on.
     ///
     /// A fork of a point commits nothing: the child's record is the fork, and fails if the point
@@ -524,7 +524,7 @@ impl<D: Dir> Remote<D> {
         })?;
         match shared.writer() {
             Some(writer) if writer.refused(child) => {
-                Err(extent_remote::Error::ChildTaken(child).into())
+                Err(extent_remote::Error::IdTaken(child).into())
             }
             _ => Ok(()),
         }
@@ -1313,10 +1313,15 @@ mod tests {
         store.write(ExtentId::new(BRANCH.id, 1), 0, &[1; 4096]).unwrap();
         store.commit(None).unwrap();
         remote.wait_uploaded(store.epoch().unwrap()).unwrap();
-        // Another placement takes the cell, and the branch's lease with the cell's epoch.
+        // Another placement takes the cell, and its writer the branch with the cell's epoch,
+        // fencing it (TASK-371).
         let taken = runtime.block_on(async {
             let (held, _) = cell::hold(&*bucket, BRANCH.cell, (6, 6), false, None).await.unwrap();
-            branch::take_lease(&*bucket, &key, 0x66, held.epoch).await.unwrap();
+            drop(
+                extent_remote::Writer::open(bucket.clone(), BRANCH, 0x66, held.epoch)
+                    .await
+                    .unwrap(),
+            );
             held
         });
         assert_eq!(taken.epoch, 2);

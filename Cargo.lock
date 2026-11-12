@@ -3671,6 +3671,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "extent_remote",
  "extent_store",
  "futures",
  "fxdax",
@@ -3681,6 +3682,7 @@ dependencies = [
  "storage_device",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

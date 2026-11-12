@@ -530,7 +530,7 @@ impl<B: Bucket> Writer<B> {
                 let child = Child { branch: fork.child, owner: fork.owner, point: fork.point };
                 match branch::record_fork(&*self.bucket, child, origin).await {
                     Ok(()) => {}
-                    Err(Error::ChildTaken(child)) => drop(self.inner().refused.insert(child)),
+                    Err(Error::IdTaken(child)) => drop(self.inner().refused.insert(child)),
                     Err(error) => return Err(error),
                 }
                 self.inner().recorded.insert(fork.child);

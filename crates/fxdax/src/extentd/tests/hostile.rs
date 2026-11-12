@@ -1760,18 +1760,18 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     // Where the paths mallory names relative to the daemon's directory are, should a daemon take
     // them: not the crate's.
     std::env::set_current_dir(dir.path()).unwrap();
-    let tenant = |name: &str| {
+    let tenant = |name: &str, id: u64| {
         let stores = dir.path().join(name);
         std::fs::create_dir(&stores).unwrap();
-        let tenant = Tenant::new(name, &stores).unwrap();
+        let tenant = Tenant::new(name, id, &stores).unwrap();
         let socket = dir.path().join(format!("{name}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
         let served = tenant.clone();
         std::thread::spawn(move || serve_tenant(listener, served));
         (stores, socket, tenant)
     };
-    let (vms, mallory_socket, mallory) = tenant("mallory");
-    let (alices, alice_socket, alice_tenant) = tenant("alice");
+    let (vms, mallory_socket, mallory) = tenant("mallory", 1);
+    let (alices, alice_socket, alice_tenant) = tenant("alice", 2);
     let bob_socket = dir.path().join("bob.sock");
     let listener = UnixListener::bind(&bob_socket).unwrap();
     std::thread::spawn(move || serve(listener));
@@ -2064,7 +2064,7 @@ fn vm_processes_shrinking_their_memory_crash_nothing() {
     std::fs::create_dir(&vms).unwrap();
     let socket = dir.path().join("vms.sock");
     let listener = UnixListener::bind(&socket).unwrap();
-    let tenant = Tenant::new("vms", &vms).unwrap();
+    let tenant = Tenant::new("vms", 1, &vms).unwrap();
     std::thread::spawn(move || serve_tenant(listener, tenant));
     let store = RemoteExtentStore::connect(&socket, vms.join("store"), 1 << 26).unwrap();
     let extent = |sequence| ExtentId { branch: store.branch(), sequence };
@@ -2244,7 +2244,7 @@ fn page_ins_in_flight_are_bounded() {
         branch
     };
     let store = RemoteExtentStore::connect(&socket, &path, 1 << 30).unwrap();
-    store.fork_quiescent(&point, branch.id + 1).unwrap();
+    store.fork_quiescent(&point).unwrap();
     drop(store);
     // Its VM manager makes the point's store on the other host first: a snapshot names its point's
     // branch by its ID alone (TASK-364).
@@ -2377,18 +2377,18 @@ fn a_tenants_in_flight_data_is_bounded() {
     host();
     let dir = tempfile::tempdir().unwrap();
     // Two tenants, each flooding: mallory's many connections, alice's one, their rooms their own.
-    let tenant = |name: &str| {
+    let tenant = |name: &str, id: u64| {
         let stores = dir.path().join(name);
         std::fs::create_dir(&stores).unwrap();
-        let tenant = Tenant::new(name, &stores).unwrap();
+        let tenant = Tenant::new(name, id, &stores).unwrap();
         let socket = dir.path().join(format!("{name}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
         let served = tenant.clone();
         std::thread::spawn(move || serve_tenant(listener, served));
         (stores, socket, tenant)
     };
-    let (mstores, msocket, mallory) = tenant("mallory");
-    let (astores, asocket, alice) = tenant("alice");
+    let (mstores, msocket, mallory) = tenant("mallory", 1);
+    let (astores, asocket, alice) = tenant("alice", 2);
     super::super::memory::set_room(Some("mallory"), Some(ROOM)).unwrap();
     super::super::memory::set_room(Some("alice"), Some(ROOM)).unwrap();
 
@@ -2505,18 +2505,18 @@ fn a_tenant_filling_its_disk_leaves_others_committing() {
     const ALICES: u64 = 32;
     host();
     let dir = tempfile::tempdir().unwrap();
-    let tenant = |name: &str| {
+    let tenant = |name: &str, id: u64| {
         let stores = dir.path().join(name);
         std::fs::create_dir(&stores).unwrap();
-        let tenant = Tenant::new(name, &stores).unwrap();
+        let tenant = Tenant::new(name, id, &stores).unwrap();
         let socket = dir.path().join(format!("{name}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
         let served = tenant.clone();
         std::thread::spawn(move || serve_tenant(listener, served));
         (stores, socket, tenant)
     };
-    let (mstores, msocket, mallory) = tenant("mallory");
-    let (astores, asocket, _alice) = tenant("alice");
+    let (mstores, msocket, mallory) = tenant("mallory", 1);
+    let (astores, asocket, _alice) = tenant("alice", 2);
     let (taken, _) = disk::count(Some("mallory")).unwrap();
     let limit = taken + ROOM;
     disk::set_limit(Some("mallory"), Some(limit)).unwrap();

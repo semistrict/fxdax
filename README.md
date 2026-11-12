@@ -291,7 +291,10 @@ through a gRPC control API on a Unix socket of its own (`FXDAX_EXTENTD_GRPC`;
 imports, forks, places, syncs, resizes and deletes stores, and grants tenants
 (TASK-43.4). Grant returns a tenant's own VM socket, for the VM manager to
 bind-mount into the tenant's jails; a connection's tenant is the socket it came
-in on, and it names stores in the tenant's directory alone. Revoked, a
+in on, and it names stores in the tenant's directory alone. A grant names the
+tenant's ID in the bucket (TASK-364): the stores in its directory are volumes
+of its own cells, and its VM processes open no store of another tenant's cell,
+but restore from the points of others' its VM manager gives it. Revoked, a
 tenant's socket goes, and once its VM processes do, its arena and cached pages.
 The daemon's own VM socket is the default tenant's: its connections name
 stores in the daemon's roots alone (`FXDAX_EXTENTD_ROOTS`), or anywhere without

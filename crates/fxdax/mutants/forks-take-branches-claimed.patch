@@ -1,13 +1,13 @@
 # A fork takes its branch ID whatever has it in the bucket: neither the look that it is free nor
-# its child's record refuses another's: a VM process forks its store to another tenant's branch,
-# whose writer's commits then fail (TASK-79.82, TASK-165.7).
+# its child's record refuses another's: a fork to another branch's ID, which no ID the bucket gives
+# is (TASK-364) but a fork's named so is, wedges that branch's writer (TASK-79.82, TASK-165.7).
 # Kind: commits wedged
-# Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
+# Killer: remote::tests::forks_to_a_branch_the_bucket_has_fail_with_eexist
 --- a/crates/fxdax/src/host_store.rs
 +++ b/crates/fxdax/src/host_store.rs
-@@ -274,9 +274,7 @@
-             .context(format!("forking to branch {branch:x}: the point was deleted")),
-         err => anyhow::anyhow!("forking branch {branch:x}: {err}"),
+@@ -358,9 +358,7 @@
+             .context(format!("forking to branch {branch}: the point was deleted")),
+         err => anyhow::anyhow!("forking to branch {branch}: {err}"),
      };
 -    if !remote.child_free(branch).map_err(|err| Error::new(failed(err)))? {
 -        return Err(Error::new(taken(branch)));
@@ -23,7 +23,7 @@
          None => Ok(Step::Write(record, true)),
          // Deleted before it got its record, perhaps.
 -        Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),
--        Some(_) => Err(Error::ChildTaken(child.branch)),
+-        Some(_) => Err(Error::IdTaken(child.branch)),
 +        Some(_) => Ok(Step::Stop(false)),
      })
      .await?;

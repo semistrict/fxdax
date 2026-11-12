@@ -25,7 +25,7 @@ use crate::extents::Opening;
 use crate::pages::Arena;
 use crate::store_requests::{self, Capacity, Close};
 use crate::store_table::{self, StoreTable, Writer as _};
-use crate::{Branch, Errno, ExtentInfo, ExtentStore};
+use crate::{Branch, BranchOf, Cell, Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
 use extent_remote::cell::Kind;
 use extent_remote::store::Stats;
@@ -461,23 +461,33 @@ fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
     }
 }
 
-/// The store at `path`, created with `capacity` bytes if given and it doesn't exist, a volume of
-/// the kind given of a new cell of no tenant's (TASK-364), keeping its branch in the daemon's
-/// bucket, and its own extents' pages in `arena`, which it holds, or in the default arena, without
-/// one ([`ExtentStore::open_in`]).
+/// A store a VM process's opening makes, if there is none ([`open_store`]).
+#[derive(Clone, Copy)]
+pub(super) struct New {
+    /// Its bytes.
+    pub capacity: u64,
+    /// What it holds.
+    pub kind: Kind,
+    /// The tenant whose new cell it is the one volume of (TASK-364): the connection's.
+    pub tenant: u64,
+}
+
+/// The store at `path`, made as `new` says if given and it doesn't exist, keeping its branch in
+/// the daemon's bucket, and its own extents' pages in `arena`, which it holds, or in the default
+/// arena, without one ([`ExtentStore::open_in`]).
 pub(super) fn open_store(
     path: &Path,
-    capacity: Option<(u64, Kind)>,
+    new: Option<New>,
     arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
     let arena = arena.cloned();
     let own = arena.clone();
     let store = attached(path, |keeping| {
         let opening = Opening { arena: own, profiled: true, keeping };
-        match capacity {
-            Some((capacity, kind)) if !path.exists() => {
-                let branch = crate::host_store::new_alone();
-                ExtentStore::create_kind_with(path, capacity, (branch, kind), opening)
+        match new {
+            Some(New { capacity, kind, tenant }) if !path.exists() => {
+                let of = BranchOf::New(crate::host_store::new_cell(tenant));
+                ExtentStore::create_kind_with(path, capacity, (of, kind), opening)
             }
             _ => ExtentStore::open_with(path, opening),
         }
@@ -635,19 +645,17 @@ pub(super) async fn create(
         if path.exists() {
             return Err(Errno::EEXIST);
         }
-        // fxdax: a cell of 0 is a new one, and a branch of 0 a new one in it (TASK-364).
-        let cell = match branch.cell.id {
-            0 => crate::host_store::new_cell(branch.cell.tenant),
-            _ => branch.cell,
-        };
-        let branch = match branch.id {
-            0 => crate::host_store::new_branch(cell),
-            id => Branch { cell, id },
+        // fxdax: a cell of 0 is a new one, and a branch of 0 a new one in it, its ID the bucket's
+        // to give; a branch named, one the bucket has, of a cell named (TASK-364).
+        let of = match (branch.cell.id, branch.id) {
+            (0, 0) => BranchOf::New(crate::host_store::new_cell(branch.cell.tenant)),
+            (_, 0) => BranchOf::New(branch.cell),
+            (0, _) => return Err(Errno::EINVAL),
+            (_, _) => BranchOf::Taken(branch),
         };
         attached(&path, |keeping| {
-            ExtentStore::create_placed(&path, (capacity, branch, token), kind, keeping)
-        })?;
-        Ok(branch)
+            ExtentStore::create_placed(&path, (capacity, of, token), kind, keeping)
+        })
     })
     .await
 }
@@ -723,13 +731,19 @@ pub(super) fn removed_if_unmade(path: &Path) -> Result<(), Errno> {
 /// that is no point, kept open since an earlier restore whose fork fails, as once another host, or
 /// this one's fxdaxctl, took its branch, which fences it, is let go of, and opened anew for a fork
 /// once more, which takes the branch back, as each restore's did before stores were kept open: a
-/// restore fails only if the store it opened fails it.
-pub(super) async fn fork_from(from: &Path, capacity: u64, path: &Path) -> Result<(), Errno> {
-    match fork_point(from, capacity, path).await {
+/// restore fails only if the store it opened fails it. The fork is the one volume of a new cell of
+/// `tenant`'s, if given, the granted tenant's whose VM process restores, or of the point's tenant's
+/// (TASK-364).
+pub(super) async fn fork_from(
+    from: &Path,
+    capacity: u64,
+    (path, tenant): (&Path, Option<u64>),
+) -> Result<(), Errno> {
+    match fork_point(from, capacity, (path, tenant)).await {
         (Err(errno), Opened::Before) if errno != Errno::EEXIST => {
             // What a crash left at `path` goes first, as before any restore's.
             removed_if_unmade(path)?;
-            fork_point(from, capacity, path).await.0
+            fork_point(from, capacity, (path, tenant)).await.0
         }
         (forked, _) => forked,
     }
@@ -762,15 +776,19 @@ pub(super) async fn at_point(
 
 /// fxdax: forks the point at `from` to `path`, as [`fork_from`] does, once: and says when the
 /// point was opened. A point whose fork fails is let go of ([`let_go_failed`]).
-async fn fork_point(from: &Path, capacity: u64, path: &Path) -> (Result<(), Errno>, Opened) {
+async fn fork_point(
+    from: &Path,
+    capacity: u64,
+    (path, tenant): (&Path, Option<u64>),
+) -> (Result<(), Errno>, Opened) {
     let (point, opened) = match point(from, capacity).await {
         Ok(point) => point,
         Err(errno) => return (Err(errno), Opened::Now),
     };
-    // fxdax: the one volume of a new cell of the point's tenant (TASK-364).
-    let tenant = point.store.branch().cell.tenant;
-    let child = crate::host_store::new_branch(crate::host_store::new_cell(tenant));
-    let forked = point.store.fork(path, child).map_err(|err| {
+    // fxdax: the one volume of a new cell of `tenant`'s, or the point's tenant's (TASK-364).
+    let tenant = tenant.unwrap_or(point.store.branch().cell.tenant);
+    let forked = point.store.fork(path, crate::host_store::new_cell(tenant));
+    let forked = forked.map(drop).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     });
     let failed = Arc::downgrade(&point);
@@ -812,7 +830,7 @@ async fn point(from: &Path, capacity: u64) -> Result<(Arc<HeldStore>, Opened), E
     Ok((keep(&hold, take_store(from, None, capacity)?), Opened::Now))
 }
 
-/// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it
+/// Forks the store at `from` to a new branch at `to`, and returns it: live, if a connection has it
 /// open, once nothing is open (`EBUSY` otherwise); fxdax: or its followers, with no writer; or
 /// the point kept open of it, as restores fork it (TASK-92.5), opened here, if none is, which no
 /// connection opens meanwhile, and kept open for the forks after it. Its commits' uploads, which
@@ -820,49 +838,42 @@ async fn point(from: &Path, capacity: u64) -> Result<(Arc<HeldStore>, Opened), E
 /// made on a blocking thread. fxdax: the store at `to` is held throughout, so that a connection
 /// opens the child only once the fork is made, in the bucket too: before, it found no record of
 /// the fork there, and took a branch of its own, which failed every writer of the parent after,
-/// finding the child's record another's (TASK-79.95). Of a `branch` of 0, the fork's is a new one,
-/// and returned: a point kept open whose fork fails then, as once another host took its branch, is
-/// opened anew for a fork once more, as a restore's ([`fork_from`], TASK-79.103), to another new
-/// branch: the failed fork's ID stays taken in the bucket, so a `branch` the caller named gets the
-/// one try. The fork is a point if `point` ([`ExtentStore::point`], TASK-158), live or not, once
-/// nothing is open.
+/// finding the child's record another's (TASK-79.95). A point kept open whose fork fails, as once
+/// another host took its branch, is opened anew for a fork once more, as a restore's
+/// ([`fork_from`], TASK-79.103). The fork is a point if `point` ([`ExtentStore::point`],
+/// TASK-158), live or not, once nothing is open. It is the one volume of a new cell of `tenant`'s,
+/// if given: the granted tenant's whose directory `to` is in; or of `from`'s tenant's; its ID the
+/// bucket's to give (TASK-364).
 pub(super) async fn fork(
     from: PathBuf,
     to: PathBuf,
-    branch: u64,
+    tenant: Option<u64>,
     point: bool,
 ) -> Result<Branch, Errno> {
     let _child = hold_to_fork(&to).await?;
     let key = store_key(&from);
-    let named = branch != 0;
-    // fxdax: the one volume of a new cell of the store's tenant (TASK-364).
+    // fxdax: the one volume of a new cell of `tenant`'s, or the store's tenant's (TASK-364).
     let from_branch = extent_store::host_branch(&from).map_err(|_| Errno::ENOENT)?;
-    let cell = crate::host_store::new_cell(from_branch.cell.tenant);
-    let new = || match named {
-        true => Branch { cell, id: branch },
-        false => crate::host_store::new_branch(cell),
-    };
+    let cell = || crate::host_store::new_cell(tenant.unwrap_or(from_branch.cell.tenant));
     let was_kept = kept(&key).is_some();
-    let first = new();
-    match fork_held(&from, &to, first, point, &key).await {
-        Err(errno) if !named && was_kept && errno != Errno::EEXIST => {
-            let second = new();
-            fork_held(&from, &to, second, point, &key).await.map(|()| second)
+    match fork_held(&from, &to, cell(), point, &key).await {
+        Err(errno) if was_kept && errno != Errno::EEXIST => {
+            fork_held(&from, &to, cell(), point, &key).await
         }
-        forked => forked.map(|()| first),
+        forked => forked,
     }
 }
 
 /// fxdax: forks the store at `from`, whose key is `key`, to `to`, which the caller holds, as
-/// [`fork`] does, once, making a point if `point`. A point whose fork fails is let go of
-/// ([`let_go_failed`]).
+/// [`fork`] does, once, to a new branch of `cell`, making a point if `point`, and returns the
+/// branch. A point whose fork fails is let go of ([`let_go_failed`]).
 async fn fork_held(
     from: &Path,
     to: &Path,
-    branch: Branch,
+    cell: Cell,
     point: bool,
     key: &Path,
-) -> Result<(), Errno> {
+) -> Result<Branch, Errno> {
     let live = |connection: &Connection| {
         Some(Forked { store: Here::of(connection.store()?.clone(), None), live: true })
     };
@@ -896,9 +907,9 @@ async fn fork_held(
         blocking(move || {
             let store = &store.store;
             let forked = match (point, live) {
-                (true, _) => store.point(&to, branch),
-                (false, true) => store.fork_quiescent(&to, branch),
-                (false, false) => store.fork(&to, branch),
+                (true, _) => store.point(&to, cell),
+                (false, true) => store.fork_quiescent(&to, cell),
+                (false, false) => store.fork(&to, cell),
             };
             forked.map_err(|err| errno_of(format_args!("forking to {}", to.display()), err))
         })

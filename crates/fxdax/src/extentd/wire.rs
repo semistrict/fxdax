@@ -75,8 +75,9 @@ impl Header {
 /// Version 4: a request may say the guest request it is a call for ([`REQUEST`], TASK-260).
 /// Version 5: a commit may complete once durable on the host's disk ([`COMMIT_LOCAL`],
 /// [`WRITE_LOCAL`], TASK-301). Version 6: an [`OPEN`] may make a SQLite volume of its cell
-/// ([`OPEN_SQLITE`], TASK-364), and stores are cells' volumes, in their cells' prefixes.
-pub(crate) const VERSION: u64 = 6;
+/// ([`OPEN_SQLITE`], TASK-364), and stores are cells' volumes, in their cells' prefixes. Version
+/// 7: a [`FORK`] names no branch: its reply says the one the daemon gave (TASK-364).
+pub(crate) const VERSION: u64 = 7;
 
 /// fxdax: a flag of any request, which says the guest request it is a call for, the guest's
 /// number of it (`crate::request`, TASK-260): little-endian, not 0, in the first
@@ -141,10 +142,11 @@ pub(crate) const FAULT: u32 = 11;
 /// Acknowledges stage operation `id`, which the VM process has made; and says, as
 /// [`STAGE_COUNTS`] does, what its stage operations have cost it so far.
 pub(crate) const ACK: u32 = 12;
-/// Forks the store, as of its last commit made durable, to a new branch `args[0]`, whose handle
-/// is a new directory at the path the payload holds, nothing there (`EEXIST`)
-/// ([`ExtentStore::fork`](crate::ExtentStore)):
-/// a fork the daemon serves, sharing its extents' pages with the store's. With
+/// Forks the store, as of its last commit made durable, to a new branch, whose handle is a new
+/// directory at the path the payload holds, nothing there (`EEXIST`)
+/// ([`ExtentStore::fork`](crate::ExtentStore)): a fork the daemon serves, sharing its extents'
+/// pages with the store's. fxdax: the one volume of a new cell of the store's tenant's, its ID the
+/// bucket's to give (`extent_remote::objectid`, TASK-364), which the reply's `args[0]` is. With
 /// [`FORK_QUIESCENT`], it fails with `EBUSY` unless nothing is open
 /// ([`ExtentStore::is_quiescent`](crate::ExtentStore::is_quiescent)), and the fork is a point
 /// ([`ExtentStore::point`](crate::ExtentStore::point)): what a snapshot of the VM is taken at,

@@ -62,6 +62,7 @@ pub mod local;
 pub mod marks;
 mod moves;
 pub mod object;
+pub mod objectid;
 pub mod record;
 pub mod recovery;
 #[cfg(test)]
@@ -116,7 +117,7 @@ pub enum Error {
     /// guest gave it, which that branch took while the fork was made (TASK-79.82). The fork failed;
     /// its parent's branch is as sound as before.
     #[error("branch {0} has another origin")]
-    ChildTaken(layout::Branch),
+    IdTaken(layout::Branch),
     /// Something a branch needs is gone.
     #[error("lost: {0}")]
     Lost(String),

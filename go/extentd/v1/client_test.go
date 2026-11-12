@@ -74,7 +74,7 @@ func client(t *testing.T, socket string) *extentdv1.Client {
 
 func TestCalls(t *testing.T) {
 	client := client(t, serve(t))
-	granted, err := client.Grant(t.Context(), &extentdv1.GrantRequest{Tenant: "a", Dir: "/stores/a"})
+	granted, err := client.Grant(t.Context(), &extentdv1.GrantRequest{Tenant: "a", Dir: "/stores/a", Id: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

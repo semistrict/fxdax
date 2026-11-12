@@ -13,7 +13,7 @@
 use super::server::Server;
 use crate::error::{Errno, Error};
 use crate::extentd::control::{channel, errno, saying};
-use crate::{Branch, Cell, Filesystem, SetAttr, Storage};
+use crate::{Branch, BranchOf, Cell, Filesystem, SetAttr, Storage};
 use extent_remote::cell::{self, Kind};
 use proto::mount_client::MountClient;
 use proto::mount_server::MountServer;
@@ -114,16 +114,16 @@ fn reserve(
 fn mount_volume(
     path: &Path,
     url: &str,
-    (branch, capacity): (Branch, u64),
+    (of, capacity): (BranchOf, u64),
     token: Option<u64>,
-    new: bool,
 ) -> Result<Filesystem, Error> {
+    let new = matches!(of, BranchOf::New(_));
     // Its tenant's and its cell's directories, made once for all their volumes.
     if let Some(cell) = path.parent() {
         std::fs::create_dir_all(cell)
             .map_err(|err| Error::new(err).context(format!("making {}", cell.display())))?;
     }
-    let storage = Storage::take(path, (branch, capacity), url, token)?;
+    let storage = Storage::take(path, (of, capacity), url, token)?;
     let mounting = async {
         if !new {
             return Filesystem::mount(storage).await;
@@ -164,7 +164,7 @@ impl Control {
             let branch = Branch { cell, id: volume.branch };
             let open = async move {
                 let opened = tokio::task::spawn_blocking(move || {
-                    mount_volume(&path, &url, (branch, TAKEN_CAPACITY), token, false)
+                    mount_volume(&path, &url, (BranchOf::Taken(branch), TAKEN_CAPACITY), token)
                 });
                 opened.await.map_err(Error::new)?
             };
@@ -263,17 +263,19 @@ impl proto::mount_server::Mount for Control {
             return Err(failed(Errno::EEXIST.into()));
         }
         let (server, url) = (self.server.clone(), self.stores.bucket.clone());
-        let branch = crate::host_store::new_branch(cell);
         let made = whole(async move {
+            let made = path.clone();
             let open = async move {
                 let opened = tokio::task::spawn_blocking(move || {
-                    mount_volume(&path, &url, (branch, capacity), token, true)
+                    mount_volume(&path, &url, (BranchOf::New(cell), capacity), token)
                 });
                 opened.await.map_err(Error::new)?
             };
-            server.attach(&shown, open).await
+            server.attach(&shown, open).await?;
+            // Its branch's ID, the bucket's to give (TASK-364), as its description says.
+            extent_store::host_branch(&made).map_err(Error::new)
         });
-        made.await?;
+        let branch = made.await?;
         Ok(Response::new(CreateVolumeResponse { branch: branch.id }))
     }
 

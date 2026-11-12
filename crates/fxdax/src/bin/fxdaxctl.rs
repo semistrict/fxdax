@@ -8,6 +8,7 @@
 //!
 //! ```sh
 //! fxdaxctl take DIR CAPACITY BRANCH [TOKEN]
+//! fxdaxctl create DIR CAPACITY
 //! fxdaxctl place DIR TOKEN
 //! fxdaxctl sync DIR
 //! fxdaxctl import DIR CAPACITY IMAGE [REF]
@@ -19,7 +20,7 @@
 //! fxdaxctl public DIR
 //! fxdaxctl stat DIR
 //! fxdaxctl stats [--json]
-//! fxdaxctl grant TENANT DIR [UID [GID]]
+//! fxdaxctl grant TENANT ID DIR [UID [GID]]
 //! fxdaxctl revoke TENANT
 //! fxdaxctl --version
 //! ```
@@ -28,14 +29,17 @@
 //! command goes through its control API (`fxdax::extentd::control`), and acts on stores as the
 //! daemon serves them: on a store a VM has open, live, or not at all (`EBUSY`). Without, fxdaxctl
 //! acts on stores itself, on stores nothing has open, as their lock says, which an extent daemon
-//! serving them holds (it waits a while for it, then refuses). `take` and `import`, which make new
-//! stores, work so anywhere, as when building base images where no daemon runs. The others change
+//! serving them holds (it waits a while for it, then refuses). `create`, `take` and `import`, which
+//! make new stores, work so anywhere, as when building base images where no daemon runs. The others change
 //! existing stores' branches, which are in the bucket each store's description names: they need
 //! this host's (`FXDAX_EXTENTD_REMOTE`) and its placement's fencing token (`FXDAX_EXTENTD_TOKEN`),
 //! and refuse otherwise (`fxdax::remote::Host`, TASK-45).
 //!
+//! `create` makes an empty store at DIR, of CAPACITY bytes, of a new branch, the one volume of a
+//! new cell of no tenant's, its ID its bucket's to give (TASK-364), and prints the branch.
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (`TENANT/CELL/ID`, each in hex,
-//! a volume of its cell named as DIR is, TASK-364): once extentd opens it,
+//! a volume of its cell named as DIR is, TASK-364), which its bucket has (`ENOENT` otherwise): once
+//! extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
 //! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. A
 //! snapshot's point it reads, taking no lease, as any number of hosts do at once. `place`
@@ -85,10 +89,11 @@
 //! measurement is the difference of two.
 //!
 //! `grant` and `revoke`, through the daemon alone, are the control API's `Grant` and `Revoke`
-//! (TASK-43.4), for tests and operators (TASK-71): `grant` gives the tenant TENANT, whose stores
-//! are in the directory DIR, a VM socket of its own, its VM processes naming stores in DIR alone,
-//! the socket given to the user UID and the group GID if named, the daemon's own otherwise, and
-//! prints its path; granting a tenant again, of the same directory, prints it again. `revoke`
+//! (TASK-43.4), for tests and operators (TASK-71): `grant` gives the tenant TENANT, of the ID ID in
+//! the bucket, in hexadecimal and not 0 (TASK-364), whose stores are in the directory DIR, a VM
+//! socket of its own, its VM processes naming stores in DIR alone, of its own cells, the socket
+//! given to the user UID and the group GID if named, the daemon's own otherwise, and prints its
+//! path; granting a tenant again, of the same directory and ID, prints it again. `revoke`
 //! takes the tenant's socket away: its VM processes connected keep their stores, and no more
 //! connect.
 
@@ -98,18 +103,24 @@ use std::path::{Path, PathBuf};
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
-        "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl place DIR TOKEN | \
+        "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl create DIR CAPACITY | \
+         fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
          fxdaxctl point SRC DST | fxdaxctl delete DIR | fxdaxctl drop DIR | \
          fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
-         fxdaxctl stats [--json] | fxdaxctl grant TENANT DIR [UID [GID]] | \
+         fxdaxctl stats [--json] | fxdaxctl grant TENANT ID DIR [UID [GID]] | \
          fxdaxctl revoke TENANT | fxdaxctl --version"
     )
 }
 
 /// What fxdaxctl was asked to do.
 enum Command {
+    /// fxdax: a new store of a new branch, its ID its bucket's to give (TASK-364).
+    Create {
+        dir: PathBuf,
+        capacity: u64,
+    },
     Take {
         dir: PathBuf,
         capacity: u64,
@@ -164,11 +175,13 @@ enum Command {
         #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         json: bool,
     },
-    /// fxdax: a tenant granted a VM socket of its own, for its stores in `dir`, given to `uid` and
-    /// `gid` if named (TASK-71). Read by `through`, which is Linux's alone.
+    /// fxdax: a tenant, of the ID `id` in the bucket (TASK-364), granted a VM socket of its own,
+    /// for its stores in `dir`, given to `uid` and `gid` if named (TASK-71). Read by `through`,
+    /// which is Linux's alone.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Grant {
         tenant: String,
+        id: u64,
         dir: PathBuf,
         uid: Option<u32>,
         gid: Option<u32>,
@@ -192,6 +205,7 @@ impl Command {
                 branch: branch.parse().map_err(anyhow::Error::msg).context("BRANCH")?,
                 token: rest.first().map(|rest| token(rest)).transpose()?,
             },
+            ["create", dir, size] => Self::Create { dir: dir.into(), capacity: capacity(size)? },
             ["place", dir, given] => Self::Place { dir: dir.into(), token: token(given)? },
             ["sync", dir] => Self::Sync { dir: dir.into() },
             ["import", dir, size, image, ref rest @ ..] if rest.len() <= 1 => Self::Import {
@@ -211,8 +225,9 @@ impl Command {
             ["stat", dir] => Self::Stat { dir: dir.into() },
             ["stats"] => Self::Stats { json: false },
             ["stats", "--json"] => Self::Stats { json: true },
-            ["grant", tenant, dir, ref ids @ ..] if ids.len() <= 2 => Self::Grant {
+            ["grant", tenant, given, dir, ref ids @ ..] if ids.len() <= 2 => Self::Grant {
                 tenant: tenant.to_owned(),
+                id: u64::from_str_radix(given, 16).context("ID must be hexadecimal")?,
                 dir: dir.into(),
                 uid: ids.first().map(|uid| id(uid, "UID")).transpose()?,
                 gid: ids.get(1).map(|gid| id(gid, "GID")).transpose()?,
@@ -227,6 +242,10 @@ impl Command {
     fn through(self, socket: &Path) -> anyhow::Result<()> {
         let daemon = fxdax::extentd::control::Client::connect(socket)?;
         match self {
+            Self::Create { dir, capacity } => {
+                let new = fxdax::Branch { cell: fxdax::Cell { tenant: 0, id: 0 }, id: 0 };
+                println!("{}", daemon.create_store(&dir, capacity, new, None)?);
+            }
             Self::Take { dir, capacity, branch, token } => {
                 daemon.create_store(&dir, capacity, branch, token)?;
             }
@@ -269,8 +288,8 @@ impl Command {
                     false => print!("{}", flattened(&snapshot)),
                 }
             }
-            Self::Grant { tenant, dir, uid, gid } => {
-                println!("{}", daemon.grant(&tenant, &dir, uid, gid)?.display());
+            Self::Grant { tenant, id, dir, uid, gid } => {
+                println!("{}", daemon.grant((&tenant, id), &dir, uid, gid)?.display());
             }
             Self::Revoke { tenant } => daemon.revoke(&tenant)?,
         }
@@ -296,7 +315,11 @@ impl Command {
         // What stat reads needs no branch changed, nor does a copy dropped, its branch left be.
         let existing = !matches!(
             self,
-            Self::Take { .. } | Self::Import { .. } | Self::Stat { .. } | Self::Drop { .. }
+            Self::Create { .. }
+                | Self::Take { .. }
+                | Self::Import { .. }
+                | Self::Stat { .. }
+                | Self::Drop { .. }
         );
         if let Some(Err(why)) = existing.then(fxdax::remote::Host::from_env) {
             bail!(
@@ -305,6 +328,9 @@ impl Command {
             );
         }
         match self {
+            Self::Create { dir, capacity } => {
+                println!("{}", ExtentStore::create(&dir, capacity)?.branch());
+            }
             Self::Take { dir, capacity, branch, token } => {
                 ExtentStore::take(&dir, capacity, branch, token)?;
             }
@@ -321,14 +347,11 @@ impl Command {
             Self::Fork { src, dst, point } => {
                 let store = ExtentStore::open(&src)?;
                 // The one volume of a new cell of the store's tenant's (TASK-364).
-                let tenant = store.branch().cell.tenant;
-                let cell = fxdax::Cell { tenant, id: rand::random::<u64>().max(1) };
-                let branch = fxdax::Branch { cell, id: rand::random::<u64>().max(1) };
-                if point {
-                    store.point(&dst, branch)?;
-                } else {
-                    store.fork(&dst, branch)?;
-                }
+                let cell = fxdax::new_cell(store.branch().cell.tenant);
+                let branch = match point {
+                    true => store.point(&dst, cell)?,
+                    false => store.fork(&dst, cell)?,
+                };
                 println!("{branch}");
             }
             Self::Delete { dir } => {

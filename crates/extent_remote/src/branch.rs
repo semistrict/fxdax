@@ -108,12 +108,12 @@ pub async fn create(bucket: &impl Bucket, branch: Branch, owner: u64) -> Result<
 /// Creates `child`, a fork's child taking a branch of its own, of no parent, its fork not made in
 /// object storage, of the fork's `owner`. Its record says it is a fork's, of that owner, so that
 /// it takes no record of another branch's that took its ID for its own, another fork's to that ID
-/// among them, which a create of the same bytes would ([`Error::ChildTaken`], TASK-79.82).
+/// among them, which a create of the same bytes would ([`Error::IdTaken`], TASK-79.82).
 pub async fn create_forked(bucket: &impl Bucket, child: Branch, owner: u64) -> Result<(), Error> {
     let record = Kind::Own.of(self::owner(owner));
     change(bucket, child, Start::Create, |found| match found {
         None => Ok(Step::Write(record, ())),
-        Some(_) => Err(Error::ChildTaken(child)),
+        Some(_) => Err(Error::IdTaken(child)),
     })
     .await
 }
@@ -145,7 +145,7 @@ pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<Branch, Record>, Erro
 /// Gives `child`, a fork's, its record, forked from `origin`, of its owner, a point if it is one,
 /// unless it has one: the same, whoever gives it, as the fork's footer names it. A fork's child
 /// gets it once the fork is acknowledged, from the parent's writer, or the next one, or the
-/// parent's deletion. One of another owner is another branch's ([`Error::ChildTaken`]).
+/// parent's deletion. One of another owner is another branch's ([`Error::IdTaken`]).
 pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> Result<(), Error> {
     failpoint!("branch::record_fork");
     let kind = if child.point { Kind::Point(origin) } else { Kind::Fork(origin) };
@@ -154,7 +154,7 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
         None => Ok(Step::Write(record, true)),
         // Deleted before it got its record, perhaps.
         Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),
-        Some(_) => Err(Error::ChildTaken(child.branch)),
+        Some(_) => Err(Error::IdTaken(child.branch)),
     })
     .await?;
     if recorded {
@@ -175,7 +175,7 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
 /// `child`'s record after it was made, and keeps what it names. Otherwise the fork fails
 /// ([`Error::Deleted`]), and its host deletes `child` ([`delete_fork`]). Forked again, as a store
 /// left by a crash finishes it, it goes on from where it stopped. A child with a record of another
-/// owner than the fork's, `owner`, is another branch's ([`Error::ChildTaken`]).
+/// owner than the fork's, `owner`, is another branch's ([`Error::IdTaken`]).
 pub async fn fork_point(
     bucket: &impl Bucket,
     child: Branch,
@@ -193,7 +193,7 @@ pub async fn fork_point(
     let making = change(bucket, child, Start::Create, |found| match found {
         None => Ok(Step::Write(record, true)),
         Some(found) if found.deleted => Err(Error::Deleted),
-        Some(found) if !found.is_child_of(record.owner) => Err(Error::ChildTaken(child)),
+        Some(found) if !found.is_child_of(record.owner) => Err(Error::IdTaken(child)),
         Some(found) => Ok(Step::Stop(found.forking().is_some())),
     })
     .await?;
@@ -408,7 +408,7 @@ pub async fn delete(
             let origin = Origin { parent: branch, at: fork.at };
             let child = Child { branch: fork.child, owner: fork.owner, point: fork.point };
             match record_fork(bucket, child, origin).await {
-                Ok(()) | Err(Error::ChildTaken(_)) => {}
+                Ok(()) | Err(Error::IdTaken(_)) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -657,7 +657,7 @@ mod tests {
         let other = Child { owner: 0x23, ..forked };
         assert_eq!(
             block_on(record_fork(&bucket, other, origin)),
-            Err(Error::ChildTaken(test_branch(2)))
+            Err(Error::IdTaken(test_branch(2)))
         );
         let record = block_on(record(&bucket, test_branch(2))).unwrap();
         assert_eq!(record, Some(Kind::Fork(origin).of(0x22)));
@@ -678,7 +678,7 @@ mod tests {
         );
         assert_eq!(
             block_on(create_forked(&bucket, test_branch(2), 0x22)),
-            Err(Error::ChildTaken(test_branch(2)))
+            Err(Error::IdTaken(test_branch(2)))
         );
         assert_eq!(
             block_on(delete_fork(&bucket, test_branch(2), Kind::Own, 0x22, 9, 0)),
@@ -726,7 +726,7 @@ mod tests {
                 block_on(record(&bucket, test_branch(2))).unwrap().map(|record| record.owner);
             (forked, restored, deleted, owner)
         };
-        let taken = Err(Error::ChildTaken(test_branch(2)));
+        let taken = Err(Error::IdTaken(test_branch(2)));
         assert_eq!(race(true), (Ok(()), taken.clone(), Ok(false), Some(direct.owner)));
         assert_eq!(race(false), (taken, Ok(()), Ok(false), Some(of_point)));
 
@@ -766,17 +766,17 @@ mod tests {
             (
                 "create_forked",
                 &|bucket, owner| said(&block_on(create_forked(bucket, test_branch(child), owner))),
-                "Err(ChildTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
+                "Err(IdTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
             ),
             (
                 "record_fork",
                 &|bucket, owner| said(&block_on(record_fork(bucket, fork(owner, false), origin))),
-                "Err(ChildTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
+                "Err(IdTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
             ),
             (
                 "record_fork of a point",
                 &|bucket, owner| said(&block_on(record_fork(bucket, fork(owner, true), origin))),
-                "Err(ChildTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
+                "Err(IdTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
             ),
             (
                 "fork_point",
@@ -789,7 +789,7 @@ mod tests {
                         owner,
                     )))
                 },
-                "Err(ChildTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
+                "Err(IdTaken(Branch { cell: Cell { tenant: 1, id: 1 }, id: 2 }))",
             ),
             (
                 "delete_fork, nowhere",

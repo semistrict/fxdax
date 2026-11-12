@@ -59,7 +59,7 @@ impl ImageDevice {
     /// device, whose writes, frees and commits go through `writes`.
     pub fn create(
         dir: &Path,
-        made: (u64, extent_remote::layout::Branch, bool),
+        made: (u64, crate::host_store::BranchOf, bool),
         keeping: extent_store::upload::Options,
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
@@ -331,7 +331,7 @@ mod tests {
     fn device(capacity: u64) -> (ImageDevice, PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("image");
-        let made = (capacity, BRANCH, true);
+        let made = (capacity, crate::host_store::BranchOf::Named(BRANCH), true);
         let keeping = crate::host_store::keeping().unwrap();
         (ImageDevice::create(&image, made, keeping, Default::default()).unwrap(), image, dir)
     }

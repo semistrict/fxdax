@@ -5,13 +5,13 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1006,10 +1006,16 @@
+@@ -1046,10 +1046,16 @@
          let follower = matches!(opened, Phase::Following);
          let key = store_key(path);
          drop(self.0.named.set(key.to_string_lossy().into()));
--        self.0.report.opened(key, store.branch(), follower);
+-        self.0.report.opened(key, store.branch().id, follower);
 -        assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
-+        let branch = store.branch();
++        let branch = store.branch().id;
 +        if self.0.store.set(store).is_err() {
 +            if let Phase::Writing(hold) = opened {
 +                std::mem::forget(hold);
@@ -25,7 +25,7 @@
      }
  }
  
-@@ -1499,11 +1505,11 @@
+@@ -1545,11 +1551,11 @@
      fn opening(&self) -> Result<Opening<'_>, Errno> {
          let mut phase = self.phase.with(Mutex::lock);
          match *phase {

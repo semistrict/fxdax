@@ -178,6 +178,7 @@ pub use extents::{
     StoreBytes, StoreRole, WindowMapping, WriteBarriers,
 };
 pub use filesystem::{Filesystem, Node, Options};
+pub use host_store::{BranchOf, new_cell};
 pub use image::{Compactions, Image, TreeCompactions, VolumeMetadata};
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{

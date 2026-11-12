@@ -928,8 +928,12 @@ impl Pass {
                 }
                 // The collector's own: its lease, and its marks, which a mark-only pass never
                 // deletes, and an operator removes (TASK-264). fxdax: a cell's object, which says
-                // who holds it, stays as its records do (TASK-364).
-                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } | Kind::Unknown => false,
+                // who holds it, stays as its records do, and a block of object IDs taken for good (TASK-364).
+                Kind::GcLease
+                | Kind::Marks { .. }
+                | Kind::Cell { .. }
+                | Kind::ObjectIds { .. }
+                | Kind::Unknown => false,
             };
             if goes {
                 doomed.push(meta);

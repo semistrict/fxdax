@@ -48,6 +48,9 @@ pub struct Store {
     /// fxdax: what the collector's newest mark-only pass marked, which its reads warn of reaching
     /// (TASK-264).
     marks: crate::marks::Watch,
+    /// fxdax: what gives this process's new branches their IDs, out of blocks of the bucket's
+    /// (TASK-364).
+    objectids: crate::objectid::Allocator,
 }
 
 /// The kinds of request a store makes.
@@ -391,7 +394,14 @@ impl Store {
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
         let prefix = prefix.trim_matches('/').to_owned();
         let (counts, honoured, decoded) = Default::default();
-        Self { store, prefix, counts, honoured, decoded, marks: crate::marks::Watch::new() }
+        let (marks, objectids) = (crate::marks::Watch::new(), crate::objectid::Allocator::new());
+        Self { store, prefix, counts, honoured, decoded, marks, objectids }
+    }
+
+    /// fxdax: a new object ID of the bucket's, which no other branch of it has, nor will
+    /// ([`crate::objectid`], TASK-364).
+    pub async fn new_objectid(&self) -> u64 {
+        self.objectids.next(self).await
     }
 
     /// Checks that it honours the conditional writes branches rely on ([`probe`]), with an object

@@ -111,7 +111,7 @@ fn tenants_past_their_limits_evict_then_refuse() {
     std::fs::create_dir(&acme).unwrap();
     // Limited before it is granted, as it is made.
     daemon.set_memory_limit(Some("acme"), Some(2 * CHUNK)).unwrap();
-    let socket = daemon.grant("acme", &acme, None).unwrap();
+    let socket = daemon.grant("acme", 1, &acme, None).unwrap();
     let vm = RemoteExtentStore::connect(&socket, acme.join("vm"), CAPACITY).unwrap();
     read_through(&vm);
 
@@ -137,7 +137,7 @@ fn the_daemon_past_its_limit_evicts_any_tenants_pages() {
     assert_eq!(metric("fxdax_extentd_memory_limit_bytes"), 4 * CHUNK);
     let acme = dir.path().join("acme");
     std::fs::create_dir(&acme).unwrap();
-    let socket = daemon.grant("acme", &acme, None).unwrap();
+    let socket = daemon.grant("acme", 1, &acme, None).unwrap();
     let theirs = RemoteExtentStore::connect(&socket, acme.join("vm"), CAPACITY).unwrap();
     read_through(&theirs);
     let ours = daemon.open(&dir.path().join("vm"), CAPACITY);

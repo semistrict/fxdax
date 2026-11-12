@@ -350,7 +350,7 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                 // the case's.
                 let fork = stores.join("fork-profile");
                 opened(&extentd, &base)?
-                    .fork(&fork, branch + 1 + u64::from(iterations))
+                    .fork(&fork)
                     .map_err(|errno| anyhow::anyhow!("forking the base: {errno}"))?;
                 let sockets = tempdir::TempDir::new("fxdax-fork")?;
                 let (socket, mut daemon) = daemon(test_setup, sockets.path(), iterations)?;
@@ -370,7 +370,7 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                 {
                     let store = opened(&extentd, &base)?;
                     store
-                        .fork(&fork, store.branch() + 1 + u64::from(i))
+                        .fork(&fork)
                         .map_err(|errno| anyhow::anyhow!("forking the base: {errno}"))?;
                 }
                 // A socket's path is short: the daemon's directory is a temporary one of its own.

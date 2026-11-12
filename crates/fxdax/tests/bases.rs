@@ -106,8 +106,8 @@ fn tenants_reach_their_own_bases_and_public_ones() {
     let (acme, globex) = (dir.path().join("acme"), dir.path().join("globex"));
     std::fs::create_dir(&acme).unwrap();
     std::fs::create_dir(&globex).unwrap();
-    let acme_socket = daemon.grant("acme", &acme, None).unwrap();
-    let globex_socket = daemon.grant("globex", &globex, None).unwrap();
+    let acme_socket = daemon.grant("acme", 1, &acme, None).unwrap();
+    let globex_socket = daemon.grant("globex", 2, &globex, None).unwrap();
     let open =
         |socket: &Path, path: PathBuf| RemoteExtentStore::connect(socket, path, CAPACITY).unwrap();
 

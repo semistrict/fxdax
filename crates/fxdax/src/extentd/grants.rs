@@ -38,32 +38,37 @@ impl Grants {
         Self { sockets, granted: Mutex::new(HashMap::new()) }
     }
 
-    /// Grants the tenant `name`, whose stores are in `dir`, its socket, given to `uid` and `gid`
-    /// (the daemon's own, where not given), and returns its path: a new tenant's, which a thread
-    /// of its own serves; or, granted already, its socket, given again (`EEXIST` with another
-    /// directory). A tenant revoked whose VM processes live on is the one granted again, its
-    /// socket new: those it connects then share its arena with them, and the stores they have open
-    /// (TASK-79.36), which, another tenant's, they could not.
+    /// Grants the tenant `name`, of the ID `id` in the bucket (TASK-364), not 0 (`EINVAL`),
+    /// whose stores are in `dir`, its socket, given to `uid` and `gid` (the daemon's own, where not
+    /// given), and returns its path: a new tenant's, which a thread of its own serves; or, granted
+    /// already, its socket, given again (`EEXIST` with another directory or ID). A tenant revoked
+    /// whose VM processes live on is the one granted again, its socket new: those it connects then
+    /// share its arena with them, and the stores they have open (TASK-79.36), which, another
+    /// tenant's, they could not; of another ID, `EEXIST`.
     pub fn grant(
         &self,
         name: &str,
+        id: u64,
         dir: &Path,
-        uid: Option<u32>,
-        gid: Option<u32>,
+        (uid, gid): (Option<u32>, Option<u32>),
     ) -> Result<PathBuf, Errno> {
         check_name(name)?;
+        if id == crate::host_store::NO_TENANT {
+            return Err(Errno::EINVAL);
+        }
         let dir = dir.canonicalize().map_err(errno)?;
         let mut granted = self.granted.lock().unwrap();
         if let Some(grant) = granted.get(name) {
-            if grant.tenant.dir() != Some(&dir) {
+            if grant.tenant.dir() != Some(&dir) || grant.tenant.id() != id {
                 return Err(Errno::EEXIST);
             }
             give(&grant.socket, uid, gid)?;
             return Ok(grant.socket.clone());
         }
         let tenant = match super::memory::alive(name, &dir) {
+            Some(tenant) if tenant.id() != id => return Err(Errno::EEXIST),
             Some(tenant) => tenant,
-            None => Tenant::new(name, &dir).map_err(errno)?,
+            None => Tenant::new(name, id, &dir).map_err(errno)?,
         };
         let socket = self.sockets.join(format!("{name}.sock"));
         remove_stale(&socket)?;
@@ -83,6 +88,14 @@ impl Grants {
         let grant = Granted { tenant, socket: socket.clone(), listener };
         granted.insert(name.to_owned(), grant);
         Ok(socket)
+    }
+
+    /// The ID in the bucket of the granted tenant whose directory the store at `path` is in, if
+    /// any (TASK-364).
+    pub fn tenant_at(&self, path: &Path) -> Option<u64> {
+        let granted = self.granted.lock().unwrap();
+        let mut grants = granted.values().map(|grant| &grant.tenant);
+        grants.find(|tenant| tenant.dir().is_some_and(|dir| in_dir(path, dir))).map(|t| t.id())
     }
 
     /// Whether the stores at `one` and `other` are of one tenant, or of none: their paths in one

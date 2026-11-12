@@ -109,7 +109,7 @@ impl Hosts {
         let lens = [fork_faults::BLOCK, 4 << 20];
         let held = commit(&source, 1, &lens, b"root");
         let point = crate::host_store::new_alone();
-        source.point(disks[0].join("point"), point).unwrap();
+        source.point_to(disks[0].join("point"), point).unwrap();
         for (extent, _) in &held {
             source.free(*extent).unwrap();
         }
@@ -117,7 +117,7 @@ impl Hosts {
         // Another fork, gone: a checkpoint past the point's, so that only the point keeps that, and
         // what the point names is all gone once nothing keeps it: its state too, not just its data.
         let later = disks[0].join("later");
-        source.fork(&later, crate::host_store::new_alone()).unwrap();
+        source.fork_to(&later, crate::host_store::new_alone()).unwrap();
         ExtentStore::delete(&later, Some(&bucket)).unwrap();
 
         let mut copies = Vec::new();
@@ -186,7 +186,7 @@ impl Hosts {
         let path = self.disks[host].join(name);
         let child = crate::host_store::new_alone();
         let copy = self.copies[host].as_ref().expect("a host's copy");
-        let forked = copy.fork(&path, child).map_err(|err| err.errno());
+        let forked = copy.fork_to(&path, child).map_err(|err| err.errno());
         if forked.is_ok() {
             self.children.lock().unwrap().push((child, path));
         }
@@ -219,7 +219,7 @@ impl Hosts {
                         for (copy, disk) in copies {
                             let child = crate::host_store::new_alone();
                             let path = disk.join("raced");
-                            copy.fork(&path, child).unwrap();
+                            copy.fork_to(&path, child).unwrap();
                             children.lock().unwrap().push((child, path));
                         }
                         Self::collect(&bucket, "raced");
@@ -290,7 +290,7 @@ impl Hosts {
         let guard = fault.and_then(|fault| self.arm(host, fault));
         let handle = self.disks[host].join("child");
         let child = crate::host_store::new_alone();
-        let forked = self.copies[host].as_ref().unwrap().fork(&handle, child);
+        let forked = self.copies[host].as_ref().unwrap().fork_to(&handle, child);
         let forked = forked.map_err(|err| err.errno());
         drop(guard);
         let dead = self.dead.load(Ordering::SeqCst);
@@ -409,7 +409,8 @@ impl Hosts {
                         record.is_some_and(|record| !record.deleted)
                     })
                 }
-                Kind::GcLease | Kind::Marks { .. } => false,
+                // fxdax: a block of object IDs taken stays for good (TASK-364).
+                Kind::GcLease | Kind::Marks { .. } | Kind::ObjectIds { .. } => false,
                 _ => true,
             })
             .collect();
@@ -473,7 +474,7 @@ fn restores_take_their_steps_in_order() {
         })
         .collect();
     let copy = hosts.copies[1].as_ref().unwrap();
-    copy.fork(hosts.disks[1].join("child"), crate::host_store::new_alone()).unwrap();
+    copy.fork_to(hosts.disks[1].join("child"), crate::host_store::new_alone()).unwrap();
     drop(guards);
     assert_eq!(*steps.lock().unwrap(), RESTORE_STEPS);
 }

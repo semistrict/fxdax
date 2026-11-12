@@ -34,6 +34,8 @@ pub const GC_LEASE: &str = "gc/lease";
 /// fxdax: where the collector's mark-only passes write what they would delete ([`marks`]).
 pub const GC_MARKS: &str = "gc/marks/";
 const MOVES: &str = "moves/";
+/// fxdax: the prefix of the blocks of object IDs taken ([`objectid_block`]).
+const OBJECTIDS: &str = "objectid/";
 
 pub fn segments(branch: Branch) -> String {
     format!("{}segments/{:016x}/", branch.cell.prefix(), branch.id)
@@ -74,6 +76,13 @@ pub fn record(branch: Branch) -> String {
 
 pub fn lease(branch: Branch) -> String {
     format!("{}leases/{:016x}", branch.cell.prefix(), branch.id)
+}
+
+/// fxdax: the block of object IDs `block` taken, by one allocator of one process's
+/// ([`crate::objectid`], TASK-364): there once taken, and kept for good, so that no other takes
+/// it, and none of its IDs is given twice.
+pub fn objectid_block(block: u64) -> String {
+    format!("{OBJECTIDS}{block:016x}")
 }
 
 /// fxdax: the object of `cell` itself: who holds it, and its volumes ([`crate::cell`]).
@@ -136,6 +145,10 @@ pub enum Kind<'a> {
     Cell {
         cell: Cell,
     },
+    /// fxdax: a block of object IDs taken ([`objectid_block`]).
+    ObjectIds {
+        block: u64,
+    },
     GcLease,
     /// fxdax: a mark-only pass's marks ([`marks`]): the collector's own, never a candidate.
     Marks {
@@ -157,6 +170,7 @@ impl Kind<'_> {
             Self::Record { .. } => "record",
             Self::Lease { .. } => "lease",
             Self::Cell { .. } => "cell",
+            Self::ObjectIds { .. } => "objectid",
             Self::GcLease => "gc-lease",
             Self::Marks { .. } => "marks",
             Self::Moves { .. } => "moves",
@@ -179,6 +193,9 @@ pub fn kind(key: &str) -> Kind<'_> {
         }
         if let Some(from) = key.strip_prefix(MOVES) {
             return Some(Kind::Moves { from });
+        }
+        if let Some(block) = key.strip_prefix(OBJECTIDS) {
+            return Some(Kind::ObjectIds { block: hex(block)? });
         }
         let (tenant, rest) = key.strip_prefix(TENANTS)?.split_once('/')?;
         let (id, rest) = rest.strip_prefix("cells/")?.split_once('/')?;
@@ -436,6 +453,9 @@ mod tests {
         assert_eq!(kind(&record(branch)), Kind::Record { branch });
         assert_eq!(kind(&lease(branch)), Kind::Lease { branch });
         assert_eq!(kind(&self::cell(cell)), Kind::Cell { cell });
+        assert_eq!(objectid_block(0x2a), "objectid/000000000000002a");
+        assert_eq!(kind(&objectid_block(0x2a)), Kind::ObjectIds { block: 0x2a });
+        assert_eq!(kind("objectid/2a"), Kind::Unknown);
         assert_eq!(kind(GC_LEASE), Kind::GcLease);
         assert_eq!(kind(&marks(0x2a)), Kind::Marks { epoch: 0x2a });
         assert_eq!(marks(0x2a), "gc/marks/000000000000002a");

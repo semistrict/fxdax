@@ -21,10 +21,11 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A tenant named `name`, whose stores are in the directory `name` in `dir`.
-fn tenant(dir: &Path, name: &str) -> Arc<Tenant> {
+/// A tenant named `name`, of the ID `id` in the bucket (TASK-364), whose stores are in the
+/// directory `name` in `dir`.
+fn tenant(dir: &Path, name: &str, id: u64) -> Arc<Tenant> {
     std::fs::create_dir(dir.join(name)).unwrap();
-    Tenant::new(name, dir.join(name)).unwrap()
+    Tenant::new(name, id, dir.join(name)).unwrap()
 }
 
 /// A daemon's listener at `name` in `dir`, serving `tenant`'s VM processes, or those of none.
@@ -43,8 +44,8 @@ fn listen(dir: &Path, name: &str, tenant: Option<Arc<Tenant>>) -> PathBuf {
 #[test]
 fn tenants_hold_their_own_pages() {
     let dir = tempfile::tempdir().unwrap();
-    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
-    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two")));
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one", 1)));
+    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two", 2)));
     let ours = RemoteExtentStore::connect(&one, dir.path().join("one/ours"), 1 << 24).unwrap();
     let theirs = RemoteExtentStore::connect(&two, dir.path().join("two/theirs"), 1 << 24).unwrap();
     let (our_bytes, their_bytes) = (pattern(1), pattern(2));
@@ -65,8 +66,8 @@ fn tenants_hold_their_own_pages() {
 #[test]
 fn public_bases_are_shared_read_only() {
     let dir = tempfile::tempdir().unwrap();
-    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
-    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two")));
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one", 1)));
+    let two = listen(dir.path(), "two", Some(tenant(dir.path(), "two", 2)));
     let base_path = dir.path().join("base");
     let base = ExtentStore::create(&base_path, 1 << 24).unwrap();
     let base_bytes = pattern(3);
@@ -78,11 +79,9 @@ fn public_bases_are_shared_read_only() {
     let forks = [dir.path().join("one/fork"), dir.path().join("two/fork")];
     // A fork is the bucket's (TASK-165.7), made by the uploader its opening took the branch with.
     let base = ExtentStore::open(&base_path).unwrap();
-    for (fork, branch) in forks.iter().zip(1..) {
-        // Each the one volume of a cell of its own (TASK-364).
-        let child =
-            base.branch().in_cell(base.branch().cell.id + branch, base.branch().id + branch);
-        base.fork(fork, child).unwrap();
+    for (fork, tenant) in forks.iter().zip(1..) {
+        // Each the one volume of a cell of its tenant's (TASK-364).
+        base.fork(fork, fxdax::new_cell(tenant)).unwrap();
     }
     drop(base);
 
@@ -90,7 +89,11 @@ fn public_bases_are_shared_read_only() {
     let refused = RemoteExtentStore::connect(&one, &base_path, 1 << 24);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EACCES));
     let base_in_one = dir.path().join("one/base");
-    ExtentStore::create(&base_in_one, 1 << 24).unwrap().make_public().unwrap();
+    // Of a cell of its own (TASK-364), refused as public.
+    ExtentStore::create_in(&base_in_one, 1 << 24, fxdax::new_cell(1))
+        .unwrap()
+        .make_public()
+        .unwrap();
     let refused = RemoteExtentStore::connect(&one, &base_in_one, 1 << 24);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EPERM));
 
@@ -138,7 +141,7 @@ fn public_bases_are_shared_read_only() {
 fn the_default_tenants_pages_are_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let default = listen(dir.path(), "default", None);
-    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one")));
+    let one = listen(dir.path(), "one", Some(tenant(dir.path(), "one", 1)));
     let ours = RemoteExtentStore::connect(&default, dir.path().join("ours"), 1 << 24).unwrap();
     let theirs = RemoteExtentStore::connect(&one, dir.path().join("one/theirs"), 1 << 24).unwrap();
     let our_bytes = pattern(4);

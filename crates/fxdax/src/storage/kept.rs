@@ -13,11 +13,11 @@
 
 use super::collect::{self, Collecting};
 use crate::error::{Error, anyhow_of};
-use crate::host_store::{self, Opened};
+use crate::host_store::{self, BranchOf, Opened};
 use crate::remote;
 use extent_remote::cache::Cache;
 use extent_remote::cell::Kind;
-use extent_remote::layout::{Branch, Child};
+use extent_remote::layout::Child;
 use extent_store::upload::{self, Remote};
 use extent_store::{HostDir, Store};
 use std::path::Path;
@@ -37,19 +37,19 @@ pub(crate) struct Kept {
 }
 
 impl Kept {
-    /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
-    /// `branch` ([`host_store::create`]): whole if `whole`, or else unmade until its maker says it
+    /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of the
+    /// branch `of` says ([`host_store::create`]): whole if `whole`, or else unmade until its maker says it
     /// is ([`host_store::create_unmade`], TASK-196), as an import's, once filled. Its uploader
     /// keeps its branch as `keeping` says: in a host's daemon, with the host's cache of the
     /// bucket's objects, which what the bucket acknowledged goes into, and its extents are read
     /// from (TASK-237); elsewhere, with none ([`host_store::keeping`]).
     pub fn create(
         dir: &Path,
-        (capacity, branch, whole): (u64, Branch, bool),
+        (capacity, of, whole): (u64, BranchOf, bool),
         keeping: upload::Options,
     ) -> anyhow::Result<Self> {
         let cache = keeping.cache.clone();
-        let opened = host_store::create_unmade(dir, capacity, branch, Kind::Fxfs, None, keeping);
+        let opened = host_store::create_unmade(dir, capacity, of, Kind::Fxfs, None, keeping);
         let opened = opened.map_err(anyhow_of)?;
         if whole {
             opened.made()?;
@@ -110,8 +110,8 @@ impl Kept {
     /// cell of its tenant's (TASK-364), whose handle is a new directory at `path`, in its bucket
     /// too ([`host_store::fork`]): `held` is let go of once the fork's commit is made.
     pub fn fork<H>(&self, path: &Path, held: H) -> Result<(), Error> {
-        let id = host_store::new_alone().id;
-        let branch = host_store::fork_of(self.store.description().branch, id);
+        let cell = host_store::fork_cell(self.store.description().branch);
+        let branch = host_store::new_branch(self.remote.bucket(), cell).map_err(Error::from)?;
         let child = Child { branch, owner: rand::random(), point: false };
         host_store::fork(&self.store, &self.remote, path, child, |_| Ok(()), held)
     }
@@ -311,7 +311,7 @@ mod tests {
         let made = host_store::create_unmade(
             &path,
             SIZE,
-            extent_remote::layout::test_branch(7),
+            BranchOf::Named(extent_remote::layout::test_branch(7)),
             extent_remote::cell::Kind::Fxfs,
             Some("memory:///host"),
             keeping,
@@ -337,7 +337,7 @@ mod tests {
         let path = dir.path().join("image");
         let image = Kept::create(
             &path,
-            (SIZE, extent_remote::layout::test_branch(7), true),
+            (SIZE, BranchOf::Named(extent_remote::layout::test_branch(7)), true),
             host_store::keeping().unwrap(),
         )
         .unwrap();
