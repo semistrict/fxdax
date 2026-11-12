@@ -1460,8 +1460,8 @@ mod tests {
 
     /// While object storage is out of reach, or `failing` otherwise, commits go on until the lag
     /// reaches its bound, as `options` set it, two commits of a block each, then wait, failing
-    /// nothing, the bucket's failures counted (TASK-314); they go on once it answers again, and
-    /// every commit is uploaded.
+    /// nothing, the bucket's failures counted (TASK-314): the third, of two blocks; they go on once
+    /// it answers again, and every commit is uploaded.
     fn waits_at_the_lag_bound(
         options: extent_store::upload::Options,
         failing: fn(&Gated) -> &std::sync::atomic::AtomicBool,
@@ -1482,7 +1482,7 @@ mod tests {
         let third = {
             let store = store.clone();
             std::thread::spawn(move || {
-                write(&store, 3, &pattern(3, BLOCK));
+                write(&store, 3, &pattern(3, 2 * BLOCK));
                 store.commit_ordered(None)
             })
         };
@@ -1963,11 +1963,16 @@ mod tests {
     }
 
     #[test]
+    /// Three blocks' lag: the first two commits' at most, whether or not the uploader closed the
+    /// segment between the second's write and its commit, the segment holding the write, which the
+    /// commit copied into the next (TASK-92.41): their lag a block more. A bound of two blocks
+    /// left the second waiting then, once in some 350 runs, and once in 60 with the uploader
+    /// closing segments sooner, as it no longer waits for their framed files durable (TASK-384).
     fn commits_wait_at_the_lag_bound_in_bytes() {
         let interval = Duration::from_millis(1);
         let options = extent_store::upload::Options {
             interval,
-            max_lag_bytes: 2 * BLOCK as u64,
+            max_lag_bytes: 3 * BLOCK as u64,
             ..Default::default()
         };
         waits_at_the_lag_bound(options, |gated| &gated.shut);
