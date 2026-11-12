@@ -6190,3 +6190,45 @@ fn calls_for_guest_requests_are_logged_with_them() {
     // SAFETY: Unmaps the memory, which nothing uses any more.
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps as usize) }, 0);
 }
+
+/// TASK-371: what a guest's sync costs through the daemon, measured: rounds of a guest's sync
+/// loop's requests, a 4 KiB write and an ordered commit, then another write and a durable commit,
+/// each round's time, to a file bucket whose requests wait `FXDAX_REMOTE_LATENCY_MS`, at the URL
+/// `FXDAX_PHASES_BUCKET` names, through a daemon serving on a thread. Against
+/// `crate::remote`'s `bucket_round_trips_by_phase`, which commits in this process: what the daemon
+/// adds. `FXDAX_TEST_ARGS='--run-ignored only --no-capture durable_commits_through_the_daemon'`.
+#[test]
+#[ignore = "a measurement against FXDAX_PHASES_BUCKET's bucket"]
+fn durable_commits_through_the_daemon() {
+    let url = std::env::var("FXDAX_PHASES_BUCKET").expect("FXDAX_PHASES_BUCKET names a bucket");
+    let url = format!("{}/daemon-{:016x}/", url.trim_end_matches('/'), rand::random::<u64>());
+    let _ = super::logging::to_stderr();
+    // SAFETY: As in host.
+    unsafe {
+        std::env::set_var("FXDAX_EXTENTD_REMOTE", &url);
+        std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _served) = connect(&dir.path().join("store"), 1 << 30);
+    let mut took = Vec::new();
+    for sequence in 1..=40u64 {
+        let started = std::time::Instant::now();
+        let data = ExtentId { branch: store.branch(), sequence: 2 * sequence };
+        write(&store, data, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        store.commit_ordered(None).unwrap();
+        let journal = ExtentId { branch: store.branch(), sequence: 2 * sequence + 1 };
+        write(&store, journal, 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        println!("ROUND {sequence} ms={ms:.1}");
+        took.push(ms);
+    }
+    took.sort_by(f64::total_cmp);
+    println!(
+        "ROUNDS n={} median-ms={:.1} min-ms={:.1} max-ms={:.1}",
+        took.len(),
+        took[took.len() / 2],
+        took[0],
+        took[took.len() - 1]
+    );
+}
