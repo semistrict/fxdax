@@ -464,7 +464,7 @@ async fn recover_live(
             let checkpoints = &checkpoints;
             async move {
                 // Its lease, read after the listing and its recovery: what its writer may name
-                // ([`behind`]), and whether one is taking it over ([`Ended::taking`]).
+                // ([`behind`]), and whether one is taking it over ([`pinned`]).
                 let recovered = match recovery::recover_layers(checkpoints, branch, origin).await {
                     Ok(recovered) => {
                         match branch::lease_epoch(bucket, &layout::lease(branch)).await {
@@ -539,28 +539,71 @@ struct Live {
     behind: BTreeSet<String>,
 }
 
+/// fxdax: the segments of a live branch the collector keeps whatever covers them (TASK-388), as a
+/// recovery of it, `state`, and the epoch of its lease, read after the listing, `lease`, show:
+/// every position a writer of the branch, taken over or taking it over, may still create at. A
+/// writer acknowledges what it created with no read of its lease, its creates its fencing
+/// (TASK-371): it creates its segments one after another and acknowledges them in order, so it
+/// acknowledges nothing past the first position where its create fails, and nothing it
+/// acknowledged is lost if that position held, from when its successor read the branch, an object
+/// not its own, which stays for as long as the writer may live. Those positions, for every writer:
+///
+/// - while a writer takes the branch over, its lease of an epoch past the state's, every segment:
+///   it may have read the branch before the last writer's segment landed, and fences where it
+///   found the end (`pins_takings`);
+/// - every fence, of every epoch: where a writer taken over by the one that put it meets it, its
+///   own segments, applied, before (`pins_fences`, `pins_old_fences`);
+/// - every stray, a segment read that is neither a fence nor of the epoch of the fence before it:
+///   where a writer taken over meets it before its successor's fence, landed there first, void
+///   (`pins_void_strays`) or late (`pins_late_strays`).
+///
+/// A writer's own segments, but its fence, go once a checkpoint covers them: it creates each once.
+/// Nothing says when no writer of an epoch can be left, so pins stay, a few objects a takeover.
+pub fn pinned<P>(state: &State<P>, lease: u64) -> Pinned {
+    if rules().pins_takings && lease > state.epoch {
+        return Pinned::All;
+    }
+    let last = state.fences.last().copied();
+    let fences = (state.fences.iter().copied())
+        .filter(|&seq| rules().pins_fences && (rules().pins_old_fences || Some(seq) == last));
+    let strays = (state.strays.iter())
+        .filter(|stray| match stray.late {
+            true => rules().pins_late_strays,
+            false => rules().pins_void_strays,
+        })
+        .map(|stray| stray.seq);
+    Pinned::Only(fences.chain(strays).collect())
+}
+
+/// The segments of a branch the collector keeps whatever covers them ([`pinned`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pinned {
+    All,
+    Only(BTreeSet<u64>),
+}
+
+impl Pinned {
+    pub fn contains(&self, seq: u64) -> bool {
+        match self {
+            Pinned::All => true,
+            Pinned::Only(pinned) => pinned.contains(&seq),
+        }
+    }
+}
+
 /// What deciding what goes needs of a live branch's state, its extents but: where its segments end,
-/// the highest epoch of those applied, the branch's next sequence number, its fences, and whether
-/// a writer is taking it over.
+/// the highest epoch of those applied, the branch's next sequence number, and its pins.
 struct Ended {
     end: u64,
     epoch: u64,
     next_sequence: u64,
-    fences: Vec<u64>,
-    /// Whether its lease, read after the listing, is of an epoch past its state's: a writer taking
-    /// it over, which may have read it before the last writer's segment landed, fences where it
-    /// found its end, whatever covers it since (TASK-371).
-    taking: bool,
+    pinned: Pinned,
 }
 
 impl Ended {
-    /// fxdax: whether segment `seq` of the branch stays, whatever covers it (TASK-371): one of its
-    /// fences, which a writer taken over must find for as long as it lives, its creates being its
-    /// fencing (fences_kept), the strays among them (strays_kept, TASK-383); or
-    /// any, while a writer takes the branch over (takeovers_kept).
+    /// fxdax: whether segment `seq` of the branch stays, whatever covers it ([`pinned`]).
     fn keeps(&self, seq: u64) -> bool {
-        (rules().fences_kept && self.fences.binary_search(&seq).is_ok())
-            || (rules().takeovers_kept && self.taking)
+        self.pinned.contains(seq)
     }
 
     /// Whether segment `seq` of `branch`, which this recovery of it ended as it says, may land in
@@ -618,7 +661,8 @@ impl Live {
     fn add(&mut self, recovered: Recovered<Layers>, lease: u64, inherited: &mut Inherited) {
         let behind = behind(&recovered, lease);
         let Recovered { state, end, touched, .. } = recovered;
-        let State { branch, extents, epoch, next_sequence, fences, .. } = state;
+        let pinned = pinned(&state, lease);
+        let State { branch, extents, epoch, next_sequence, .. } = state;
         let Layered { inherited: from, own, shadowed } = extents;
         self.touched.extend(touched);
         for (extent, location) in own {
@@ -633,8 +677,7 @@ impl Live {
                 None => inherited.states.push((from, shadowed)),
             }
         }
-        let taking = lease > epoch;
-        let ended = Ended { end, epoch, next_sequence, fences, taking };
+        let ended = Ended { end, epoch, next_sequence, pinned };
         self.branches.entry(branch).or_default().push(ended);
     }
 
@@ -1512,10 +1555,10 @@ mod tests {
     }
 
     /// The collector deleting the fence: the writer taken over creates its segment in its place,
-    /// and acknowledges a commit the branch doesn't hold (specs/bucket's NoFencesKept).
+    /// and acknowledges a commit the branch doesn't hold (specs/bucket's NoPinsFences).
     #[test]
-    fn writers_taken_over_finding_their_successors_fences_need_fences_kept() {
-        crate::set_rules(crate::Rules { fences_kept: false, ..crate::Rules::ALL });
+    fn writers_taken_over_finding_their_successors_fences_need_them_pinned() {
+        crate::set_rules(crate::Rules { pins_fences: false, ..crate::Rules::ALL });
         let created = block_on(create_where_a_successor_fenced());
         crate::set_rules(crate::Rules::ALL);
         assert_eq!(created, (Ok(()), Ok(Some(1)), Some(2)));
@@ -1543,6 +1586,50 @@ mod tests {
         (uploaded, acknowledged, last)
     }
 
+    /// TASK-388: a writer taken over by two in turn, its next segment's create in flight where
+    /// the first of them fenced: the collector pins every fence, not only the last, and the create
+    /// fails there.
+    #[test]
+    fn writers_taken_over_twice_find_the_first_successors_fence_pinned() {
+        let created = block_on(create_where_the_first_of_two_successors_fenced());
+        assert_eq!(created, (Err(Error::Fenced), Err(Error::Fenced), Some(4)));
+    }
+
+    /// The collector pinning the last fence alone: the writer taken over creates its segment where
+    /// the first successor's fence was, and acknowledges a commit the branch doesn't hold
+    /// (specs/bucket's NoPinsOldFences).
+    #[test]
+    fn writers_taken_over_twice_finding_the_first_successors_fence_need_old_fences_pinned() {
+        crate::set_rules(crate::Rules { pins_old_fences: false, ..crate::Rules::ALL });
+        let created = block_on(create_where_the_first_of_two_successors_fenced());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(created, (Ok(()), Ok(Some(1)), Some(4)));
+    }
+
+    /// What the writer of lease epoch 1 gets of the upload and the acknowledgement of its commit 3
+    /// at its segment 1, where the writer of epoch 2 fenced, the writer of epoch 3 fencing after
+    /// it, committing 4 and checkpointing, and a pass running. And the branch's last commit then.
+    async fn create_where_the_first_of_two_successors_fenced()
+    -> (Result<(), Error>, Result<Option<u64>, Error>, Option<u64>) {
+        let bucket = store();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let taken = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
+        Writer::open(bucket.clone(), test_branch(1), 11, 0).await.unwrap();
+        let last = Writer::open(bucket.clone(), test_branch(1), 12, 0).await.unwrap();
+        commit(&last, Commit { tag: 4, ..Commit::default() }).await;
+        last.checkpoint().await.unwrap();
+        collect(&*bucket, 1, &KEEP).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 3, ..Commit::default() }).close(&mut taken.chain()).frame();
+        let seq = taken.add_segment(objects).unwrap();
+        assert_eq!(seq, 1);
+        let uploaded = taken.upload(seq).await;
+        let acknowledged = taken.acknowledge().await;
+        let last =
+            recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
+        (uploaded, acknowledged, last)
+    }
+
     /// TASK-383: a writer taken over, its next segment's create in flight where a stray is, an
     /// earlier writer's segment landed late, void, its successor fencing past it, committing and
     /// checkpointing, and a pass running: the collector keeps the void segment with the fence, and
@@ -1556,10 +1643,10 @@ mod tests {
 
     /// The collector deleting the stray, covered: the writer taken over creates its
     /// segment in its place, below its successor's fence, and acknowledges a commit the branch
-    /// doesn't hold (specs/bucket's NoStraysKept).
+    /// doesn't hold (specs/bucket's NoPinsVoidStrays).
     #[test]
-    fn writers_taken_over_finding_void_segments_before_their_successors_fences_need_strays_kept() {
-        crate::set_rules(crate::Rules { strays_kept: false, ..crate::Rules::ALL });
+    fn writers_taken_over_finding_void_segments_before_their_successors_fences_need_them_pinned() {
+        crate::set_rules(crate::Rules { pins_void_strays: false, ..crate::Rules::ALL });
         let created = block_on(create_where_a_void_segment_was());
         crate::set_rules(crate::Rules::ALL);
         assert_eq!(created, (Ok(()), Ok(Some(2)), Some(4)));
@@ -1614,8 +1701,8 @@ mod tests {
     /// The collector deleting the late fence, covered: the writer taken over creates its segment
     /// in its place and acknowledges a commit the branch doesn't hold.
     #[test]
-    fn writers_taken_over_finding_late_fences_before_their_successors_fences_need_strays_kept() {
-        crate::set_rules(crate::Rules { strays_kept: false, ..crate::Rules::ALL });
+    fn writers_taken_over_finding_late_fences_before_their_successors_fences_need_them_pinned() {
+        crate::set_rules(crate::Rules { pins_late_strays: false, ..crate::Rules::ALL });
         let created = block_on(create_where_a_late_fence_was());
         crate::set_rules(crate::Rules::ALL);
         assert_eq!(created, (Ok(()), Ok(Some(1)), Some(4)));
@@ -1657,17 +1744,17 @@ mod tests {
     /// landed, finds the segment where it fences, though the last writer acknowledged and
     /// checkpointed it and a pass ran before it fenced: the collector keeps a branch's segments
     /// while its lease is of an epoch past its state's. Found by specs/bucket's TLA+, the model of
-    /// NoFencesKept with fences_kept in.
+    /// NoFencesKept with fences_kept in (since TASK-388, NoPinsTakings).
     #[test]
     fn writers_taking_over_find_what_landed_after_they_read() {
         assert_eq!(block_on(take_over_past_a_pass()), Some(1));
     }
 
     /// The collector deleting it, the checkpoint covering it: the fence lands in its place, and
-    /// the commit the last writer acknowledged is in no history (specs/bucket's NoTakeoversKept).
+    /// the commit the last writer acknowledged is in no history (specs/bucket's NoPinsTakings).
     #[test]
-    fn writers_taking_over_finding_what_landed_after_they_read_need_takeovers_kept() {
-        crate::set_rules(crate::Rules { takeovers_kept: false, ..crate::Rules::ALL });
+    fn writers_taking_over_finding_what_landed_after_they_read_need_it_pinned() {
+        crate::set_rules(crate::Rules { pins_takings: false, ..crate::Rules::ALL });
         let last = block_on(take_over_past_a_pass());
         crate::set_rules(crate::Rules::ALL);
         assert_eq!(last, None);

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-12 14:08'
+updated_date: '2026-11-12 19:51'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -426,24 +426,29 @@ The lease says who should write a branch; the dense, create-only segments and th
 - **A writer acknowledges a segment** once it and every one before it are created: its creates are
   its fencing. *Revised 2026-11-12 (TASK-371):* it acknowledged them only once a read of the lease,
   after them, showed the lease still its, a second round trip for every durable commit (a guest's
-  sync 3 a second at 25 ms of latency, of which these reads were a third). A writer taken over
-  creates its segments in order, and acknowledges them in order, so the first of them it can't
-  acknowledge is where its successor's fence is, or before: what it created before that, its
-  successor applied as it fenced, or a **stray**: a segment of another writer's at its place, void
-  (an earlier writer's landed late) or following the fence before it though of an earlier epoch (an
-  earlier writer's fence, made late). For that to hold for as long as the writer taken over lives,
-  the collector keeps three things (Garbage collection, step 7): **every fence of a live branch**,
-  the first segment of each epoch its state applied (`State::fences`, which checkpoints hold), else
-  a checkpoint covering the fence lets the collector delete it and the writer's create land in its
-  place (`fences_kept`); **every stray** its state read, which `State::fences` counts too, else the
-  writer's create lands where the stray was, below its successor's fence, acknowledged and in no
-  history (`strays_kept`, *added 2026-11-12, TASK-383*: a writer's segment at a void one's place,
-  found by the simulation once its seeds replayed; at a late fence's, by the TLA+ once void
-  segments alone were kept); and **every segment of a live branch being taken over**, its lease, read
-  after the listing, of an epoch past its state's, else the writer taking over, having read the
-  branch before the last writer's segment landed, fences where that segment was, which the last
-  writer acknowledged and checkpointed and the collector deleted (`takeovers_kept`, found by the
-  TLA+ once the first alone was in). A deleted branch keeps neither, and its writer may then
+  sync 3 a second at 25 ms of latency, of which these reads were a third). **The rule that makes
+  that safe, once** *(TASK-388, replacing three rules found one lost commit at a time: TASK-371's
+  two and TASK-383's)*: **the collector never frees a position a writer of a live branch, taken
+  over or taking it over, may still create at, for as long as such a writer may live**
+  (specs/bucket's `CreatesNeverFreed`). It is enough: a writer creates its segments in order and
+  acknowledges them in order, so it acknowledges nothing past the first create that fails. A
+  writer taken over fails at the first position past its own segments, as its successor's
+  recovery found every position before the successor's fence occupied, by its own segments or by
+  another's; so all it acknowledged is what its successor applied, as long as those positions stay
+  occupied. A writer taking over fences at the end it read, so all the last writer acknowledged
+  before is in what it applies, as long as what landed at and past that end stays until it fences.
+  The collector computes those positions in one function (`collector::pinned`), from a live
+  branch's state and its lease read after the listing: while a writer takes the branch over, its
+  lease of an epoch past the state's, **every segment**; otherwise **every fence**, the first
+  segment of each epoch its state applied, of every epoch, and **every stray**, a segment its state
+  read that is neither a fence nor of the epoch of the fence before it: void (an earlier writer's
+  landed late, following none applied) or late (an earlier epoch's following the last applied, as
+  an earlier writer's fence made after its successor's does). A writer's own segments but its fence
+  go once a checkpoint covers them: it creates each once. Checkpoints carry the fences and strays
+  (`State::fences`, `State::strays`); nothing says when no writer of an epoch can be left, so the
+  pins stay, a few objects per takeover. Each case is a rule a test turns off (`pins_fences`,
+  `pins_old_fences`, `pins_void_strays`, `pins_late_strays`, `pins_takings`), and specs/bucket's
+  mutation of each finds an acknowledged commit lost. A deleted branch keeps no pins, and its writer may then
   acknowledge a commit no branch holds, which no one reads; but **a segment holding a fork is
   acknowledged only once a read of the lease, after its creates, shows the lease still the
   writer's** (`forks_after_lease`), as recording the fork's child would name segments the
@@ -755,8 +760,8 @@ one for the next pass to reclaim. A pass:
 7. **Deletes** what is listed and not needed:
    - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
      never a live branch's segments at or past its end, which may be uploaded and not yet in it,
-     nor its fences, nor any of its segments while a writer takes it over, its lease, read after
-     the listing, of an epoch past its state's (Fencing, TASK-371);
+     nor its pins, the positions a writer of it, taken over or taking it over, may still create at
+     (`collector::pinned`; Fencing, TASK-371, TASK-388);
    - checkpoints no recovery read;
    - extents of their own no state names, once no segment will name them: by what their keys
      declare, the writer that uploaded each and the segment that names it, an earlier writer's once
@@ -887,9 +892,10 @@ extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
   doc-14's WAL, at the level of what each step reads and writes, and TLC exhausts small models of
   it (`specs/bucket/*.cfg`) where the simulation samples. Each rule above is a member of its
   `Rules`, and a mutation of `specs/bucket/mutations` removes it and must find the violation it
-  prevents, run by `scripts/check-tla.sh` (`make check-tla`): `fences_kept` (`NoFencesKept`),
-  `strays_kept` (`NoStraysKept`, TASK-383),
-  `takeovers_kept` (`NoTakeoversKept`) and `forks_after_lease` (`NoForksAfterLease`), which took
+  prevents, run by `scripts/check-tla.sh` (`make check-tla`): the pins' cases, `pins_fences`,
+  `pins_old_fences`, `pins_void_strays`, `pins_late_strays` and `pins_takings` (`NoPinsFences`,
+  `NoPinsOldFences`, `NoPinsVoidStrays`, `NoPinsLateStrays`, `NoPinsTakings`; TASK-371, TASK-383,
+  TASK-388), which keep the property `CreatesNeverFreed`, and `forks_after_lease` (`NoForksAfterLease`), which took
   `acks_after_lease`'s place (`NoAcksAfterLease`, TASK-371), `fence` (`NoFence`), `continuity` (`NoContinuity`), `epoch_sequences`
   (`NoEpochSequences`), `records_after_ack` (`NoRecordsAfterAck`), `candidates_first`
   (`NoCandidatesFirst`), `newest_checkpoint` (`NoNewestCheckpoint`), `forks_from_states`

@@ -470,16 +470,15 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
         let lease = crate::branch::lease_epoch(bucket, &layout::lease(branch)).await.ok();
         let behind = lease != recovered.checkpointer;
-        // Its fences, which a writer taken over must find; and, while a writer takes it over,
-        // its lease of an epoch past its state's, all its segments (TASK-371).
-        if crate::rules().fences_kept {
-            let fences = recovered.state.fences.iter();
-            needed.extend(fences.map(|&seq| layout::segment(branch, seq)));
-        }
-        if crate::rules().takeovers_kept && lease.is_some_and(|lease| lease > recovered.state.epoch)
-        {
-            let prefix = layout::segments(branch);
-            needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
+        // Its pins, where a writer taken over or taking it over may still create (TASK-388).
+        match crate::collector::pinned(&recovered.state, lease.unwrap_or(0)) {
+            crate::collector::Pinned::All => {
+                let prefix = layout::segments(branch);
+                needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
+            }
+            crate::collector::Pinned::Only(pinned) => {
+                needed.extend(pinned.iter().map(|&seq| layout::segment(branch, seq)));
+            }
         }
         for (&extent, location) in &recovered.state.extents {
             needed.insert(location.key.clone());

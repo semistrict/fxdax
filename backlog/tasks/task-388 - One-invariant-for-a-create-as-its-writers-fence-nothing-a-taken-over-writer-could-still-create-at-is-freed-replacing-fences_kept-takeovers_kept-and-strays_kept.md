@@ -4,9 +4,11 @@ title: >-
   One invariant for a create as its writer's fence: nothing a taken-over writer
   could still create at is freed, replacing fences_kept, takeovers_kept and
   strays_kept
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-12 19:26'
+updated_date: '2026-11-12 20:07'
 labels:
   - extent_store
   - collector
@@ -36,3 +38,9 @@ Since TASK-371 a durable commit is one bucket round trip: a writer counts its su
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. State records facts: fences and strays (void/late) apart; one function collector::pinned(state, lease) computes the keep-set; rules pins_fences, pins_old_fences, pins_void_strays, pins_late_strays, pins_takings are its cases, replacing fences_kept/takeovers_kept/strays_kept. FORMAT 6 -> 7. 2. specs/bucket: one Pinned operator in GcFinish; invariant CreatesNeverFreed (history var freed kept by Next): the first place a live writer (taken over or taking over) may still create at and acknowledge was never freed. 3. Mutation per case (NoPins*), each finding NoAckedLost; hunt models with one takeover and one writer more (BucketTakeovers: 3 hosts, 4 takings). 4. Direct tests per case (rule-off twins), sim test_needs per case. 5. 100,000-seed soak of the takeover profiles on ubu1 (fxjob --mem 8G). 6. doc-7 states the rule once.
+<!-- SECTION:PLAN:END -->

@@ -140,9 +140,11 @@ fn one() {
         std::env::var("SIM_OFF").unwrap_or_default().split(',').filter(|name| !name.is_empty())
     {
         match name {
-            "fences_kept" => rules.fences_kept = false,
-            "strays_kept" => rules.strays_kept = false,
-            "takeovers_kept" => rules.takeovers_kept = false,
+            "pins_fences" => rules.pins_fences = false,
+            "pins_old_fences" => rules.pins_old_fences = false,
+            "pins_void_strays" => rules.pins_void_strays = false,
+            "pins_late_strays" => rules.pins_late_strays = false,
+            "pins_takings" => rules.pins_takings = false,
             "forks_after_lease" => rules.forks_after_lease = false,
             "fence" => rules.fence = false,
             "continuity" => rules.continuity = false,
@@ -353,16 +355,24 @@ fn takeovers() -> Profile {
 
 test_holds!(takeovers_while_uploading, takeovers());
 
-// A writer acknowledging what it created, with no read of its lease (TASK-371): a later writer's
+// A writer acknowledging what it created, with no read of its lease (TASK-371), its creates
+// failing where the collector pins the branch (`collector::pinned`, TASK-388): a later writer's
 // fence, which a checkpoint covers, kept for as long as the writer taken over lives...
-test_needs!(takeovers_need_fences_kept, fences_kept, recreated());
+test_needs!(takeovers_need_fences_pinned, pins_fences, recreated());
 
-// ...and the void segments before that fence, earlier writers' landed late, where the writer taken
-// over may yet create, its successor fencing past them (TASK-383).
-test_needs!(takeovers_need_strays_kept, strays_kept, recreated());
+// ...those of every epoch, not only the last: a writer taken over by two meets the first's...
+test_needs!(takeovers_need_old_fences_pinned, pins_old_fences, recreated());
+
+// ...and the void strays, earlier writers' segments landed late, where the writer taken over may
+// yet create, its successor fencing past them (TASK-383)...
+test_needs!(takeovers_need_void_strays_pinned, pins_void_strays, recreated());
+
+// ...and the late ones, earlier writers' fences made after their successors', which they follow
+// (TASK-383, TASK-388)...
+test_needs!(takeovers_need_late_strays_pinned, pins_late_strays, recreated());
 
 // ...and what the last writer landed after a later writer read the branch, until that one fenced.
-test_needs!(takeovers_need_takeovers_kept, takeovers_kept, late_checkpoints());
+test_needs!(takeovers_need_takings_pinned, pins_takings, late_checkpoints());
 
 // A deleted branch's writer, taken over, acknowledging a fork only after a read of its lease: the
 // deletion's fence goes with the branch.

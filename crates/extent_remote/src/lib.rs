@@ -165,27 +165,33 @@ impl From<extent_frame::Corrupt> for Error {
 /// turning it off, and specs/bucket's TLA+ by its mutation removing it (doc-7, Testing).
 #[derive(Clone, Copy, Debug)]
 pub struct Rules {
-    /// The collector keeps every fence of a live branch, the first segment of each epoch its state
-    /// applied ([`State::fences`](recovery::State::fences)): a writer taken over, whatever it
-    /// still creates, finds its create failing at its successor's fence for as long as it lives.
-    /// So a writer acknowledges what it created, its creates the fencing, with no read of its
-    /// lease: a durable commit is one round trip (TASK-371).
-    /// TLA+: `specs/bucket/mutations/NoFencesKept.cfg`.
-    pub fences_kept: bool,
-    /// A branch's fences count its strays, every segment read that is not of the epoch of the
-    /// fence before it: void, or an earlier writer's following it, as that writer's late fence
-    /// does. The collector keeps them with the fences: a writer taken over may have its next
-    /// segment's create in flight where a stray is, its successor fencing past it; the collector
-    /// deleting the stray once a checkpoint covers it, the create lands there and is acknowledged,
-    /// below the fence, in no history (TASK-383).
-    /// TLA+: `specs/bucket/mutations/NoStraysKept.cfg`.
-    pub strays_kept: bool,
-    /// The collector keeps every segment of a live branch whose lease, read after the listing, is
-    /// of an epoch past its state's: a writer taking it over, which may have read the branch
-    /// before the last writer's segment landed there, fences where it found the end, which that
-    /// segment must still hold (TASK-371).
-    /// TLA+: `specs/bucket/mutations/NoTakeoversKept.cfg`.
-    pub takeovers_kept: bool,
+    /// The collector's pins ([`collector::pinned`], TASK-388), the positions a writer of a live
+    /// branch, taken over or taking it over, may still create at, each case a rule that a test
+    /// turns off to show it needed: so that a writer acknowledges what it created, its creates the
+    /// fencing, with no read of its lease, a durable commit one round trip (TASK-371). Every fence
+    /// of the branch, the first segment of each epoch its state applied: a writer taken over finds
+    /// its create failing at its successor's fence for as long as it lives (TASK-371).
+    /// TLA+: `specs/bucket/mutations/NoPinsFences.cfg`.
+    pub pins_fences: bool,
+    /// ...those of every epoch, not only the last: a writer taken over by two finds its create
+    /// failing at the first one's fence.
+    /// TLA+: `specs/bucket/mutations/NoPinsOldFences.cfg`.
+    pub pins_old_fences: bool,
+    /// Every void stray, an earlier writer's segment landed late, following none applied, which a
+    /// writer taken over meets where its next create goes, its successor having fenced past it
+    /// (TASK-383).
+    /// TLA+: `specs/bucket/mutations/NoPinsVoidStrays.cfg`.
+    pub pins_void_strays: bool,
+    /// Every late stray, an earlier epoch's segment following the last applied, as an earlier
+    /// writer's fence made after its successor's does (TASK-383).
+    /// TLA+: `specs/bucket/mutations/NoPinsLateStrays.cfg`.
+    pub pins_late_strays: bool,
+    /// Every segment, while a writer takes the branch over, its lease, read after the listing, of
+    /// an epoch past its state's: the writer taking it over, which may have read the branch before
+    /// the last writer's segment landed there, fences where it found the end, which that segment
+    /// must still hold (TASK-371).
+    /// TLA+: `specs/bucket/mutations/NoPinsTakings.cfg`.
+    pub pins_takings: bool,
     /// A writer acknowledges a segment holding a fork only once a read of its lease that follows
     /// the segment's creation shows the lease still its: a deleted branch's fences go, and its
     /// writer, taken over, would record the child of a fork of segments the collector let go of.
@@ -342,9 +348,11 @@ pub struct Rules {
 
 impl Rules {
     pub const ALL: Self = Self {
-        fences_kept: true,
-        strays_kept: true,
-        takeovers_kept: true,
+        pins_fences: true,
+        pins_old_fences: true,
+        pins_void_strays: true,
+        pins_late_strays: true,
+        pins_takings: true,
         forks_after_lease: true,
         fence: true,
         continuity: true,

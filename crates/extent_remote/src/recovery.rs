@@ -51,12 +51,14 @@ pub struct State<P = Extents> {
     /// The highest epoch of the segments applied.
     pub epoch: u64,
     /// fxdax: the branch's fences, in order: each segment applied of an epoch past those before
-    /// it, a writer's taking over (doc-7, Fencing); and the strays, every segment read that is
-    /// not of the epoch of the fence before it, void or an earlier writer's following it
-    /// (strays_kept, TASK-383): which the collector keeps, so that a writer taken over finds its
-    /// create failing there for as long as it lives (TASK-371). Its own, not its parent's: a fork's
-    /// child starts with none.
+    /// it, a writer's taking over (doc-7, Fencing). Its own, not its parent's: a fork's child
+    /// starts with none. With its strays, what the collector pins ([`pinned`], TASK-388).
+    ///
+    /// [`pinned`]: crate::collector::pinned
     pub fences: Vec<u64>,
+    /// fxdax: the branch's strays, in order: every segment read that is neither a fence nor of the
+    /// epoch of the fence before it ([`Stray`], TASK-383). Its own, as its fences are.
+    pub strays: Vec<Stray>,
     /// The last segment applied.
     pub through: Option<u64>,
     /// The sequence numbers of the branch's own extents it freed, which it writes no more: one
@@ -69,6 +71,20 @@ pub struct State<P = Extents> {
     /// ends, if they did ([`Begun`], TASK-92.41): none in a state a writer acknowledged, nor in
     /// any checkpoint, as writers acknowledge only segments ending their commits.
     pub begun: Option<Begun>,
+}
+
+/// fxdax: a segment a recovery read that is neither a fence nor its fence's writer's (TASK-383): a
+/// writer taken over may still have a create in flight at its place, its successor having fenced
+/// past it, which fails only while the stray is there ([`pinned`]).
+///
+/// [`pinned`]: crate::collector::pinned
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stray {
+    pub seq: u64,
+    /// Whether it follows the last segment applied, of an earlier epoch than it, as an earlier
+    /// writer's fence made after its successor's does; else it is void, following none, as an
+    /// earlier writer's segment landed late is.
+    pub late: bool,
 }
 
 /// fxdax: the runs a commit sealed in segments applied that a later segment ends
@@ -129,6 +145,7 @@ impl<P> State<P> {
             forks: Vec::new(),
             epoch: 0,
             fences: Vec::new(),
+            strays: Vec::new(),
             through: None,
             spent: Spent::default(),
             capacity: None,
@@ -159,6 +176,7 @@ impl<P> State<P> {
             forks,
             epoch,
             fences,
+            strays,
             through,
             spent,
             capacity,
@@ -175,6 +193,7 @@ impl<P> State<P> {
             forks,
             epoch,
             fences,
+            strays,
             through,
             spent,
             capacity,
@@ -188,12 +207,9 @@ impl<P: Places> State<P> {
     /// its footer names (doc-7, Fencing). Returns whether it applied it.
     pub fn apply(&mut self, footer: &Footer) -> bool {
         self.through = Some(footer.seq);
-        // A stray, void or an earlier writer's following the fence before it, which none of its
-        // writer's: the writer of that fence's epoch, taken over, may still have a create in flight
-        // here, its successor fencing past it, which fails only while the stray stays (TASK-383).
         let void = footer.after != self.last_segment && rules().continuity;
-        if (void || footer.epoch < self.epoch) && rules().strays_kept {
-            self.fences.push(footer.seq);
+        if void || footer.epoch < self.epoch {
+            self.strays.push(Stray { seq: footer.seq, late: !void });
         }
         if void {
             return false;

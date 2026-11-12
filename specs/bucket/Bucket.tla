@@ -52,36 +52,27 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 32 are the fields of extent_remote's    *)
+(* says which, and how). The first 33 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds with *)
 (* no field (TASK-178); then two doc-14's, its last two fields too         *)
 (* (TASK-165.5, crates/extent_remote/src/wal.rs); the last five those of   *)
 (* commits spanning segments, which the code holds with no field           *)
 (* (TASK-92.41, TASK-149.45):                                              *)
 (*                                                                         *)
-(* - fencesKept (NoFencesKept): the collector keeps every fence a live     *)
-(*   branch's state names, the first segment of each epoch applied, so     *)
-(*   that a writer taken over, whatever it still creates, finds its create *)
-(*   failing at its successor's fence for as long as it lives: a writer    *)
-(*   acknowledges what it created, its creates the fencing, with no read   *)
-(*   of its lease (TASK-371). Without it, a writer taken over has its      *)
-(*   segment land where the next writer's fence was, which that writer's   *)
-(*   checkpoint covered and the collector deleted, and acknowledges a      *)
-(*   commit no history holds.                                              *)
-(* - straysKept (NoStraysKept): a state's fences count its strays, every  *)
-(*   segment read that is not of the epoch of the fence before it: void,  *)
-(*   or an earlier writer's following it (its late fence). A writer taken  *)
-(*   over may have its next create in flight where a stray is, its         *)
-(*   successor fencing past it. Without it, the collector deletes the      *)
-(*   stray, covered, and the create lands in its place, below the fence,   *)
-(*   and is acknowledged: a commit no history holds (TASK-383).            *)
-(* - takeoversKept (NoTakeoversKept): the collector keeps every segment    *)
-(*   of a live branch whose lease, read after the listing, is of an epoch  *)
-(*   past its state's: a writer taking it over, which may have read the    *)
-(*   branch before the last writer's segment landed there, fences where it *)
-(*   found the end. Without it, the last writer acknowledges that segment, *)
-(*   created before the fence, and checkpoints it; the collector deletes   *)
-(*   it, and the fence lands where it was.                                 *)
+(* - pinsFences, pinsOldFences, pinsVoidStrays, pinsLateStrays,            *)
+(*   pinsTakings (NoPinsFences, NoPinsOldFences, NoPinsVoidStrays,         *)
+(*   NoPinsLateStrays, NoPinsTakings): the cases of the collector's one    *)
+(*   function of what it keeps of a live branch whatever covers it, Pinned *)
+(*   (collector::pinned, TASK-388): every position a writer of the branch, *)
+(*   taken over or taking it over, may still create at. A writer           *)
+(*   acknowledges what it created with no read of its lease, its creates   *)
+(*   its fencing (TASK-371), so CreatesNeverFreed states the safety they   *)
+(*   keep once: the first position a writer may still create at was never  *)
+(*   freed. Its fences (TASK-371), of every epoch; its strays, void or     *)
+(*   late (TASK-383); and, while a writer takes it over, its lease of an   *)
+(*   epoch past its state's, everything (TASK-371). Without any, a         *)
+(*   writer's create lands where the collector freed, below a later        *)
+(*   writer's fence, and is acknowledged: a commit no history holds.       *)
 (* - forksAfterLease (NoForksAfterLease): a writer acknowledges a segment  *)
 (*   holding a fork only once a read of its lease after the creates shows  *)
 (*   it still its: a deleted branch's fences go, and a writer of it taken  *)
@@ -101,7 +92,7 @@
 (*   recovery that finds a segment missing lists the checkpoints again,    *)
 (*   and starts again from a newer one; one that listed none and finds     *)
 (*   what it inherited lost, if one has come since (TASK-177). A writer's  *)
-(*   recovery, takeoversKept covers too (TASK-371): its mutation removes   *)
+(*   recovery, pinsTakings covers too (TASK-371): its mutation removes     *)
 (*   both.                                                                 *)
 (* - forksFromStates (NoForksFromStates): the collector finds forks in     *)
 (*   their parents' states, not only by their records.                     *)
@@ -162,8 +153,8 @@
 (*   segment landed after the first marked the branch deleted, records the *)
 (*   child of a fork never acknowledged, whose origin a pass, reading the  *)
 (*   branch deleted and no record of the child, deletes (TASK-183).        *)
-(* - deletionsReread (NoDeletionsReread): a deletion reads the record     *)
-(*   again once its recovery is fenced, before recording the children of  *)
+(* - deletionsReread (NoDeletionsReread): a deletion reads the record      *)
+(*   again once its recovery is fenced, before recording the children of   *)
 (*   the forks it found: deleted since, it is done, as the deletion that   *)
 (*   marked it recorded those before its own fence. A pass deletes that    *)
 (*   fence, and the extents a writer taken over stored on their own ahead  *)
@@ -265,7 +256,8 @@ CONSTANTS
     None,           \* a model value: nothing
     Rules           \* the protocol's rules in force (all, but in a mutation)
 
-AllRules == {"fencesKept", "straysKept", "takeoversKept", "forksAfterLease", "fence", "continuity", "epochSequences", "recordsAfterAck",
+AllRules == {"pinsFences", "pinsOldFences", "pinsVoidStrays", "pinsLateStrays", "pinsTakings",
+             "forksAfterLease", "fence", "continuity", "epochSequences", "recordsAfterAck",
              "candidatesFirst", "newestCheckpoint", "forksFromStates", "orphansAfterSuccessor",
              "tokens", "deleteTokens", "footers", "forkClaimsIds", "forkClaimsLanded",
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
@@ -279,7 +271,7 @@ AllRules == {"fencesKept", "straysKept", "takeoversKept", "forksAfterLease", "fe
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
            "compactMoves", "crash", "disk", "staleTake", "overlap", "span", "spanOn", "cut",
-           "forkOwn", "deleteRoot"}
+           "forkOwn", "deleteRoot", "landInOrder"}
 
 ASSUME Rules \subseteq AllRules
 ASSUME Can \subseteq AllCan
@@ -320,14 +312,16 @@ VARIABLES
     taken,      \* taken[b]: the highest token that took b's lease, -1 if none did
     placed,     \* placed[b]: the last placement's token
     errors,     \* what failed that must not
+    freed,      \* the segments' places the collector freed, <<b, s>>: CreatesNeverFreed's history
     \* Bounds.
     gen, takes, passes, places, crashes, mints
 
 bucketVars == <<seg, own, ckpt, rec, lease, moves, inflight>>
 hostVars == <<ses, wal, tok, proc>>
 truthVars == <<commits, nextTag, acked, minted, twice, makers, doomed, taken, placed, errors>>
+\* (freed is no action's: Next keeps it.)
 countVars == <<gen, takes, passes, places, crashes, mints>>
-vars == <<bucketVars, hostVars, gc, truthVars, countVars>>
+vars == <<bucketVars, hostVars, gc, truthVars, countVars, freed>>
 
 -----------------------------------------------------------------------------
 (* Values. *)
@@ -359,11 +353,12 @@ ChildOf(r, o) == r.kind # "root" /\ r.owner = Owner(o)
 \* next sequence number, its forks, the highest epoch applied, the last segment read, the runs
 \* of the commit the segments applied last went on with (State::begun: [commit, runs], runs the
 \* locations of its extents; or None), its fences, the segments applied that began an epoch
-\* (State::fences, fencesKept), and, not in the bucket's bytes, the commits applied and whether
-\* one was applied twice.
+\* (State::fences), its strays (State::strays), the segments read that are neither, void, or
+\* late, following the last applied of an earlier epoch, and, not in the bucket's bytes, the
+\* commits applied and whether one was applied twice.
 Fresh == [ext |-> Nothing, head |-> 0, last |-> <<>>, next |-> <<0, 0>>, forks |-> {},
-          epoch |-> 0, through |-> -1, begun |-> None, fences |-> {}, hist |-> {},
-          dup |-> FALSE]
+          epoch |-> 0, through |-> -1, begun |-> None, fences |-> {}, voids |-> {}, lates |-> {},
+          hist |-> {}, dup |-> FALSE]
 
 \* A fork's child's state before its segments: what it inherits (State::inheriting: no runs
 \* begun).
@@ -389,8 +384,7 @@ Over(f, g) == [x \in DOMAIN f \cup DOMAIN g |-> IF x \in DOMAIN g THEN g[x] ELSE
 \* then, if o goes on with a commit, its run held until a segment ends it (spansHeld)
 \* (State::apply_contents).
 Apply(st, b, s, o) ==
-    IF ~Follows(st, o)
-    THEN [st EXCEPT !.through = s, !.fences = IF R("straysKept") THEN @ \cup {s} ELSE @]
+    IF ~Follows(st, o) THEN [st EXCEPT !.through = s, !.voids = @ \cup {s}]
     ELSE LET bg == st.begun
              ended == bg # None /\ Ends(o, bg.commit)
              held == IF bg = None \/ ended THEN None
@@ -418,11 +412,8 @@ Apply(st, b, s, o) ==
                                                       owner |-> o.fork.owner,
                                                       point |-> o.fork.point]},
                        !.epoch = IF o.epoch > st.epoch THEN o.epoch ELSE st.epoch,
-                       \* A fence; or a stray, an earlier writer's following it, which a
-                       \* writer taken over may yet create where (straysKept).
-                       !.fences = IF o.epoch > st.epoch
-                                     \/ (o.epoch < st.epoch /\ R("straysKept"))
-                                  THEN st.fences \cup {s} ELSE st.fences,
+                       !.fences = IF o.epoch > st.epoch THEN st.fences \cup {s} ELSE st.fences,
+                       !.lates = IF o.epoch < st.epoch THEN st.lates \cup {s} ELSE st.lates,
                        !.through = s]
 
 RECURSIVE ApplyAll(_, _, _)
@@ -920,11 +911,15 @@ Upload(h, b) ==
        /\ UNCHANGED <<seg, ckpt, rec, lease, moves, wal, tok, proc, gc, truthVars, countVars>>
 
 \* A create lands, whenever, though its writer has gone: where nothing is, or its own is; else
-\* its writer, if it still is, stops (fenced, or displaced).
+\* its writer, if it still is, stops (fenced, or displaced). With "landInOrder", a writer's creates
+\* land in the order it made them, the earliest first, landing or failing: a model of more
+\* writers kept to a size TLC exhausts (BucketTakeovers), BucketStrays landing them in any order.
 Land(m) ==
     LET s == ses[m.h][m.b]
         mine == s # None /\ s.gen = m.g /\ s.pc # "stopped"
-    IN /\ inflight' = inflight \ {m}
+    IN /\ "landInOrder" \notin Can
+          \/ \A n \in inflight : n.h = m.h /\ n.b = m.b /\ n.g = m.g => n.s >= m.s
+       /\ inflight' = inflight \ {m}
        /\ IF seg[m.b][m.s] = None \/ seg[m.b][m.s] = m.o THEN
              /\ seg' = [seg EXCEPT ![m.b][m.s] = m.o]
              /\ ses' = IF mine THEN [ses EXCEPT ![m.h][m.b].done = @ \cup {m.s}] ELSE ses
@@ -933,7 +928,7 @@ Land(m) ==
              /\ UNCHANGED seg
        /\ UNCHANGED <<own, ckpt, rec, lease, moves, wal, tok, proc, gc, truthVars, countVars>>
 
-\* The acknowledgement of the WAL's prefix created, its creates the fencing (fencesKept); if it
+\* The acknowledgement of the WAL's prefix created, its creates the fencing (Pinned); if it
 \* holds a fork, once a read of the lease shows it the writer's (forksAfterLease): its commits
 \* told durable, its forks' children to be recorded. To
 \* the last segment going on with no commit (acksBetweenCommits, Writer::acknowledge): a commit
@@ -1295,6 +1290,8 @@ RecoverAll(queue, recs, acc) ==
                                                           epoch |-> r.st.epoch, next |-> r.st.next,
                                                           touched |-> r.touched,
                                                           fences |-> r.st.fences,
+                                                          voids |-> r.st.voids,
+                                                          lates |-> r.st.lates,
                                                           taking |-> LeaseEpoch(b) > r.st.epoch,
                                                           behind |-> Behind(b, r.ck)]),
                                       !.ck = @ \/ r.ck >= 0])
@@ -1371,6 +1368,18 @@ GcRelist(i) ==
                                   THEN "records" ELSE "finish"]
     /\ UNCHANGED <<bucketVars, hostVars, truthVars, countVars>>
 
+\* Whether segment s of a branch stays whatever covers it, by e, what a pass took of a recovery
+\* of it (collector::pinned, TASK-388): every position a writer of it, taken over or taking it
+\* over, may still create at. While a writer takes it over, every segment: it may have read the
+\* branch before the last writer's segment landed and fences where it found the end (pinsTakings);
+\* its fences, of every epoch (pinsFences; but the last's alone without pinsOldFences); its void
+\* strays (pinsVoidStrays) and its late ones (pinsLateStrays).
+Pinned(e, s) ==
+    \/ R("pinsTakings") /\ e.taking
+    \/ R("pinsFences") /\ s \in e.fences /\ (R("pinsOldFences") \/ s = Max(e.fences))
+    \/ R("pinsVoidStrays") /\ s \in e.voids
+    \/ R("pinsLateStrays") /\ s \in e.lates
+
 \* Compaction, then deletion, unless a later pass took the lease: of what was listed, what the
 \* live branches do not need.
 GcFinish(i) ==
@@ -1405,11 +1414,8 @@ GcFinish(i) ==
                           l \in {l \in locs : l[2][1] = "own"}} \cap objs)
         \* By any recovery of b's.
         mayLandSeg(b, s) == \E k \in DOMAIN L : k[1] = b /\ s >= L[k].end
-        \* A fence of b's, which a writer taken over must find for as long as it lives
-        \* (fencesKept).
-        fenceOf(b, s) == R("fencesKept") /\ \E k \in DOMAIN L : k[1] = b /\ s \in L[k].fences
-        \* Whether a writer is taking b over (takeoversKept).
-        takenOver(b) == R("takeoversKept") /\ \E k \in DOMAIN L : k[1] = b /\ L[k].taking
+        \* Pinned by any recovery of b's.
+        pinnedAt(b, s) == \E k \in DOMAIN L : k[1] = b /\ Pinned(L[k], s)
         mayLandOwn(b, e, s, x) ==
             \E k \in DOMAIN L :
                /\ k[1] = b
@@ -1432,7 +1438,7 @@ GcFinish(i) ==
             CASE k[1] = "ckpt" -> k \notin touched
               [] k[1] = "seg" -> ~mayLandSeg(k[2], k[3]) /\ k \notin touched
                                  /\ (k \notin named \/ next(k) \in objs)
-                                 /\ ~fenceOf(k[2], k[3]) /\ ~takenOver(k[2])
+                                 /\ ~pinnedAt(k[2], k[3])
               [] k[1] = "own" -> k \notin named /\ ~mayLandOwn(k[2], k[3], k[4], k[5])
               \* Moves go once no state's way goes through them, and they are moved in turn, or
               \* what they are of is gone.
@@ -1496,8 +1502,12 @@ Init ==
     /\ placed = [b \in Branches |-> 0]
     /\ errors = {}
     /\ gen = 0 /\ takes = 0 /\ passes = 0 /\ places = 0 /\ crashes = 0 /\ mints = 0
+    /\ freed = {}
 
-Next == WriterNext \/ HostNext \/ GcNext
+\* Every step, and what it freed: the places of segments there before it and gone after.
+Next ==
+    /\ WriterNext \/ HostNext \/ GcNext
+    /\ freed' = freed \cup {<<b, s>> \in Branches \X Seqs : seg[b][s] # None /\ seg'[b][s] = None}
 
 Spec == Init /\ [][Next]_vars
 
@@ -1568,4 +1578,28 @@ OneMaker == \A b \in Branches : Cardinality(makers[b] \ doomed) <= 1
 \* Nothing failed that must not: a pass of the collector, a deletion, a WAL rebased, a store opened
 \* (its log ending inside a commit), a WAL diverging from a branch whose last commit is its own.
 NoErrors == errors = {}
+
+\* The places h's writer of b may still create at, and acknowledge what it creates: its creates in
+\* flight; once opened, the segments of its WAL it has yet to upload (stamped by its chain only
+\* then, Opened); and, fencing, its fence's, while the lease is still its (a writer fencing that
+\* finds it another's after stops, Opened). None once it stopped.
+Creatable(h, b) ==
+    LET s == ses[h][b] IN
+    IF s = None \/ s.pc = "stopped" THEN {}
+    ELSE {m.s : m \in {m \in inflight : m.h = h /\ m.b = b /\ m.g = s.gen}}
+         \cup (IF s.pc \in {"ready", "record"}
+                THEN {wal[h][b][i].s : i \in DOMAIN wal[h][b]} \ s.up ELSE {})
+         \cup (IF s.pc = "fence" /\ (Leased(s, b) \/ ~R("epochSequences")) THEN {s.seq}
+                ELSE {})
+
+\* The safety of a writer's creates as its fencing (TASK-371), once (TASK-388): the first place a
+\* writer of a live branch, taken over or taking it over, may still create at was never freed. A
+\* writer creates its segments in order and acknowledges them in order, so it acknowledges
+\* nothing past the first create that fails; where the collector freed a place, its create lands,
+\* below a later writer's fence, or where an earlier writer's acknowledged segment was, and it
+\* or its successor acknowledges what no history holds. The collector's pins keep it (Pinned).
+CreatesNeverFreed ==
+    \A h \in Hosts, b \in Branches :
+        LET C == Creatable(h, b) IN
+        C # {} /\ rec[b] # None /\ ~rec[b].deleted => <<b, Min(C)>> \notin freed
 =============================================================================
