@@ -404,6 +404,16 @@ pub async fn delete(
             Err(Error::Lost(_)) if lost_is_ok(bucket, branch, &record).await? => Vec::new(),
             Err(error) => return Err(error),
         };
+        // Deleted since its record was read, by another deletion, which gave the children of the
+        // forks before its fence their records: done. A pass may have deleted that fence since,
+        // with what no live branch needed, and a writer's segment, taken over, landed where it
+        // was: what this recovery found past it, the forks of that segment, whose children would
+        // name what the pass deleted, the extents it stores on their own (TASK-380). Read once
+        // the recovery is fenced: found live, that fence was there for all it read.
+        if rules().deletions_reread && self::record(bucket, branch).await?.is_none_or(|r| r.deleted)
+        {
+            return Ok(());
+        }
         for fork in &forks {
             let origin = Origin { parent: branch, at: fork.at };
             let child = Child { branch: fork.child, owner: fork.owner, point: fork.point };

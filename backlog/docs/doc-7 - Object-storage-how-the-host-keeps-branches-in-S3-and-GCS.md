@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-12 09:21'
+updated_date: '2026-11-12 12:25'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -412,6 +412,15 @@ The lease says who should write a branch; the dense, create-only segments and th
   second recovering past a fork's segment landed after the first marked the branch deleted, would
   record the fork's child after a pass, reading the branch deleted and no record of the child, let
   go of what it needs. A point, which no writer has, needs none.
+- **A deletion reads the record again** *(added 2026-11-12, TASK-380):* once its recovery is
+  fenced, before it gives the forks' children their records; deleted since, it is done. The fence
+  holds only while it is there: a pass, reading the branch deleted, deletes it with what no live
+  branch needs, the extents a writer taken over stored on their own ahead of its segment among it.
+  That segment, of a fork, landing where the fence was, and a second deletion, which read the
+  record live before the first marked it, recovering past it (the branch's segments kept to an
+  earlier fork, whose child lives), would record the fork's child, which names the extents the
+  pass deleted. Found live by that read, the record shows the recovery and its fence came before
+  any deletion marked it, so before any pass let go of a fence.
 - **Gaps:** segments past the branch's end, an earlier writer's landed past a gap, are void; the new
   writer fills the gaps between them with empty segments, so that its own follow without one.
 - **A writer acknowledges a segment** once it and every one before it are created: its creates are
@@ -887,7 +896,7 @@ extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
   `moves_taken_first` (`NoMovesTakenFirst`), `leases_by_takings` (`NoLeasesByTakings`),
   `passes_fenced_stop` (`NoPassesFencedStop`), `recoveries_by_origins` (`NoRecoveriesByOrigins`,
   TASK-173), `records_kept` (`NoRecordsKept`, TASK-174), `deletions_fence` (`NoDeletionsFence`,
-  TASK-183), and doc-14's `wal_follows` (`NoWalFollows`) and `wal_after_fence`
+  TASK-183), `deletions_reread` (`NoDeletionsReread`, TASK-380), and doc-14's `wal_follows` (`NoWalFollows`) and `wal_after_fence`
   (`NoWalAfterFence`); `newest_checkpoint` has a second, of what a fork inherited
   (`NoNewestCheckpointInherited`, TASK-177), and branch::delete's taking a deletion done by another
   as done, which is no field of `Rules`, one of its own (`NoDeletionsDoneByOthers`, TASK-178). It

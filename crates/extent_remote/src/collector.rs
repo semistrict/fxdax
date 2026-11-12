@@ -1477,8 +1477,9 @@ mod tests {
         let bucket = store();
         branch::create(&*bucket, test_branch(1), 0).await.unwrap();
         let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
-        let footer =
-            writer.chain().close(Contents { forks: vec![child(test_branch(2))], ..Contents::default() });
+        let footer = writer
+            .chain()
+            .close(Contents { forks: vec![child(test_branch(2))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         writer.upload(seq).await.unwrap();
@@ -1536,7 +1537,8 @@ mod tests {
         let seq = taken.add_segment(objects).unwrap();
         let uploaded = taken.upload(seq).await;
         let acknowledged = taken.acknowledge().await;
-        let last = recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
+        let last =
+            recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
         (uploaded, acknowledged, last)
     }
 
@@ -1570,7 +1572,10 @@ mod tests {
         let objects =
             Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut last.chain()).frame();
         let seq = last.add_segment(objects).unwrap();
-        let taking = Arc::new(Hooked::new(direct.clone(), Hook::Listing(layout::segments(test_branch(1)), 1)));
+        let taking = Arc::new(Hooked::new(
+            direct.clone(),
+            Hook::Listing(layout::segments(test_branch(1)), 1),
+        ));
         let passing = direct.clone();
         *taking.then.lock().unwrap() = Some(Box::new(move || {
             last.upload(seq).now_or_never().unwrap().unwrap();
@@ -1783,20 +1788,21 @@ mod tests {
 
     /// TASK-183: two deletions of a branch at once, a fork's segment of its writer's in flight,
     /// never acknowledged. The first recovers the branch to the gap where the segment goes and
-    /// fences it there; a pass reads the branch deleted and no record of the fork's child; the
-    /// segment, landing, finds the fence, and the second deletion, which read the record live
-    /// before the first marked it, finds no fork either: the pass lets go of nothing the child
-    /// needs, as the child has no record. Found by specs/bucket's TLA+ (TASK-165.2), the model
-    /// BucketForks once a deletion recovered in two steps.
+    /// fences it there; the segment, landing, finds the fence, and the second deletion, recovering
+    /// the branch as the first is about to mark it deleted, finds no fork either: a pass after
+    /// lets go of nothing a child needs, as no fork's child has a record. Found by specs/bucket's
+    /// TLA+ (TASK-165.2), the model BucketForks once a deletion recovered in two steps.
     #[test]
     fn deletions_at_once_fence_out_forks_landing_between_them() {
-        let fenced = (Err(Error::Fenced), None, Ok(Report { deleted: 1, compacted: 0 }));
+        // The first pass, after both deletions' fences, deleted all of the branch.
+        let fenced = (Err(Error::Fenced), None, Ok(Report { deleted: 0, compacted: 0 }));
         assert_eq!(block_on(delete_twice_as_a_fork_lands()), fenced);
     }
 
-    /// A deletion fencing nothing: the segment lands, the second deletion records the fork's
-    /// child after the first marked the branch deleted, and the pass deletes the child's origin,
-    /// which fails every pass after.
+    /// A deletion fencing nothing: the segment lands, the second deletion recovers past it and,
+    /// reading the record live still, records the fork's child once the first marked the branch
+    /// deleted and a pass, which read no record of the child, deleted its origin; which fails every
+    /// pass after.
     #[test]
     fn deletions_at_once_fencing_out_forks_landing_between_them_need_deletions_fence() {
         crate::set_rules(crate::Rules { deletions_fence: false, ..crate::Rules::ALL });
@@ -1807,8 +1813,10 @@ mod tests {
         assert_eq!(landed, (Ok(()), Some(child), Err(lost)));
     }
 
-    /// What the upload of branch 1's fork to child 2 gives, landing as a pass that read 1 deleted
-    /// is about to delete, deleted twice at once; the child's record, and what a pass after gives.
+    /// What the upload of branch 1's fork to child 2 gives, landing between two deletions'
+    /// recoveries of 1: the first's, which then waits to mark 1 deleted, and the second's, which
+    /// then waits to record the forks it found; the first marks 1 deleted, a pass runs, and the
+    /// second goes on. The child's record, and what a pass after gives.
     async fn delete_twice_as_a_fork_lands()
     -> (Result<(), Error>, Option<Record>, Result<Report, Error>) {
         use crate::layout::{Contents, Segment};
@@ -1817,14 +1825,103 @@ mod tests {
         const CHILD: u64 = 2;
         let direct = Arc::new(Direct(SimBucket::new()));
         branch::create(&*direct, test_branch(PARENT), 0).await.unwrap();
-        let writer =
-            Arc::new(Writer::open(direct.clone(), test_branch(PARENT), 10, 0).await.unwrap());
+        let writer = Writer::open(direct.clone(), test_branch(PARENT), 10, 0).await.unwrap();
         commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
         let footer = writer
             .chain()
             .close(Contents { forks: vec![child(test_branch(CHILD))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        // The first deletion, recovered, waits to mark the branch deleted.
+        let (marking, mark) =
+            Gated::new(direct.clone(), Gate::Put(layout::record(test_branch(PARENT))));
+        let marking = Arc::new(marking);
+        let mut first =
+            Box::pin(async move { branch::delete(&*marking, test_branch(PARENT), 11, 0).await });
+        assert!((&mut first).now_or_never().is_none());
+        let landed = writer.upload(at).await;
+        // The second, recovered, waits to record the fork's child, if it found the fork.
+        let (recording, record) =
+            Gated::new(direct.clone(), Gate::Put(layout::record(test_branch(CHILD))));
+        let recording = Arc::new(recording);
+        let mut second =
+            Box::pin(async move { branch::delete(&*recording, test_branch(PARENT), 12, 0).await });
+        let second_done = (&mut second).now_or_never();
+        mark.send(()).unwrap();
+        first.await.unwrap();
+        let now = Options { compact_below: 0.0, grace: 0 };
+        collect(&*direct, 1, &now).await.unwrap();
+        // Done already, finding no fork, the second deletion dropped its gate.
+        let _ = record.send(());
+        let deleted = match second_done {
+            Some(deleted) => deleted,
+            None => second.await,
+        };
+        assert_eq!(deleted, Ok(()));
+        let record = branch::record(&*direct, test_branch(CHILD)).await.unwrap();
+        (landed, record, collect(&*direct, 2, &now).await)
+    }
+
+    /// TASK-380: two deletions of a branch at once, as TASK-183's, its writer's segment of a fork
+    /// in flight, the extent of its own the segment's commit sealed uploaded ahead of it, and the
+    /// branch's segments to an earlier fork kept by that fork's child. The first deletion fences
+    /// the gap where the segment goes and marks the branch deleted; a pass deletes that fence, and
+    /// the extent, which no live branch needs; the segment lands where the fence was, and the
+    /// second deletion, which read the record live before the first marked it, recovers past it.
+    /// Reading the record again, deleted, it records no child. Found by the simulation, seed 197
+    /// of `branches_deleted_twice_while_forking`, once a seed replayed as it ran.
+    #[test]
+    fn deletions_at_once_record_no_forks_landing_where_a_pass_deleted_a_fence() {
+        assert_eq!(block_on(delete_twice_as_a_fork_lands_past_a_pass()), (Ok(()), None, vec![]));
+    }
+
+    /// A deletion recording the forks it recovered whatever the record says by then: the second
+    /// gives the fork's child its record, which names the extent the pass deleted.
+    #[test]
+    fn deletions_at_once_recording_no_forks_landing_where_a_pass_deleted_a_fence_need_rereads() {
+        crate::set_rules(crate::Rules { deletions_reread: false, ..crate::Rules::ALL });
+        let landed = block_on(delete_twice_as_a_fork_lands_past_a_pass());
+        crate::set_rules(crate::Rules::ALL);
+        let child = crate::record::Kind::Fork(Origin { parent: test_branch(1), at: 2 }).of(0);
+        // Minted from the writer's lease epoch, 1.
+        let extent = ExtentId::new(1, 1 << crate::EPOCH_SHIFT);
+        let gone = layout::extent(layout::TEST_CELL, 1, 2, extent);
+        assert_eq!(landed, (Ok(()), Some(child), vec![gone]));
+    }
+
+    /// What the second of two deletions of branch 1 gives, its writer's segment forking to child
+    /// 3, with an extent of its own, landing after a pass deleted what the first left, child 2 of
+    /// an earlier fork keeping the branch's segments to that fork; child 3's record, and the keys
+    /// of the extents its state names that are gone.
+    async fn delete_twice_as_a_fork_lands_past_a_pass()
+    -> (Result<(), Error>, Option<Record>, Vec<String>) {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        const PARENT: u64 = 1;
+        const KEPT: u64 = 2;
+        const CHILD: u64 = 3;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, test_branch(PARENT), 0).await.unwrap();
+        // The writer, whose fence is its segment 0, and whose create of its segment 2 waits.
+        let at = 2;
+        let (writing, landing) =
+            Gated::new(direct.clone(), Gate::Put(layout::segment(test_branch(PARENT), at)));
+        let writer = Writer::open(Arc::new(writing), test_branch(PARENT), 10, 0).await.unwrap();
+        let footer = writer
+            .chain()
+            .close(Contents { forks: vec![child(test_branch(KEPT))], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let kept = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        writer.upload(kept).await.unwrap();
+        writer.acknowledge().await.unwrap();
+        // A commit sealing an extent on its own, then a fork to the child, in one segment.
+        let own = vec![(writer.chain().next_sequence(), b"own".to_vec())];
+        let forking = Batch::from(Commit { tag: 1, own, ..Commit::default() })
+            .fork(child(test_branch(CHILD)), &mut writer.chain())
+            .frame();
+        assert_eq!(writer.add_segment(forking).unwrap(), at);
+        let mut uploading = Box::pin(writer.upload(at));
+        assert!((&mut uploading).now_or_never().is_none());
         // The second deletion, the lease ended and the record read live, waits to recover.
         let (gated, open) =
             Gated::new(direct.clone(), Gate::List(layout::checkpoints(test_branch(PARENT))));
@@ -1833,20 +1930,26 @@ mod tests {
             Box::pin(async move { branch::delete(&*gated, test_branch(PARENT), 12, 0).await });
         assert!((&mut second).now_or_never().is_none());
         branch::delete(&*direct, test_branch(PARENT), 11, 0).await.unwrap();
-        // Before the pass deletes, as it reads the collector's lease again.
-        let pass = Hooked::new(direct.clone(), Hook::Getting(layout::GC_LEASE.into(), 2));
-        let landed = Arc::new(Mutex::new(None));
-        let landing = landed.clone();
-        *pass.then.lock().unwrap() = Some(Box::new(move || {
-            *landing.lock().unwrap() = writer.upload(at).now_or_never();
-            open.send(()).unwrap();
-            assert_eq!((&mut second).now_or_never(), Some(Ok(())));
-        }));
         let now = Options { compact_below: 0.0, grace: 0 };
-        collect(&pass, 1, &now).await.unwrap();
-        let landed = landed.lock().unwrap().take().expect("the pass deleted nothing");
+        collect(&*direct, 1, &now).await.unwrap();
+        landing.send(()).unwrap();
+        assert_eq!((&mut uploading).now_or_never(), Some(Ok(())));
+        open.send(()).unwrap();
+        let deleted = second.await;
         let record = branch::record(&*direct, test_branch(CHILD)).await.unwrap();
-        (landed, record, collect(&*direct, 2, &now).await)
+        let mut gone = Vec::new();
+        if let Some(record) = &record {
+            let state = recovery::recover(&*direct, test_branch(CHILD), record.origin())
+                .await
+                .unwrap()
+                .state;
+            for location in state.extents.values() {
+                if bucket::get(&*direct, &location.key).await.is_none() {
+                    gone.push(location.key.clone());
+                }
+            }
+        }
+        (deleted, record, gone)
     }
 
     /// A bucket whose first request its gate names waits until the gate opens: what [`Gated::new`]

@@ -307,6 +307,15 @@ pub struct Rules {
     /// is marked deleted (TASK-183).
     /// TLA+: `specs/bucket/mutations/NoDeletionsFence.cfg`.
     pub deletions_fence: bool,
+    /// A deletion reads the branch's record again once its recovery is fenced, before it gives the
+    /// children of the forks it found their records: deleted since, it is done, as the deletion
+    /// that marked it gave the children of the forks before its own fence theirs. A pass reading
+    /// the branch deleted deletes that fence with what no live branch needs, the extents a writer
+    /// taken over stored on their own ahead of its segments among it: one of those segments, of a
+    /// fork, landing where the fence was, the later deletion would record the fork's child, which
+    /// names what the pass deleted (TASK-380).
+    /// TLA+: `specs/bucket/mutations/NoDeletionsReread.cfg`.
+    pub deletions_reread: bool,
     /// A host's write-ahead log is put after the branch's end only if the branch's last commit is
     /// one of the log's or the one it started from: otherwise another writer's commits came after
     /// what the log holds, and it diverged (doc-14, Opening a store).
@@ -356,6 +365,7 @@ impl Rules {
         recoveries_by_origins: true,
         records_kept: true,
         deletions_fence: true,
+        deletions_reread: true,
         wal_follows: true,
         wal_after_fence: true,
         wal_continues: true,

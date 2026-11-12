@@ -2,6 +2,12 @@
 
 # Decisions
 
+## Concurrent deletions read the record again before recording children (TASK-380, 2026-11-12)
+
+- **The fix is a deletion's second read of the record** (`deletions_reread`), once its recovery is fenced: deleted since, it is done. Other options: the collector keeping a deleted branch's deletion fence (forever, as nothing tells it no deletion is still in flight; empty objects left per deleted branch), or deletions serialised per branch (a dead deleter's work must still be finished by another, so it can't be exclusive). Undo: drop the rule and its read.
+- **specs/bucket's deletion now records its forks' children in a step after its recovery**, as the code does in separate requests; a fork commit may seal an extent on its own (`"forkOwn"`). The new model `BucketDeletions` lets only the root be deleted (`"deleteRoot"`): deleting the children too, it passed 28M states and an hour without ending. Widening it is a matter of time on a big machine.
+- **Third bug of deletions racing deletions** (TASK-178, TASK-183, TASK-380): each deletion re-derives the children to record from a recovery that a pass may have undercut. If a fourth comes, the structure (a deletion's children recorded by one completing deletion, or the collector keeping what in-flight deletions read) deserves a redesign rather than another rule.
+
 ## Cells: what TASK-364 decided without you (2026-11-11)
 You chose tenant → cell → volume, one log per volume, cells and tenants by ID, whole-cell forks. Decided without you:
 - **A cell's holder is its placement's fencing token.** Every process of a host (extentd, fxdax-mount) takes a cell as that holder, so a second taking joins the epoch held instead of fencing the first: a cell's volumes split between VMs and a FUSE mount on one host share one lease. *Instead:* a host identity of its own, persisted.

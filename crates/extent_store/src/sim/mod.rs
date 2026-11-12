@@ -161,6 +161,7 @@ fn one() {
             "recoveries_by_origins" => rules.recoveries_by_origins = false,
             "records_kept" => rules.records_kept = false,
             "deletions_fence" => rules.deletions_fence = false,
+            "deletions_reread" => rules.deletions_reread = false,
             "wal_follows" => rules.wal_follows = false,
             "wal_after_fence" => rules.wal_after_fence = false,
             "wal_continues" => rules.wal_continues = false,
@@ -283,6 +284,11 @@ fn deleted_forking() -> Profile {
 test_holds!(branches_deleted_twice_while_forking, deleted_forking());
 
 test_needs!(deletions_need_fences, deletions_fence, deleted_forking());
+
+// A deletion begun as another marks the branch deleted, recovering once a pass deleted that one's
+// fence and a writer's segment of a fork, taken over, landed where it was: the fork's child,
+// recorded, names the extents the segment stores on their own, which the pass deleted (TASK-380).
+test_needs!(deletions_need_records_reread, deletions_reread, deleted_forking());
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {

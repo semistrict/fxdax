@@ -52,7 +52,7 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 29 are the fields of extent_remote's    *)
+(* says which, and how). The first 31 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds with *)
 (* no field (TASK-178); then two doc-14's, its last two fields too         *)
 (* (TASK-165.5, crates/extent_remote/src/wal.rs); the last five those of   *)
@@ -155,6 +155,14 @@
 (*   segment landed after the first marked the branch deleted, records the *)
 (*   child of a fork never acknowledged, whose origin a pass, reading the  *)
 (*   branch deleted and no record of the child, deletes (TASK-183).        *)
+(* - deletionsReread (NoDeletionsReread): a deletion reads the record     *)
+(*   again once its recovery is fenced, before recording the children of  *)
+(*   the forks it found: deleted since, it is done, as the deletion that   *)
+(*   marked it recorded those before its own fence. A pass deletes that    *)
+(*   fence, and the extents a writer taken over stored on their own ahead  *)
+(*   of its segments: one of them, of a fork, landing where the fence was, *)
+(*   the later deletion would record the fork's child, which names an      *)
+(*   extent the pass deleted (TASK-380).                                   *)
 (* - deletionsDoneByOthers (NoDeletionsDoneByOthers): a deletion whose     *)
 (*   recovery of the branch finds what it needs lost, the record deleted   *)
 (*   since, is done (TASK-178; branch::delete, with no field of Rules).    *)
@@ -204,20 +212,21 @@
 (*   fork, which the collector lets go of for the same reason: the fork's  *)
 (*   checkpoint.                                                           *)
 (*                                                                         *)
-(* Steps are what the code does between two requests, or merged: a        *)
+(* Steps are what the code does between two requests, or merged: a         *)
 (* writer's taking reads the record, takes the lease and reads the record  *)
 (* again in one step, the first read of it from before the branch's        *)
 (* deletion if "staleTake" is in Can; the writers' and the collector's     *)
 (* recoveries read the bucket at once, the deletions' in two steps, the    *)
-(* checkpoints listed, then the rest. (The code's writer, once it holds    *)
-(* the lease, reads the record, recovers and lists the segments at once,   *)
-(* and takes the lease from a read of it made as it first read the         *)
-(* record, conditionally: TASK-165.11.) A checkpoint's create lands after  *)
-(* its writer took its moves, in a step of its own, while its writer's     *)
-(* session lasts. Passes overlap if "overlap" is in Can, a later one       *)
-(* taking the collector's lease; a pass reads the records once each, as    *)
-(* listings find them, until one finds none new, then once again each      *)
-(* after the states (recordsRelisted).                                     *)
+(* checkpoints listed, then the rest, its fence and the record read again; *)
+(* their forks' children are recorded in a step after. (The code's writer, *)
+(* once it holds the lease, reads the record, recovers and lists the       *)
+(* segments at once, and takes the lease from a read of it made as it      *)
+(* first read the record, conditionally: TASK-165.11.) A checkpoint's      *)
+(* create lands after its writer took its moves, in a step of its own,     *)
+(* while its writer's session lasts. Passes overlap if "overlap" is in     *)
+(* Can, a later one taking the collector's lease; a pass reads the records *)
+(* once each, as listings find them, until one finds none new, then once   *)
+(* again each after the states (recordsRelisted).                          *)
 (*                                                                         *)
 (* Can bounds what happens: each kind of step needs its name in it, so     *)
 (* that a model checks some at a time and a mutation only what it needs.   *)
@@ -255,13 +264,15 @@ AllRules == {"fencesKept", "takeoversKept", "forksAfterLease", "fence", "continu
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
              "recordsRelisted", "recordsOwned", "extentKeysNameSegments", "waysFromSeals",
              "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
-             "recordsKept", "deletionsFence", "deletionsDoneByOthers", "walFollows",
+             "recordsKept", "deletionsFence", "deletionsReread", "deletionsDoneByOthers",
+             "walFollows",
              "walAfterFence", "spansHeld", "spansFenced", "acksBetweenCommits",
              "walBetweenCommits", "wholeCommitsKept", "walContinues"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
-           "compactMoves", "crash", "disk", "staleTake", "overlap", "span", "spanOn", "cut"}
+           "compactMoves", "crash", "disk", "staleTake", "overlap", "span", "spanOn", "cut",
+           "forkOwn", "deleteRoot"}
 
 ASSUME Rules \subseteq AllRules
 ASSUME Can \subseteq AllCan
@@ -805,7 +816,9 @@ Mint(h, b) ==
 
 \* What a commit does, besides committing: seal an open extent into its segment or on its own,
 \* free an extent its guest holds, fork the branch (a point, or not) to a child with no record,
-\* or seal one or two open extents where they were written, in segments filled since the last
+\* with "forkOwn" sealing an open extent on its own too, in the fork's segment (a store's segment
+\* holds the commits before the fork it ends, their extents stored on their own among them:
+\* TASK-380), or seal one or two open extents where they were written, in segments filled since the last
 \* commit that go on with it, one each, the commit ending in the next (a commit spanning
 \* segments: TASK-92.41, segments::Phase::Full). With "spanOn", the first of those segments may
 \* be the WAL's last, ending the commit before, not uploaded: it filled after that commit, before
@@ -826,8 +839,9 @@ Ops(h, b) ==
        \cup {op("seg", x, 0, FALSE) : x \in IF "seg" \in Can THEN s.open ELSE {}}
        \cup {op("own", x, 0, FALSE) : x \in IF "own" \in Can THEN s.open ELSE {}}
        \cup {op("free", x, 0, FALSE) : x \in IF "free" \in Can THEN DOMAIN v.ext ELSE {}}
-       \cup {op("fork", None, c, p) : c \in {c \in Branches \ {b, Root} : rec[c] = None},
-                                      p \in kinds}
+       \cup {op("fork", x, c, p) : x \in {None} \cup (IF "forkOwn" \in Can THEN s.open ELSE {}),
+                                   c \in {c \in Branches \ {b, Root} : rec[c] = None},
+                                   p \in kinds}
        \cup {span(<<x>>, on) : x \in open, on \in ons}
        \cup {span(<<x, y>>, on) : <<x, y>> \in {p \in open \X open : p[1] # p[2]}, on \in ons}
 
@@ -854,7 +868,7 @@ Commit(h, b) ==
                       after |-> IF n = 0 THEN s.last ELSE <<s.seq + n - 1, s.epoch>>,
                       commit |-> t,
                       ext |-> IF op.k = "seg" THEN op.x ELSE None,
-                      own |-> IF op.k = "own" THEN op.x ELSE None,
+                      own |-> IF op.k \in {"own", "fork"} THEN op.x ELSE None,
                       free |-> IF op.k = "free" THEN op.x ELSE None,
                       next |-> s.next,
                       fork |-> IF op.k = "fork" THEN f ELSE None,
@@ -868,6 +882,7 @@ Commit(h, b) ==
                                       !.open = @ \ ({op.x} \cup xs)]]
                /\ commits' = [commits EXCEPT ![t] = [branch |-> b, parent |-> View(h, b).head,
                                                       seals |-> IF op.k \in {"seg", "own"}
+                                                                   \/ op.x # None
                                                                 THEN {op.x} ELSE xs,
                                                       free |-> o.free]]
                \* Without recordsAfterAck, the child's record at once.
@@ -1030,14 +1045,16 @@ Contest(c) ==
 (* Deletions, failed forks' deletions, and forks of points: a host's work, one at a time. *)
 
 \* A deletion of b, asked on h: the lease ended first. Asked by b's last placement, or one as
-\* late, it may delete b's making.
+\* late, it may delete b's making. With "deleteRoot" alone, of the root alone.
 StartDelete(h, b) ==
     /\ proc[h] = None
     /\ rec[b] # None /\ ~rec[b].deleted
-    /\ "delete" \in Can \/ ("deletePoints" \in Can /\ rec[b].kind = "point")
+    /\ \/ "delete" \in Can
+       \/ "deletePoints" \in Can /\ rec[b].kind = "point"
+       \/ "deleteRoot" \in Can /\ b = Root
     /\ proc' = [proc EXCEPT ![h] = [op |-> "delete", b |-> b, pc |-> "end", c |-> 0, p |-> 0,
                                     at |-> 0, o |-> <<>>, live |-> FALSE, tk |-> tok[h][b],
-                                    ck |-> -1]]
+                                    ck |-> -1, fs |-> {}]]
     /\ doomed' = IF tok[h][b] >= taken[b] THEN doomed \cup {rec[b].maker} ELSE doomed
     /\ UNCHANGED <<bucketVars, ses, wal, tok, gc, countVars>>
     /\ UNCHANGED <<commits, nextTag, acked, minted, twice, makers, taken, placed, errors>>
@@ -1053,7 +1070,8 @@ StartUnfork(h, b) ==
             /\ proc' = [proc EXCEPT ![h] = [op |-> "unfork", b |-> w.o.fork.child, pc |-> "read",
                                             c |-> w.o.fork.child, p |-> b, at |-> w.s,
                                             o |-> w.o.fork.owner, live |-> FALSE,
-                                            tk |-> tok[h][w.o.fork.child], ck |-> -1]]
+                                            tk |-> tok[h][w.o.fork.child], ck |-> -1,
+                                            fs |-> {}]]
             /\ doomed' = doomed \cup {w.o.fork.owner}
        /\ UNCHANGED <<bucketVars, ses, wal, tok, gc, countVars>>
        /\ UNCHANGED <<commits, nextTag, acked, minted, twice, makers, taken, placed, errors>>
@@ -1067,7 +1085,7 @@ StartRestore(h, c, p) ==
                                         rec[p].origin, p, <<"restore", c, h>>, rec[p].base)]
     /\ proc' = [proc EXCEPT ![h] = [op |-> "restore", b |-> c, pc |-> "check", c |-> c, p |-> p,
                                     at |-> 0, o |-> <<"restore", c, h>>, live |-> FALSE,
-                                    tk |-> tok[h][c], ck |-> -1]]
+                                    tk |-> tok[h][c], ck |-> -1, fs |-> {}]]
     /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, ses, wal, tok, gc, truthVars,
                    countVars>>
 
@@ -1112,9 +1130,10 @@ ProcStep(h) ==
             [] q.op = "delete" /\ q.pc = "recover" /\ rec[b] # None ->
                  \* Its recovery, starting again with the checkpoints listed again; then an
                  \* empty segment of the final epoch created where it found the first missing
-                 \* (deletionsFence; a point, which no writer has, needs none), that read and the
-                 \* create one step; its forks' children recorded, and its record deleted. Finding
-                 \* what it needs lost: done if the record was deleted since
+                 \* (deletionsFence; a point, which no writer has, needs none), and its record
+                 \* read again, that read, the create and the read one step: deleted since, by
+                 \* another deletion, it is done (deletionsReread); else its forks are recorded
+                 \* next. Finding what it needs lost: done if the record was deleted since
                  \* (deletionsDoneByOthers), or a claim no writer has.
                  LET got == Recovering(b, rec[b].origin, q.ck)
                      fence == /\ R("deletionsFence") /\ got.ok /\ got.end < Segs
@@ -1124,11 +1143,9 @@ ProcStep(h) ==
                        /\ proc' = [proc EXCEPT ![h].ck = Newest(b)]
                        /\ UNCHANGED <<rec, makers, errors>>
                     ELSE IF got.ok THEN
-                       LET all == RecordAll(rec, makers, b, got.st.forks) IN
-                       /\ rec' = [all.rec EXCEPT ![b].deleted = TRUE]
-                       /\ makers' = all.makers
-                       /\ Done(h)
-                       /\ UNCHANGED errors
+                       /\ IF R("deletionsReread") /\ rec[b].deleted THEN Done(h)
+                          ELSE proc' = [proc EXCEPT ![h].pc = "record", ![h].fs = got.st.forks]
+                       /\ UNCHANGED <<rec, makers, errors>>
                     ELSE IF R("deletionsDoneByOthers") /\ rec[b].deleted THEN
                        Done(h) /\ UNCHANGED <<rec, makers, errors>>
                     ELSE IF rec[b].kind = "claim" /\ Unwritten(b) THEN
@@ -1145,6 +1162,15 @@ ProcStep(h) ==
                                     next |-> got.st.next, fork |-> None, cont |-> None]]
                            ELSE seg
                  /\ UNCHANGED <<own, ckpt, lease, moves, inflight>>
+            [] q.op = "delete" /\ q.pc = "record" ->
+                 \* The children of the forks its recovery found recorded, and its record
+                 \* deleted, unless the collector dropped it (without recordsKept).
+                 LET all == RecordAll(rec, makers, b, q.fs) IN
+                 /\ rec' = IF all.rec[b] = None THEN all.rec
+                           ELSE [all.rec EXCEPT ![b].deleted = TRUE]
+                 /\ makers' = all.makers
+                 /\ Done(h)
+                 /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, errors>>
             [] q.op = "unfork" /\ q.pc = "read" ->
                  /\ IF rec[b] # None THEN
                        IF ~rec[b].deleted /\ ChildOf(rec[b], q.o) THEN Deleting(h) ELSE Done(h)
