@@ -123,6 +123,37 @@ macro_rules! test_needs {
     };
 }
 
+/// fxdax: a test that `$rule` keeps the bucket from holding for ever what no pass collects: that
+/// one of 20,000 seeds of `$profile` without it leaves a reference no record names
+/// ([`leaked`], TASK-395.10), a lesser failure than those [`test_needs`] finds.
+macro_rules! test_leaks {
+    ($name:ident, $rule:ident, $profile:expr) => {
+        test_leaks!($name, $rule, $profile, 0..20_000);
+    };
+    ($name:ident, $rule:ident, $profile:expr, $seeds:expr) => {
+        #[test]
+        fn $name() {
+            leaked(Rules { $rule: false, ..Rules::ALL }, $profile, $seeds);
+        }
+    };
+}
+
+/// Runs `seeds` with `rules`, expecting one of them to leave a reference behind, its child's
+/// record naming another origin or none, garbage no pass retires (TASK-395.10).
+fn leaked(rules: Rules, profile: Profile, seeds: Range<u64>) {
+    set_rules(rules);
+    let found = seeds.clone().find_map(|seed| {
+        let (found, _) = violations(seed, profile);
+        let leaked = found
+            .iter()
+            .any(|violation| violation.starts_with("garbage left") && violation.contains("/refs/"));
+        leaked.then_some((seed, found))
+    });
+    set_rules(Rules::ALL);
+    let (seed, found) = found.unwrap_or_else(|| panic!("no seed of {seeds:?} leaked a reference"));
+    println!("seed {seed}: {found:#?}");
+}
+
 fn weights(change: impl FnOnce(&mut Weights)) -> Profile {
     let mut profile = Profile::default();
     change(&mut profile.weights);
@@ -181,6 +212,8 @@ fn one() {
             "references" => rules.references = false,
             "references_first" => rules.references_first = false,
             "clones_refer_first" => rules.clones_refer_first = false,
+            "clones_record_first" => rules.clones_record_first = false,
+            "references_taken_back" => rules.references_taken_back = false,
             "references_held" => rules.references_held = false,
             "references_relisted" => rules.references_relisted = false,
             "fork_points_kept" => rules.fork_points_kept = false,
@@ -204,6 +237,7 @@ fn one() {
         "recovering" => recovering(),
         "failed" => failed_forks(),
         "restores" => restores(),
+        "forgotten" => forgotten_restores(),
         "whole_restores" => whole_restores(),
         "taking_ids" => restores_taking_ids(),
         "usurped" => usurped(),
@@ -307,9 +341,10 @@ fn deleted_forking() -> Profile {
 
 test_holds!(branches_deleted_twice_while_forking, deleted_forking());
 
-// None of seeds 0..20,000 finds it since a pass reads its cell before taking its lease (TASK-395.4's
-// review); seeds 32,625, 44,627 and 67,583 of 20,000..80,000 did: so searched from 20,000.
-test_needs!(deletions_need_fences, deletions_fence, deleted_forking(), 20_000..40_000);
+// None of seeds 0..20,000 found it once a pass read its cell before taking its lease (TASK-395.4's
+// review); since record_fork reads the child's record again after the checkpoint (TASK-395.10),
+// seed 8,363 does, and none of 20,000..100,000.
+test_needs!(deletions_need_fences, deletions_fence, deleted_forking());
 
 // A deletion begun as another marks the branch deleted, recovering once a pass deleted that one's
 // fence and a writer's segment of a fork, taken over, landed where it was: the fork's child,
@@ -654,6 +689,24 @@ test_needs!(restores_need_points_read_after_their_records, forks_check_points, r
 test_needs!(restores_need_records_saying_they_are_being_made, forks_pending, restores());
 
 test_needs!(collection_needs_abandoning_restores, collector_abandons, restores());
+
+/// fxdax: restores as [`restores`] makes them, half of those a crash stopped forgotten, as a host
+/// deleting the directory it left unmade knows nothing of the child (TASK-395.10): what they wrote
+/// is the collector's alone, a record being made given up on once its point goes, and the
+/// reference written after it retired by it.
+fn forgotten_restores() -> Profile {
+    let mut profile = restores();
+    profile.forget = 0.5;
+    profile
+}
+
+test_holds!(restores_forgotten_leave_nothing_behind, forgotten_restores());
+
+// Written first, a reference whose record never landed stays for ever.
+test_leaks!(forgotten_restores_need_clones_record_first, clones_record_first, forgotten_restores());
+
+// `references_taken_back` leaves what `uncollected` excuses (TASK-395.13): its direct test is
+// extent_remote's `forks_whose_childrens_ids_are_taken_need_references_taken_back`.
 
 /// Restores as [`restores`] makes them, fewer and among more forks, so that more take the IDs of
 /// forks' children whose segments are not yet acknowledged, as guests may name any: whichever's

@@ -18,23 +18,21 @@
              drop(held);
 --- a/crates/extent_remote/src/branch.rs
 +++ b/crates/extent_remote/src/branch.rs
-@@ -198,9 +198,6 @@
-         let found = bucket::get(bucket, &layout::record(child.branch)).await;
-         match found.as_ref().map(|found| Record::decode(child.branch, &found.bytes)).transpose()? {
-             Some(found) if found.deleted => return Ok(()),
--            Some(found) if !found.is_child_of(record.owner) => {
--                return Err(Error::IdTaken(child.branch));
--            }
-             // Recorded: whoever did wrote the checkpoint first, and recovering the parent there
-             // again may find its segments gone, a checkpoint since covering them.
-             Some(_) => {}
-@@ -235,8 +232,7 @@
-     let recorded = change(bucket, child.branch, start, |found| match found {
-         None => Ok(Step::Write(record, true)),
-         // Deleted before it got its record, perhaps.
--        Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),
--        Some(_) => Err(Error::IdTaken(child.branch)),
-+        Some(_) => Ok(Step::Stop(false)),
-     })
-     .await?;
-     if recorded {
+@@ -233,7 +233,7 @@
+         let read =
+             found.as_ref().map(|found| Record::decode(child.branch, &found.bytes)).transpose()?;
+         match read {
+-            Some(found) if found.deleted || !found.is_child_of(record.owner) => {
++            Some(found) if found.deleted => {
+                 take_back(bucket, origin, child.branch, &found).await;
+                 return match found.deleted {
+                     true => Ok(()),
+@@ -260,7 +260,7 @@
+         failpoint!("branch::recorded_fork");
+         return Ok(());
+     };
+-    if found.is_child_of(record.owner) && !found.deleted {
++    if !found.deleted {
+         return Ok(());
+     }
+     if across {

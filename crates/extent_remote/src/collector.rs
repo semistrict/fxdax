@@ -2727,6 +2727,8 @@ mod tests {
         Checkpointed,
         /// Before the get of the object at this key of this number, from 1.
         Getting(String, usize),
+        /// After the first get of the object at this key, before it is answered.
+        Got(String),
         /// Before the listing of this prefix of this number, from 1.
         Listing(String, usize),
         /// Before the put of a key under this prefix of this number, from 1.
@@ -2763,7 +2765,15 @@ mod tests {
             {
                 then();
             }
-            self.bucket.get(key)
+            let then = self.then(matches!(&self.hook, Hook::Got(at) if at == key));
+            let get = self.bucket.get(key);
+            async move {
+                let got = get.await;
+                if let Some(then) = then {
+                    then();
+                }
+                got
+            }
         }
 
         fn get_range(
@@ -3842,29 +3852,50 @@ mod tests {
         assert_eq!(references, [reference]);
     }
 
-    /// TASK-395.3: a clone of a point writes its reference, under the cell of the point's origin,
-    /// first: before its record, and before it reads the point's; whatever its cell, the
+    /// TASK-395.3, TASK-395.10: a clone of a point writes its reference, under the cell of the
+    /// point's origin, after its record and before it reads the point's; whatever its cell, the
     /// origin's own too.
     #[test]
-    fn clones_refer_before_their_records_and_their_points_read() {
+    fn clones_refer_between_their_records_and_their_points_read() {
+        assert_eq!(clones_requests(), ["record", "reference", "read"]);
+    }
+
+    /// Without the rule, the reference comes first, as before TASK-395.10.
+    #[test]
+    fn clones_refer_before_their_records_without_clones_record_first() {
+        crate::set_rules(crate::Rules { clones_record_first: false, ..crate::Rules::ALL });
+        let asked = clones_requests();
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(asked, ["reference", "record", "read"]);
+    }
+
+    /// The order of a clone's first requests: its record's create, its reference's, the read of
+    /// its point's record; the same for a clone in another cell than its origin's and in that one.
+    fn clones_requests() -> Vec<&'static str> {
         use crate::layout::Origin;
         let bucket = SimBucket::new();
         let (origin, point) = (Origin { parent: celled(1, 1), at: 3 }, celled(2, 2));
         // The point's record, of an origin no bucket here has: what the clones read of it.
         let point_record = layout::encode(&crate::record::Kind::Point(origin).of(0x22));
         bucket.served(bucket::create(&*bucket, &layout::record(point), point_record));
+        let mut orders = Vec::new();
         for clone in [celled(3, 3), celled(1, 4)] {
             let (forked, asked) =
                 bucket.served(branch::fork_point(&*bucket, clone, point, origin, 0x33));
             forked.unwrap();
             let reference = layout::reference(origin.parent, origin.at, clone);
-            let referred = position(&asked, &format!("put {reference}"));
-            let recorded = position(&asked, &format!("put {}", layout::record(clone)));
-            let read = position(&asked, &format!("get {}", layout::record(point)));
-            assert!(referred < recorded && recorded < read, "{asked:#?}");
+            let mut steps = [
+                (position(&asked, &format!("put {reference}")), "reference"),
+                (position(&asked, &format!("put {}", layout::record(clone))), "record"),
+                (position(&asked, &format!("get {}", layout::record(point))), "read"),
+            ];
+            steps.sort();
+            orders.push(steps.map(|(_, step)| step).to_vec());
             let bytes = bucket.served(bucket::get(&*bucket, &reference)).0.unwrap().bytes;
             assert_eq!(bytes, layout::encode(&layout::Reference::of(0x33)));
         }
+        assert_eq!(orders[0], orders[1]);
+        orders.swap_remove(0)
     }
 
     /// What reading `extent` gives `branch`, recovered from its record's origin.
@@ -4280,11 +4311,28 @@ mod tests {
         }
     }
 
-    /// TASK-395.4's review: a clone refused by a record of its child's ID there before, of another
-    /// origin or deleted with none, takes back the reference it wrote, which no record's origin
-    /// names; one refused by a record of its own origin leaves it, that record's to retire.
+    /// TASK-395.10: a clone refused by a record of its child's ID there before, of another origin,
+    /// deleted with none, or of its own origin, writes no reference, as it writes it after its own
+    /// record.
     #[test]
-    fn clones_refused_by_records_there_take_their_references_back() {
+    fn clones_refused_by_records_there_write_no_references() {
+        assert_eq!(references_left_by_refused_clones(), [false, false, false]);
+    }
+
+    /// TASK-395.4's review: without the rule, the reference written first, a clone so refused
+    /// takes it back, which no record's origin names; one refused by a record of its own origin
+    /// leaves it, that record's to retire. Its host dying first left it (TASK-395.10).
+    #[test]
+    fn clones_refused_by_records_there_take_their_references_back_without_clones_record_first() {
+        crate::set_rules(crate::Rules { clones_record_first: false, ..crate::Rules::ALL });
+        let left = references_left_by_refused_clones();
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(left, [false, false, true]);
+    }
+
+    /// Whether a clone refused by each of three records of its child's ID there before, of
+    /// another origin, deleted with none, and of the clone's own origin, leaves its reference.
+    fn references_left_by_refused_clones() -> [bool; 3] {
         use crate::layout::Origin;
         use crate::record::Kind as Made;
         let bucket = Direct(SimBucket::new());
@@ -4294,23 +4342,21 @@ mod tests {
         block_on(bucket::create(&bucket, &record, layout::encode(&Made::Point(origin).of(0x22))));
         let found = |made: crate::record::Record| layout::encode(&made);
         let cases = [
-            (celled(3, 3), found(Made::Fork(other).of(0x44)), Error::IdTaken(celled(3, 3)), false),
+            (celled(3, 3), found(Made::Fork(other).of(0x44)), Error::IdTaken(celled(3, 3))),
             (
                 celled(4, 4),
                 found(crate::record::Record { deleted: true, ..Made::Own.of(0x45) }),
                 Error::Deleted,
-                false,
             ),
-            (celled(5, 5), found(Made::Fork(origin).of(0x46)), Error::IdTaken(celled(5, 5)), true),
+            (celled(5, 5), found(Made::Fork(origin).of(0x46)), Error::IdTaken(celled(5, 5))),
         ];
-        for (clone, there, refused, stays) in cases {
+        cases.map(|(clone, there, refused)| {
             block_on(bucket::create(&bucket, &layout::record(clone), there));
             let forked = block_on(branch::fork_point(&bucket, clone, point, origin, 0x33));
             assert_eq!(forked, Err(refused), "{clone}");
             let reference = layout::reference(origin.parent, origin.at, clone);
-            let left = block_on(bucket::get(&bucket, &reference)).is_some();
-            assert_eq!(left, stays, "{clone}");
-        }
+            block_on(bucket::get(&bucket, &reference)).is_some()
+        })
     }
 
     /// TASK-395.4's review: a pass over a cell holding nothing takes no lease there, which would be
@@ -4373,13 +4419,10 @@ mod tests {
         });
     }
 
-    /// TASK-395.11: a fork across cells whose parent's state at the fork point is gone, as a
-    /// writer's state naming a fork its branch's checkpoints don't (sim restores seed 11), records
-    /// its child deleted, as a failed fork's cleanup does: no reader recovers it, nor fails on it.
-    /// (Here the parent's own checkpoint names the fork, which a pass over its cell then keeps,
-    /// so none runs: seed 11's did not.)
+    /// TASK-395.4's review (sim seed 143): a failed fork to another cell whose parent's state at
+    /// the fork point is gone is deleted from the first, not claimed: no reader recovers it.
     #[test]
-    fn forks_across_cells_of_a_state_gone_are_recorded_deleted() {
+    fn failed_forks_across_cells_of_a_state_gone_are_deleted_from_the_first() {
         block_on(async {
             let bucket = store();
             let (parent, child, failed) = (celled(1, 1), celled(2, 2), celled(2, 3));
@@ -4389,23 +4432,13 @@ mod tests {
             let at =
                 commit_and_fork(&writer, vec![(extent, b"held".to_vec())], forked(child)).await;
             commit(&writer, Commit { tag: 3, frees: vec![extent], ..Commit::default() }).await;
+            branch::delete(&*bucket, child, 30, u64::MAX).await.unwrap();
             writer.checkpoint().await.unwrap();
             sweep(&*bucket).await.unwrap();
+            let left = keys(&*bucket).await;
+            assert!(!left.contains(&layout::segment(parent, at)), "the fork point let go of");
+            assert!(!left.contains(&layout::checkpoint(parent, at)), "the fork point let go of");
             let origin = crate::layout::Origin { parent, at };
-            // The fork forgotten: no record, no reference, no checkpoint at its point.
-            let gone = [
-                layout::record(child),
-                layout::reference(parent, at, child),
-                layout::checkpoint(parent, at),
-            ];
-            bucket::delete_all(&*bucket, &gone.iter().map(String::as_str).collect::<Vec<_>>())
-                .await;
-            assert!(!keys(&*bucket).await.contains(&layout::segment(parent, at)));
-            assert_eq!(branch::record_fork(&*bucket, forked(child), origin).await, Ok(()));
-            let recorded = branch::record(&*bucket, child).await.unwrap().unwrap();
-            assert_eq!((recorded.deleted, recorded.origin()), (true, Some(origin)));
-            assert!(!keys(&*bucket).await.contains(&layout::checkpoint(parent, at)));
-            // A failed fork there to another cell is deleted from the first, not claimed.
             let owner = forked(failed).owner;
             let deleted = branch::delete_fork(
                 &*bucket,
@@ -4420,6 +4453,214 @@ mod tests {
             assert_eq!((recorded.deleted, recorded.origin()), (true, Some(origin)));
             drop(writer);
             assert_eq!(branch::delete(&*bucket, parent, 20, 0).await, Ok(()));
+        });
+    }
+
+    /// TASK-395.11, found by the simulation (restores, seed 11, then 2545 once the seeds moved): a
+    /// writer of the parent records an acknowledged fork across cells, its read finding the child
+    /// with no record; before it writes the parent's checkpoint at the fork point, the child is
+    /// deleted, its host's fork failing, the parent's next writer checkpoints past the fork point,
+    /// dropping the fork of a child deleted, and a sweep lets the fork point go. The parent's state
+    /// there gone, the writer reads the record again: deleted, it writes nothing, no reference, no
+    /// checkpoint, no record, nor fails. Before, it recorded the child deleted, which the record
+    /// there refused, and before TASK-395.4's review it failed the writer.
+    #[test]
+    fn forks_recorded_after_their_children_went_record_nothing() {
+        block_on(async {
+            let direct = Arc::new(Direct(SimBucket::new()));
+            let (parent, child) = (celled(1, 1), celled(2, 2));
+            let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Got(layout::record(child))));
+            branch::create(&*direct, parent, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, writer.chain().next_sequence());
+            let extents = vec![(extent, b"held".to_vec())];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            let forking = Batch::from(Commit { tag: 2, ..Commit::default() });
+            let at = writer
+                .add_segment(forking.fork(forked(child), &mut writer.chain()).frame())
+                .unwrap();
+            writer.upload(at).await.unwrap();
+            let going = direct.clone();
+            *bucket.then.lock().unwrap() = Some(Box::new(move || {
+                let went = std::thread::spawn(move || {
+                    block_on(async {
+                        branch::delete(&*going, child, 30, u64::MAX).await.unwrap();
+                        let next = Writer::open(going.clone(), parent, 11, 0).await.unwrap();
+                        let freeing = Commit { tag: 3, frees: vec![extent], ..Commit::default() };
+                        commit(&next, freeing).await;
+                        next.checkpoint().await.unwrap();
+                        sweep(&*going).await.unwrap();
+                    })
+                });
+                went.join().unwrap();
+            }));
+            assert_eq!(writer.acknowledge().await.map(drop), Ok(()));
+            assert!(bucket.then.lock().unwrap().is_none(), "the child went");
+            let left = keys(&*direct).await;
+            assert!(!left.contains(&layout::segment(parent, at)), "the fork point let go of");
+            assert!(!left.contains(&layout::checkpoint(parent, at)), "{left:#?}");
+            assert!(!left.contains(&layout::reference(parent, at, child)), "{left:#?}");
+            let record = branch::record(&*direct, child).await.unwrap().unwrap();
+            assert_eq!((record.deleted, record.origin()), (true, None));
+        });
+    }
+
+    /// TASK-395.10: a writable fork across cells whose child's ID another branch takes between the
+    /// read of the child's record and its create, its reference written, takes the reference back;
+    /// and one left by a writer dying between its create refused and that, the parent's deletion
+    /// takes back, recording the fork again. No pass would retire either: no record names it.
+    #[test]
+    fn forks_whose_childrens_ids_are_taken_take_their_references_back() {
+        assert_eq!(block_on(references_left_by_taken_ids()), [false, false]);
+    }
+
+    /// Without the rule, the references stay, for ever: specs/bucket's NoReferencesTakenBack.
+    #[test]
+    fn forks_whose_childrens_ids_are_taken_need_references_taken_back() {
+        crate::set_rules(crate::Rules { references_taken_back: false, ..crate::Rules::ALL });
+        let left = block_on(references_left_by_taken_ids());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(left, [true, true]);
+    }
+
+    /// Whether references are left of two forks of a branch to other cells whose children's IDs
+    /// other branches took: one taken as its writer writes the reference, one whose writer died
+    /// before it recorded it, a reference left, then the branch deleted; and the passes after.
+    async fn references_left_by_taken_ids() -> [bool; 2] {
+        let direct = Arc::new(Direct(SimBucket::new()));
+        let (parent, child, late) = (celled(1, 1), celled(2, 2), celled(3, 3));
+        branch::create(&*direct, parent, 0).await.unwrap();
+        let hook = Hook::Putting(layout::references(parent.cell), 1);
+        let bucket = Arc::new(Hooked::new(direct.clone(), hook));
+        let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+        let taking = direct.clone();
+        *bucket.then.lock().unwrap() = Some(Box::new(move || {
+            branch::create(&*taking, child, 0x99).now_or_never().unwrap().unwrap();
+        }));
+        let at = commit_and_fork(&writer, Vec::new(), forked(child)).await;
+        assert!(bucket.then.lock().unwrap().is_none(), "the ID taken");
+        drop(writer);
+        // The next writer's fork, uploaded, the writer dying before it acknowledges it.
+        let writer = Writer::open(direct.clone(), parent, 11, 0).await.unwrap();
+        let forking = Batch::from(Commit { tag: 4, ..Commit::default() });
+        let late_at =
+            writer.add_segment(forking.fork(forked(late), &mut writer.chain()).frame()).unwrap();
+        writer.upload(late_at).await.unwrap();
+        drop(writer);
+        branch::create(&*direct, late, 0x98).await.unwrap();
+        let reference = layout::reference(parent, late_at, late);
+        let bytes = layout::encode(&layout::Reference::of(forked(late).owner));
+        bucket::create(&*direct, &reference, bytes).await;
+        assert_eq!(branch::delete(&*direct, parent, 20, 0).await, Ok(()));
+        sweep(&*direct).await.unwrap();
+        let left = keys(&*direct).await;
+        [layout::reference(parent, at, child), reference].map(|key| left.contains(&key))
+    }
+
+    /// TASK-395.10: a clone's host dying at each step of the clone, before its reference, before
+    /// its read of the point, before it makes its record made, its directory then deleted
+    /// knowing nothing of the child, as a host's left unmade does: once the point and its origin
+    /// are deleted and passes ran, nothing is left of either, nor of the clone but its record,
+    /// deleted, which names the origin its reference was retired by.
+    #[test]
+    fn clones_whose_hosts_die_leave_nothing_once_their_points_go() {
+        for (step, nth) in [("reference", 1), ("read", 1), ("record", 2)] {
+            let (left, references) = left_by_a_clone_dying_before(step, nth);
+            assert_eq!((left, references), (Vec::<String>::new(), 0), "before its {step}");
+        }
+    }
+
+    /// Without the rule, a host dying between the reference and the record leaves the reference,
+    /// which no record names, for ever, with what it keeps: specs/bucket's NoClonesRecordFirst.
+    #[test]
+    fn clones_whose_hosts_die_need_clones_record_first() {
+        crate::set_rules(crate::Rules { clones_record_first: false, ..crate::Rules::ALL });
+        let (left, references) = left_by_a_clone_dying_before("record", 1);
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(references, 1, "{left:#?}");
+        assert!(left.iter().any(|left| left.contains("/refs/")), "{left:#?}");
+    }
+
+    /// What [`crate::testing::uncollected`] finds left, and how many references, of a clone of a
+    /// point whose host died before the `nth` request of its `step` (its record's put, its
+    /// reference's, the read of its point's record), the point and its origin then deleted and
+    /// passes run.
+    fn left_by_a_clone_dying_before(step: &str, nth: usize) -> (Vec<String>, usize) {
+        use crate::layout::Origin;
+        let bucket = SimBucket::new();
+        let (origin_branch, point, clone) = (celled(1, 1), celled(2, 2), celled(3, 3));
+        let origin = bucket
+            .served(async {
+                branch::create(&*bucket, origin_branch, 0).await.unwrap();
+                let writer = Writer::open(bucket.clone(), origin_branch, 10, 0).await.unwrap();
+                let extent = ExtentId::new(1, writer.chain().next_sequence());
+                let made = Child { branch: point, owner: 0x22, point: true };
+                let at = commit_and_fork(&writer, vec![(extent, b"held".to_vec())], made).await;
+                Origin { parent: origin_branch, at }
+            })
+            .0;
+        let request = match step {
+            "reference" => format!("put {}", layout::reference(origin.parent, origin.at, clone)),
+            "read" => format!("get {}", layout::record(point)),
+            _ => format!("put {}", layout::record(clone)),
+        };
+        let forking = branch::fork_point(&*bucket, clone, point, origin, 0x33);
+        let (asked, died) = bucket.died_before(forking, (&request, nth));
+        assert!(died, "{step} {nth}: {asked:#?}");
+        let direct = Direct(bucket.clone());
+        block_on(async {
+            branch::delete(&direct, point, 20, 0).await.unwrap();
+            branch::delete(&direct, origin_branch, 21, 0).await.unwrap();
+            sweep(&direct).await.unwrap();
+            let left = crate::testing::uncollected(&direct, 0.0).await;
+            let references =
+                keys(&direct).await.iter().filter(|key| key.contains("/refs/")).count();
+            (left, references)
+        })
+    }
+
+    /// TASK-395.7: a clone of a shared point into another tenant's cell writes its reference under
+    /// the cell of the point's origin, the point's tenant's, as any clone does; the point and its
+    /// origin deleted, passes keep what the clones inherited, which they read; once the clones go,
+    /// their references are retired, and nothing of any is left but records.
+    #[test]
+    fn clones_of_shared_points_in_other_tenants_keep_what_they_inherit_by_references() {
+        use crate::layout::Origin;
+        block_on(async {
+            let direct = Arc::new(Direct(SimBucket::new()));
+            let (origin_branch, point) = (celled(1, 1), celled(2, 2));
+            let theirs = |id| Branch { cell: layout::Cell { tenant: 2, id }, id };
+            branch::create(&*direct, origin_branch, 0).await.unwrap();
+            let writer = Writer::open(direct.clone(), origin_branch, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, writer.chain().next_sequence());
+            let made = Child { branch: point, owner: 0x22, point: true };
+            let at = commit_and_fork(&writer, vec![(extent, b"held".to_vec())], made).await;
+            drop(writer);
+            let origin = Origin { parent: origin_branch, at };
+            branch::share(&*direct, point, true).await.unwrap();
+            let clones = [theirs(3), theirs(4)];
+            for clone in clones {
+                branch::fork_point(&*direct, clone, point, origin, clone.id).await.unwrap();
+                let reference = layout::reference(origin_branch, at, clone);
+                assert!(reference.starts_with(&origin_branch.cell.prefix()), "{reference}");
+                assert!(keys(&*direct).await.contains(&reference), "{reference}");
+            }
+            branch::delete(&*direct, point, 20, 0).await.unwrap();
+            branch::delete(&*direct, origin_branch, 21, 0).await.unwrap();
+            for _ in 0..2 {
+                sweep(&*direct).await.unwrap();
+                for clone in clones {
+                    let read = read_inherited(&direct, clone, extent).await;
+                    assert_eq!(read, Ok(b"held".to_vec()), "{clone}");
+                }
+            }
+            for clone in clones {
+                branch::delete(&*direct, clone, 30, u64::MAX).await.unwrap();
+            }
+            sweep(&*direct).await.unwrap();
+            let left = keys(&*direct).await;
+            assert!(!left.iter().any(|key| key.contains("/refs/")), "{left:#?}");
+            assert_eq!(crate::testing::uncollected(&*direct, 0.0).await, Vec::<String>::new());
         });
     }
 }

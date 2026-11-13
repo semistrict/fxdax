@@ -186,6 +186,36 @@ impl SimBucket {
         }
     }
 
+    /// Runs `future`, as [`SimBucket::served`] does, until the `nth` request (from 1) whose
+    /// description is `request` waits: then its maker dies, as a host does, that request and every
+    /// other waiting failing without taking effect, and `future` is dropped. What was asked before,
+    /// in order; and whether it got there, `future` not ending first.
+    pub fn died_before<T>(
+        &self,
+        future: impl Future<Output = T>,
+        (request, nth): (&str, usize),
+    ) -> (Vec<String>, bool) {
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(futures::task::noop_waker_ref());
+        let (mut asked, mut seen) = (Vec::new(), 0);
+        loop {
+            if future.as_mut().poll(&mut context).is_ready() {
+                return (asked, false);
+            }
+            assert!(self.waiting() > 0, "waiting for no request");
+            if seen + 1 == nth && (0..self.waiting()).any(|index| self.describe(index) == request) {
+                while self.waiting() > 0 {
+                    self.complete(0, Fault::Before);
+                }
+                return (asked, true);
+            }
+            let next = self.describe(0);
+            seen += usize::from(next == request);
+            asked.push(next);
+            self.complete(0, Fault::None);
+        }
+    }
+
     /// The first waiting request whose description holds `text`.
     pub fn position(&self, text: &str) -> Option<usize> {
         (0..self.waiting()).find(|&index| self.describe(index).contains(text))
@@ -485,34 +515,6 @@ pub async fn collect_until_quiet(
 /// fxdax: how many sweeps [`collect_until_quiet`] runs at most.
 pub const SWEEPS: u64 = 32;
 
-/// fxdax: what the parent's cell keeps for the fork point `origin` while a reference names it
-/// (TASK-395.4): what recovering the parent's state there reads, the objects holding the extents it
-/// names, and their moves along their ways from there; empty if it is lost. What a test excuses
-/// of a reference left behind (TASK-395.10), and no more.
-pub async fn fork_point_keeps(bucket: &impl Bucket, origin: layout::Origin) -> BTreeSet<String> {
-    let keys: BTreeSet<String> = (crate::bucket::list(bucket, &origin.parent.cell.prefix()).await)
-        .into_iter()
-        .map(|meta| meta.key)
-        .collect();
-    let checkpoints = crate::recovery::Checkpoints::new(bucket, 0);
-    let recovered = crate::recovery::recover_at(&checkpoints, origin.parent, origin.at).await;
-    let Ok((state, mut kept)) = recovered else { return BTreeSet::new() };
-    let mut maps = MovesMaps::default();
-    for (&extent, location) in &state.extents {
-        kept.insert(location.key.clone());
-        let mut at = location.clone();
-        while let Ok(moves) = layout::moves(&at.key)
-            && keys.contains(&moves)
-        {
-            let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
-            kept.insert(moves);
-            kept.insert(to.key.clone());
-            at = to;
-        }
-    }
-    kept
-}
-
 /// fxdax: what the collector should have collected of `bucket` and left (TASK-390), once
 /// passes ran alone, of `compact_below`, past the grace period, the branches' writers all done:
 /// each a line, `garbage left: KEY`, an object no live branch needs, or `left uncompacted: KEY, ...`,
@@ -530,7 +532,10 @@ pub async fn fork_point_keeps(bucket: &impl Bucket, origin: layout::Origin) -> B
 /// reference names, or a live branch's fork to another cell, is needed whole, its state's extents
 /// along their ways from where they were sealed, and what recovering it reads, whatever its
 /// children hold of it; a reference is garbage once its child is deleted, of that origin, in
-/// another cell holding no live branch and no reference; the collector's leases and marks stay.
+/// another cell holding no live branch and no reference; one whose child has no record is
+/// garbage at once, but a live branch's fork's, whose writers record it yet: no pass would ever
+/// retire it (TASK-395.10); one whose child's record names another origin, or none, is excused,
+/// a stale recorder's perhaps (TASK-395.13); the collector's leases and marks stay.
 pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String> {
     use crate::layout::{Location, Origin};
     use crate::record::{Kind as Made, Record};
@@ -563,16 +568,9 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
     let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
     let mut points: BTreeSet<Origin> = BTreeSet::new();
     let mut retirable = BTreeSet::new();
-    for &(key, parent, at, child) in &references {
-        let origin = Origin { parent, at };
-        let retired = records.get(&child).is_some_and(|record| {
-            record.deleted && record.origin() == Some(origin) && child.cell != parent.cell
-        }) && dead(child.cell);
-        match retired {
-            true => drop(retirable.insert(key.clone())),
-            false => drop(points.insert(origin)),
-        }
-    }
+    // The forks of live branches to other cells: their records and references to come, or to be
+    // taken back, from the branches' next writers or deletions (TASK-395.10).
+    let mut pending = BTreeSet::new();
     for (&branch, record) in &records {
         let key = layout::record(branch);
         // Deleted branches' records stay (TASK-174).
@@ -598,6 +596,7 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         for fork in &recovered.state.forks {
             if fork.child.cell != branch.cell {
                 points.insert(Origin { parent: branch, at: fork.at });
+                pending.insert((branch, fork.at, fork.child));
             }
         }
         touched.extend(recovered.touched.iter().cloned());
@@ -639,6 +638,27 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             }
         }
     }
+    // A reference stays while its child's record names its origin, until its cell's pass may
+    // retire it, or while a live branch's fork may yet name it or take it back; any other is one
+    // no pass retires, kept for ever with its fork point (TASK-395.10), and garbage.
+    let mut unnamed = BTreeSet::new();
+    for &(key, parent, at, child) in &references {
+        let origin = Origin { parent, at };
+        let named = records.get(&child).is_some_and(|record| record.origin() == Some(origin));
+        let retired =
+            named && records[&child].deleted && child.cell != parent.cell && dead(child.cell);
+        // TASK-395.13: one whose child's record names no origin or another may be a stale
+        // recorder's, written after the take-back, which no pass retires yet: excused, with what
+        // it keeps; one whose child has no record is garbage.
+        let stale = records.contains_key(&child);
+        if retired {
+            retirable.insert(key.clone());
+        } else if named || stale || pending.contains(&(parent, at, child)) {
+            points.insert(origin);
+        } else {
+            unnamed.insert(key.clone());
+        }
+    }
     // Each fork point kept whole, once (TASK-395.4).
     let checkpoints = crate::recovery::Checkpoints::new(bucket, 0);
     for origin in points {
@@ -678,7 +698,7 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             | Kind::GcLease { .. }
             | Kind::Marks { .. }
             | Kind::Marking => true,
-            Kind::Reference { .. } => !retirable.contains(key),
+            Kind::Reference { .. } => !retirable.contains(key) && !unnamed.contains(key),
             _ => false,
         };
         if !kept && !needed.contains(key) {

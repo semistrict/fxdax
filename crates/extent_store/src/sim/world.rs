@@ -105,6 +105,10 @@ pub struct Profile {
     /// fxdax: the chance that a collector's pass is over one branch's cell alone, not a sweep over
     /// every cell (TASK-395.4): none draws nothing of the seed's.
     pub one_cell: f64,
+    /// fxdax: the chance that a fork of a point a crash stopped is forgotten, not finished nor
+    /// deleted: its host's directory, left unmade, names no child, and deleting it touches nothing
+    /// in the bucket (TASK-395.10). None draws nothing of the seed's.
+    pub forget: f64,
     pub weights: Weights,
     pub options: Options,
 }
@@ -119,6 +123,7 @@ impl Default for Profile {
             hold: 0.0,
             restarts: false,
             one_cell: 0.5,
+            forget: 0.0,
             weights: Weights {
                 complete: 60,
                 write: 6,
@@ -1551,6 +1556,14 @@ impl World {
         // What a crash left of a fork of a point: its handle opened, or deleted.
         let stopped = self.restores.iter().find(|(_, restore)| restore.running.is_none());
         if let Some((&child, _)) = stopped {
+            // One that took a fork's child's ID is the fork's or the restore's by which record
+            // came first, which a guest of either is told: never forgotten.
+            let forget = self.profile.forget;
+            if forget > 0.0 && self.restores[&child].taken.is_none() && self.rng.random_bool(forget)
+            {
+                self.restores.remove(&child);
+                return;
+            }
             return match self.rng.random_bool(0.5) {
                 true => self.spawn_restore(child),
                 false => self.give_up_restore(child),

@@ -54,16 +54,16 @@ pub const FORK_STEPS: [&str; 20] = [
 ];
 
 /// The steps of a restore: a fork of a point, in the order it takes them, on any host holding a
-/// copy of it (doc-7, Points): its child's ID found free, its reference under the point's origin's
-/// cell (TASK-395.3), its child's record, a read of the point's, and the record made; then the
-/// child's store. No upload, as it commits nothing.
+/// copy of it (doc-7, Points): its child's ID found free, its child's record, its reference under
+/// the point's origin's cell (TASK-395.3, after the record since TASK-395.10), a read of the
+/// point's, and the record made; then the child's store. No upload, as it commits nothing.
 pub const RESTORE_STEPS: [&str; 10] = [
     "fork::durable",
     "remote::child_free",
     "remote::forked",
     "point::record",
-    "point::referred",
     "point::recorded",
+    "point::referred",
     "point::checked",
     "point::made",
     "fork::recorded",

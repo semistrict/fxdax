@@ -395,29 +395,14 @@ impl Hosts {
         assert_eq!(gone, Ok(()), "{case}");
         Self::collect(&self.bucket, case);
         let keys = block_on(extent_remote::Bucket::list(&*self.bucket, "")).unwrap();
-        // TASK-395.10: a reference whose child never got a record, its host dying between the
-        // two, is never retired, and keeps its origin's state at the fork point: space, not data.
-        // Excused, it and exactly what it keeps.
-        let recorded = |child| block_on(branch::record(&*self.bucket, child)).unwrap().is_some();
-        let mut unretired = std::collections::BTreeSet::new();
-        for meta in &keys {
-            if let Kind::Reference { parent, at, child } = layout::kind(&meta.key)
-                && !recorded(child)
-            {
-                let origin = extent_remote::layout::Origin { parent, at };
-                unretired.extend(block_on(extent_remote::testing::fork_point_keeps(
-                    &*self.bucket,
-                    origin,
-                )));
-            }
-        }
         let leaked: Vec<_> = (keys.into_iter().map(|meta| meta.key))
             .filter(|key| match layout::kind(key) {
-                Kind::Reference { child, .. } => recorded(child),
-                Kind::Segment { .. }
+                // TASK-395.10: every reference retired, whether its child got a record or not.
+                Kind::Reference { .. }
+                | Kind::Segment { .. }
                 | Kind::Checkpoint { .. }
                 | Kind::Extent { .. }
-                | Kind::Moves { .. } => !unretired.contains(key),
+                | Kind::Moves { .. } => true,
                 Kind::Record { branch } => !block_on(branch::record(&*self.bucket, branch))
                     .unwrap()
                     .is_some_and(|record| record.deleted),
@@ -549,7 +534,7 @@ fn points_deleted_at_each_step_of_a_restore() {
 #[test]
 fn points_deleted_as_hosts_die_in_the_middle_of_a_restore() {
     host();
-    let steps = ["point::record", "point::recorded", "point::checked"];
+    let steps = ["point::record", "point::recorded", "point::referred", "point::checked"];
     all(steps.into_iter().flat_map(|step| on_each_host(Fault::DeletedAndDies(step))));
 }
 

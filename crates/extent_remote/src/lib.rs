@@ -363,8 +363,9 @@ pub struct Rules {
     /// no reference.
     /// TLA+: `specs/bucket/mutations/NoReferencesFirst.cfg`.
     pub references_first: bool,
-    /// A point's clone writes its reference before its record and before it reads the point's
-    /// record, whatever its cell, its origin's own too ([`branch::fork_point`]): one that read the
+    /// A point's clone writes its reference before it reads the point's record (and after its own,
+    /// [`Rules::clones_record_first`]), whatever its cell, its origin's own too
+    /// ([`branch::fork_point`]): one that read the
     /// point live then wrote it before the point's deletion, which a pass reading the point
     /// deleted, or finding its reference retired, read after.
     /// TLA+: `specs/bucket/mutations/NoClonesReferFirst.cfg`.
@@ -384,6 +385,19 @@ pub struct Rules {
     /// through it (TASK-395.4).
     /// TLA+: `specs/bucket/mutations/NoForkPointsKept.cfg`.
     pub fork_points_kept: bool,
+    /// A point's clone creates its record, saying it is being made, before its reference
+    /// ([`branch::fork_point`]): a reference then always has a record naming its origin, by which
+    /// its child's cell's pass retires it, the clone's host dying or not; and a clone refused by a
+    /// record there writes none. The other way round, a host dying between the two leaves a
+    /// reference no record names, which no pass retires (TASK-395.10).
+    /// TLA+: `specs/bucket/mutations/NoClonesRecordFirst.cfg`.
+    pub clones_record_first: bool,
+    /// Whoever finds the record of a fork's child naming another origin than the fork's, or none,
+    /// deletes the fork's reference: the fork made no branch, and no record will name it. Every
+    /// writer of the child's record looks, the parent's next writer and its deletion among them,
+    /// so that one dying first leaves it to the next (TASK-395.10).
+    /// TLA+: `specs/bucket/mutations/NoReferencesTakenBack.cfg`.
+    pub references_taken_back: bool,
 }
 
 impl Rules {
@@ -432,6 +446,8 @@ impl Rules {
         references_held: true,
         references_relisted: true,
         fork_points_kept: true,
+        clones_record_first: true,
+        references_taken_back: true,
     };
 }
 

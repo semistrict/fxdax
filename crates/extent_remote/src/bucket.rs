@@ -263,6 +263,16 @@ pub(crate) async fn delete_all(bucket: &impl Bucket, keys: &[&str]) {
     batches.buffer_unordered(BATCHES_AT_ONCE).collect::<()>().await;
 }
 
+/// fxdax: deletes the object at `key`, retried while it fails: deleting what is gone is no error.
+/// One key's, with no stream of batches, so that a writer's future, which the uploader's runtime
+/// needs `Send`, may await it (TASK-395.10).
+pub(crate) async fn delete(bucket: &impl Bucket, key: &str) {
+    let mut failures = 0;
+    while bucket.delete(key).await.is_err() {
+        failed(bucket, &mut failures).await;
+    }
+}
+
 /// What [`create`] found.
 pub(crate) enum Created {
     /// The object holds what was written: this call wrote it, or one before it wrote the same.
