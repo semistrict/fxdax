@@ -161,6 +161,7 @@ mod dir;
 mod durability;
 pub use durability::{LAG_BUCKETS, Lags, durability_lags};
 mod framed;
+mod framing;
 mod host;
 mod kept;
 mod layout;

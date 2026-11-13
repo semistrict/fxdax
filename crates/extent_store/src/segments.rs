@@ -10,14 +10,15 @@
 
 use crate::dir::{Dir, File};
 use crate::durability::Syncs;
-use crate::framed::{Aligned, Files, Framed, Source, read_parts};
+use crate::framed::{Files, Framed, Source, read_parts};
+use crate::framing;
 use crate::layout::{
     Change, Data, EXTENTS, Extents, LOGS, OPEN_SEGMENTS, Piece, SEGMENTS, SPARE, SegmentId,
     branch_dir, extent_path, framing_path, held_frees, log_path, open_segment_path, parse_number,
     segment_path, spare_path,
 };
 use crate::store::{Options, Usage};
-use crate::timings::{self, Timing, durable, framing};
+use crate::timings::{self, Timing, durable, framing as framing_phase};
 use crate::wal::{log_header, log_salt, new_salt};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Continued, Footer, epoch_of};
@@ -1210,7 +1211,7 @@ impl<F: File> Unframed<F> {
             own.dir(branch_dir(EXTENTS, self.number.branch));
         }
         own.sync(dir)?;
-        timing.took(framing::OWN);
+        timing.took(framing_phase::OWN);
         let footer = self.footer.encode();
         let (path, raw_path) = (framing_path(self.number), open_segment_path(self.number));
         let raw = (raw_path.as_str(), &self.raw);
@@ -1306,7 +1307,7 @@ pub(crate) const WRITTEN_BACK: usize = 1 << 20;
 /// `raw_path`, holds, with `footer`, into the framed file at `path` in `dir`: counted in
 /// [`segment_closes`], and timed in `timing`, reading, compressing and writing (TASK-336). In place,
 /// if `quiet`, no write in progress in it, and compressing its parts saves less than an eighth of
-/// its data ([`IN_PLACE_SAVING`]), each stored raw then, as an object of such parts holds them as
+/// its data ([`framing::IN_PLACE_SAVING`]), each stored raw then, as an object of such parts holds them as
 /// they are, where they are: its raw file, its tail appended, is its framed file, by another name
 /// ([`Dir::link`]), its data written once, as its guest wrote it (TASK-310). A segment's data was
 /// written twice, raw, which the host's disk wrote back as the guest wrote it, and framed: as much
@@ -1321,34 +1322,39 @@ fn frame_segment<D: Dir>(
     timing: &mut Timing<4>,
 ) -> Result<Arc<Framed<D::File>>, Error> {
     let started = Instant::now();
-    let mut data = Aligned::new(len as usize);
-    raw.read_cached(data.as_mut_slice(), 0)?;
-    timing.took(framing::READ);
+    // fxdax: its parts read on threads, each in a buffer of its own, whose waits to run count in
+    // this one's stead; checksummed and looked at if it may be framed in place (TASK-336).
+    let handing = timing.waits.handing();
+    let (parts, waited) = framing::read(&**raw, len, quiet);
+    timing.waits.handed(handing, waited);
+    let parts = parts?;
+    timing.took(framing_phase::READ);
     let mut packer = extent_frame::Packer::new();
     // fxdax: in place at once if a sample of its parts says compressing them saves too little,
     // compressing no more of them: compressing every part to tell was most of what framings took
     // with eight VMs framing at once, up to 0.9 s each; else by them all (TASK-310).
-    let sampled = quiet && len > 0 && saves_little(data.as_slice());
-    let packed = match sampled {
-        true => Vec::new(),
-        false => {
-            // On threads of their own, whose waits to run count in this one's stead.
-            let handing = timing.waits.handing();
-            let (packed, waited) = packer.push_counting(data.as_slice(), timings::runnable_ns);
-            timing.waits.handed(handing, waited);
-            packed
+    let look = parts.iter().fold(framing::Look::default(), |look, part| look.plus(part.look));
+    let sampled = quiet && len > 0 && look.saves_little();
+    let mut packed = Vec::new();
+    if !sampled {
+        let handing = timing.waits.handing();
+        let (each, waited) = framing::pack(&parts);
+        timing.waits.handed(handing, waited);
+        for (part, each) in parts.iter().zip(&each) {
+            packer.push_part(&mut packed, &part.data, each);
         }
-    };
-    let in_place = sampled || (quiet && len > 0 && packer.end() > len - len / IN_PLACE_SAVING);
+    }
+    let in_place =
+        sampled || (quiet && len > 0 && packer.end() > len - len / framing::IN_PLACE_SAVING);
     if (in_place && !packer.raw()) || sampled {
         packer = extent_frame::Packer::new();
-        packer.push_raw(data.as_slice());
+        packer.push_raw_parts(parts.iter().map(|part| (part.data.len() as u64, part.crc)));
     }
-    drop(data);
+    drop(parts);
     let end = packer.end();
     let tail = packer.finish(footer);
     let parts = extent_frame::Parts::of_suffix(&tail)?;
-    timing.took(framing::COMPRESS);
+    timing.took(framing_phase::COMPRESS);
     let framed = match in_place {
         true => frame_in_place(dir, (raw_path, raw), path, end, &tail)?,
         false => None,
@@ -1369,7 +1375,7 @@ fn frame_segment<D: Dir>(
             Framed::new(Arc::new(file), parts)
         }
     };
-    timing.took(framing::WRITE);
+    timing.took(framing_phase::WRITE);
     SEGMENT_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = started.elapsed().as_nanos() as u64;
     SEGMENT_CLOSE_NS.fetch_add(nanos, std::sync::atomic::Ordering::Relaxed);
@@ -1382,54 +1388,6 @@ fn write_back<F: File>(file: &F, bytes: &[u8], offset: u64) -> io::Result<()> {
     file.write_at(bytes, offset)?;
     crate::written::wrote(crate::written::Kind::Framed, bytes.len());
     file.write_back(offset, bytes.len() as u64)
-}
-
-/// fxdax: what of a segment's data compressing its parts must save for it to be framed in a copy,
-/// compressed, rather than in place, every part raw ([`frame_segment`], TASK-310): an eighth.
-/// Writing the data again to save less of it, in the bucket and in the host's cache, costs the
-/// host's disk more than it saves, on a disk VMs share with their bucket above all. Framed in place
-/// only if none compressed, segments a guest's filesystem fills, a large file's data with its
-/// metadata in a few of their parts, were all framed in copies but for a few.
-const IN_PLACE_SAVING: u64 = 8;
-
-/// fxdax: the pieces of a segment's data compressed to sample it by ([`saves_little`]): one in so
-/// many, of [`SAMPLE`] bytes each, spread over all of it.
-const SAMPLE_EVERY: usize = 8;
-
-/// fxdax: the bytes of each piece of a segment's data its sample compresses ([`saves_little`]): an
-/// eighth of a part, so that every part has its share sampled (TASK-343).
-const SAMPLE: usize = (extent_frame::PART / 8) as usize;
-
-/// fxdax: the blocks of a segment's data [`saves_little`] finds zeros in, every one of them.
-const ZERO_BLOCK: usize = 4096;
-
-/// fxdax: whether `data`, a segment's, saves too little compressed for a framing in a copy, by a
-/// look at it short of compressing it: its blocks of zeros under half of what a copy must save
-/// ([`IN_PLACE_SAVING`]), and a sample of its pieces, one in [`SAMPLE_EVERY`], spread over the
-/// whole of it, compressing by under that too; what a segment of a large file's data, which
-/// doesn't compress, holds. One saving more, or near the bound, is compressed whole to tell
-/// (TASK-310).
-///
-/// The zeros counted exactly, as the store writes them of its own: an extent's holes, sealed in
-/// one run with it, which no guest's write wrote, nor a tenant's disk admitted (TASK-94). Sampled
-/// a part in eight, 1 MiB each, the first part alone of a segment under 9 MiB, the sample took a
-/// segment of a hostile VM process's 3 MiB of noise, then 2.6 MB of its extents' holes, for one
-/// that saves nothing: framed in place, raw, the holes took its tenant's disk past its limit by
-/// what a copy, compressed, takes none of (TASK-343, Hunt run 42949975683).
-fn saves_little(data: &[u8]) -> bool {
-    let len = data.len() as u64;
-    let zeros: u64 = (data.chunks(ZERO_BLOCK))
-        .filter(|block| block.iter().all(|&byte| byte == 0))
-        .map(|block| block.len() as u64)
-        .sum();
-    if zeros >= len / (2 * IN_PLACE_SAVING) {
-        return false;
-    }
-    let sample = data.chunks(SAMPLE).step_by(SAMPLE_EVERY);
-    let (sampled, packed) = sample.fold((0, 0), |(len, packed), piece| {
-        (len + piece.len() as u64, packed + extent_frame::packed_len(piece))
-    });
-    sampled - packed < sampled / (2 * IN_PLACE_SAVING)
 }
 
 /// fxdax: frames a segment's data, `raw`, its raw file at `raw_path`, its parts stored raw, in
@@ -1825,42 +1783,6 @@ mod tests {
         create_branch_dirs(dir, BRANCH.id).unwrap();
         let chain = Chain::new(BRANCH, 0, 0, None, 0);
         Segments::open(dir, (BRANCH.id, BTreeMap::new()), (0, 0, chain), open_files).unwrap()
-    }
-
-    /// `len` bytes that don't compress, of `seed`'s.
-    fn noise(seed: u64, len: usize) -> Vec<u8> {
-        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
-        (0..len)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                state as u8
-            })
-            .collect()
-    }
-
-    /// TASK-343: a segment's look short of compressing it sees all of it: a segment of 3 MiB of
-    /// noise, then holes, an extent's zeros, as Hunt's hostile VM process made one, saves much
-    /// compressed, as do zeros at every offset no sample piece reaches; one of noise alone, or with
-    /// a few blocks of zeros, saves little. Red with every eighth MiB part sampled: the first only
-    /// of a segment under 9 MiB, noise, so it saved little, and was framed in place, raw.
-    #[test]
-    fn segments_holding_holes_save_much_compressed() {
-        const MIB: usize = 1 << 20;
-        let mut holes = noise(1, 3 * MIB);
-        holes.resize(6 * MIB, 0);
-        assert!(!saves_little(&holes), "3 MiB of noise, then 3 MiB of zeros");
-        // Zeros past each part's sampled piece, where no sample reaches.
-        let mut unsampled = noise(2, 8 * MIB);
-        for part in unsampled.chunks_mut(MIB) {
-            part[SAMPLE..SAMPLE + MIB / 4].fill(0);
-        }
-        assert!(!saves_little(&unsampled), "a quarter of each part zeros, unsampled");
-        assert!(saves_little(&noise(3, 6 * MIB)), "noise");
-        let mut few = noise(4, 6 * MIB);
-        few[..4 * BLOCK as usize].fill(0);
-        assert!(saves_little(&few), "noise, but for four blocks of zeros");
     }
 
     /// `unframed`, framed and made durable, as a store's framings make it ([`make_durable`]).

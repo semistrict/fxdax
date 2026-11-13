@@ -16,11 +16,12 @@ use std::time::Instant;
 pub const FLUSH_PHASES: [&str; 6] = ["wait", "data", "dirs", "logs", "gone", "raw"];
 
 /// The phases of a framing ([`crate::Store::framing`]): syncing the extents stored on their own
-/// its footer names; reading its raw data; fxdax: compressing it, sampling its parts' compression,
-/// compressing them if it must, and checksumming them; and writing its framed file, written back
-/// as it goes (TASK-336: one phase, `write`, said nothing of whether a framing's second went to
-/// the host's CPUs or its disk). fxdax: its framed file is made durable after, with others framed
-/// meanwhile ([`DURABLE_PHASES`], TASK-310).
+/// its footer names; fxdax: reading its raw data, its parts on threads, each checksummed and
+/// sampled if it may be framed in place (`framing::read`); compressing them, if it is to be framed
+/// in a copy (`framing::pack`); and writing its framed file, or its tail, written back as it goes
+/// (TASK-336: one phase, `write`, said nothing of whether a framing's second went to the host's
+/// CPUs or its disk). fxdax: its framed file is made durable after, with others framed meanwhile
+/// ([`DURABLE_PHASES`], TASK-310).
 pub const FRAMING_PHASES: [&str; 4] = ["own", "read", "compress", "write"];
 
 /// fxdax: the phases of making segments framed durable together (`segments::make_durable`,

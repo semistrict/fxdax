@@ -157,48 +157,82 @@ fn pack_part(data: &[u8], compressor: &mut zstd::bulk::Compressor<'_>) -> Option
     }
 }
 
-/// fxdax: the bytes `part`, a part of an object's data, is stored in: compressed, or raw if that is
-/// no smaller, as [`Packer::push`] stores it. What a store samples a segment's parts by, to tell
-/// whether compressing them is worth writing it again (TASK-310).
-pub fn packed_len(part: &[u8]) -> u64 {
-    if level() == 0 {
-        return part.len() as u64;
-    }
-    let mut compressor = zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor");
-    pack_part(part, &mut compressor).map_or(part.len(), |packed| packed.len()) as u64
+/// fxdax: a part of an object's data, packed on its own ([`PartPacker::pack`]): compressed, if
+/// that shrinks it, or raw; and the CRC of its bytes as stored (TASK-336).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackedPart {
+    pub compressed: Option<Vec<u8>>,
+    pub crc: u32,
 }
 
-/// `data`'s parts, packed: on threads of their own if there are several. fxdax: and the most
-/// `count`, a count each thread keeps of its own, rose on any of them as it packed: what
-/// [`Packer::push_counting`] returns.
-fn pack_parts(data: &[u8], count: fn() -> u64) -> (Vec<Option<Vec<u8>>>, u64) {
-    let parts: Vec<&[u8]> = data.chunks(PART as usize).collect();
-    if level() == 0 {
-        return (vec![None; parts.len()], 0);
+impl PackedPart {
+    /// `part`, stored raw.
+    pub fn raw(part: &[u8]) -> Self {
+        Self { compressed: None, crc: crc(part) }
     }
+}
+
+/// fxdax: packs parts of an object's data one at a time, as [`Packer::push`] packs each: so that a
+/// store packs a segment's parts on threads of its own, each part read there, rather than all its
+/// data read on one thread first (TASK-336).
+pub struct PartPacker {
+    /// None at level 0, which stores parts raw.
+    compressor: Option<zstd::bulk::Compressor<'static>>,
+}
+
+impl Default for PartPacker {
+    fn default() -> Self {
+        let compressor = (level() != 0)
+            .then(|| zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor"));
+        Self { compressor }
+    }
+}
+
+impl PartPacker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `part`, a part of an object's data, packed, as [`Packer::push`] packs it.
+    pub fn pack(&mut self, part: &[u8]) -> PackedPart {
+        let compressed =
+            self.compressor.as_mut().and_then(|compressor| pack_part(part, compressor));
+        let crc = crc(compressed.as_deref().unwrap_or(part));
+        PackedPart { compressed, crc }
+    }
+
+    /// fxdax: the bytes `part`, a part of an object's data, or a piece of one, is stored in:
+    /// compressed, or raw if that is no smaller. What a store samples a segment's parts by, to tell
+    /// whether compressing them is worth writing it again (TASK-310).
+    pub fn packed_len(&mut self, part: &[u8]) -> u64 {
+        let compressor = self.compressor.as_mut();
+        let packed = compressor.and_then(|compressor| pack_part(part, compressor));
+        packed.map_or(part.len(), |packed| packed.len()) as u64
+    }
+}
+
+/// fxdax: [`PartPacker::packed_len`], with a packer of its own (TASK-310).
+pub fn packed_len(part: &[u8]) -> u64 {
+    PartPacker::new().packed_len(part)
+}
+
+/// `data`'s parts, packed: on threads of their own if there are several.
+fn pack_parts(data: &[u8]) -> Vec<PackedPart> {
+    let parts: Vec<&[u8]> = data.chunks(PART as usize).collect();
     let threads =
         std::thread::available_parallelism().map_or(1, |threads| threads.get()).min(parts.len());
-    let compressor = || zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor");
-    let counted = |parts: &[&[u8]]| {
-        let since = count();
-        let mut compressor = compressor();
-        let packed: Vec<_> = parts.iter().map(|part| pack_part(part, &mut compressor)).collect();
-        (packed, count().saturating_sub(since))
+    let pack = |parts: &[&[u8]]| {
+        let mut packer = PartPacker::new();
+        parts.iter().map(|part| packer.pack(part)).collect::<Vec<_>>()
     };
-    if threads <= 1 {
-        return counted(&parts);
+    if threads <= 1 || level() == 0 {
+        return pack(&parts);
     }
     let each = parts.len().div_ceil(threads);
     std::thread::scope(|scope| {
         let packing: Vec<_> =
-            parts.chunks(each).map(|parts| scope.spawn(move || counted(parts))).collect();
-        let (mut all, mut most) = (Vec::with_capacity(parts.len()), 0);
-        for thread in packing {
-            let (packed, counted) = thread.join().unwrap();
-            all.extend(packed);
-            most = most.max(counted);
-        }
-        (all, most)
+            parts.chunks(each).map(|parts| scope.spawn(move || pack(parts))).collect();
+        packing.into_iter().flat_map(|thread| thread.join().unwrap()).collect()
     })
 }
 
@@ -231,10 +265,18 @@ impl Packer {
     /// [`Packer::push`] stores those that don't compress: the object's bytes are `data` itself, as
     /// it is, where it is, which this doesn't return (TASK-310). Whole parts, but for the last.
     pub fn push_raw(&mut self, data: &[u8]) {
+        let parts = data.chunks(PART as usize);
+        self.push_raw_parts(parts.map(|part| (part.len() as u64, crc(part))));
+    }
+
+    /// fxdax: [`Packer::push_raw`], of parts given by their lengths and CRCs, as a store reads and
+    /// checksums them on threads of its own (TASK-336).
+    pub fn push_raw_parts(&mut self, parts: impl IntoIterator<Item = (u64, u32)>) {
         assert_eq!(self.end, 0, "raw parts first");
-        for part in data.chunks(PART as usize) {
-            let (offset, len) = (self.end, part.len() as u64);
-            self.stored.push(Stored { offset, len, crc: crc(part), encoding: Encoding::Raw });
+        for (len, crc) in parts {
+            assert!(self.data_len.is_multiple_of(PART), "parts follow a part cut short");
+            let offset = self.end;
+            self.stored.push(Stored { offset, len, crc, encoding: Encoding::Raw });
             self.data_len += len;
             self.end += len;
         }
@@ -243,31 +285,29 @@ impl Packer {
     /// Packs `data`, the object's next parts: whole parts, but for the object's last. Returns the
     /// object's next bytes, which follow those returned before.
     pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
-        self.push_counting(data, || 0).0
+        let mut bytes = Vec::new();
+        for (part, packed) in data.chunks(PART as usize).zip(pack_parts(data)) {
+            self.push_part(&mut bytes, part, &packed);
+        }
+        bytes
     }
 
-    /// fxdax: [`Packer::push`], and the most `count`, a count each thread keeps of its own, rose
-    /// on any of the threads that packed the parts, as it did: so a store tells how long packing
-    /// them waited for the host's CPUs, each thread's wait to run its `count` (TASK-336). The
-    /// calling thread's, if it packed them alone.
-    pub fn push_counting(&mut self, data: &[u8], count: fn() -> u64) -> (Vec<u8>, u64) {
+    /// fxdax: packs `part`, the object's next part, as `packed`, [`PartPacker::pack`]'s of it,
+    /// says, appending the object's next bytes to `bytes` (TASK-336). A whole part, but for the
+    /// object's last.
+    pub fn push_part(&mut self, bytes: &mut Vec<u8>, part: &[u8], packed: &PackedPart) {
         assert!(self.data_len.is_multiple_of(PART), "parts follow a part cut short");
-        let mut bytes = Vec::new();
-        let (packed, counted) = pack_parts(data, count);
-        for (part, packed) in data.chunks(PART as usize).zip(packed) {
-            let offset = self.end.next_multiple_of(ALIGN);
-            bytes.resize(bytes.len() + (offset - self.end) as usize, 0);
-            let (stored, encoding) = match &packed {
-                Some(packed) => (&packed[..], Encoding::Zstd),
-                None => (part, Encoding::Raw),
-            };
-            bytes.extend_from_slice(stored);
-            let len = stored.len() as u64;
-            self.stored.push(Stored { offset, len, crc: crc(stored), encoding });
-            self.data_len += part.len() as u64;
-            self.end = offset + len;
-        }
-        (bytes, counted)
+        let offset = self.end.next_multiple_of(ALIGN);
+        bytes.resize(bytes.len() + (offset - self.end) as usize, 0);
+        let (stored, encoding) = match &packed.compressed {
+            Some(compressed) => (&compressed[..], Encoding::Zstd),
+            None => (part, Encoding::Raw),
+        };
+        bytes.extend_from_slice(stored);
+        let len = stored.len() as u64;
+        self.stored.push(Stored { offset, len, crc: packed.crc, encoding });
+        self.data_len += part.len() as u64;
+        self.end = offset + len;
     }
 
     /// The object's last bytes, which follow those [`Packer::push`] returned: `footer`, the table,
@@ -541,16 +581,32 @@ pub fn footer(bytes: &[u8]) -> Result<&[u8], Corrupt> {
 mod tests {
     use super::*;
 
-    /// fxdax: packing counts the most its threads' counts rose, as each packed its parts, and
-    /// packs as `push` does (TASK-336).
+    /// fxdax: parts packed one at a time pack as `push` packs them all (TASK-336).
     #[test]
-    fn packing_counts_its_threads() {
-        thread_local!(static CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
-        let count = || CALLS.with(|calls| calls.replace(calls.get() + 1000));
-        let data: Vec<u8> = (0..5 * PART as usize).map(|i| (i / 4096 % 7) as u8).collect();
-        let (bytes, counted) = Packer::new().push_counting(&data, count);
-        assert_eq!(bytes, Packer::new().push(&data));
-        assert_eq!(counted, 1000, "each thread's count rose by one call's");
+    fn parts_packed_one_at_a_time_pack_as_all_at_once() {
+        let mut data: Vec<u8> = (0..5 * PART as usize).map(|i| (i / 4096 % 7) as u8).collect();
+        // A part that doesn't compress, and a last part cut short.
+        let mut state = 1u64;
+        for byte in &mut data[PART as usize..2 * PART as usize] {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *byte = (state >> 56) as u8;
+        }
+        data.truncate(data.len() - 1000);
+        let mut all = Packer::new();
+        let pushed = all.push(&data);
+        let (mut one, mut bytes, mut packer) = (Packer::new(), Vec::new(), PartPacker::new());
+        for part in data.chunks(PART as usize) {
+            one.push_part(&mut bytes, part, &packer.pack(part));
+        }
+        assert_eq!(bytes, pushed);
+        assert!(!one.raw(), "parts compressed");
+        assert_eq!(one.finish(b"footer"), all.finish(b"footer"));
+        let mut raw = Packer::new();
+        raw.push_raw(&data);
+        let mut given = Packer::new();
+        let parts = data.chunks(PART as usize);
+        given.push_raw_parts(parts.map(|part| (part.len() as u64, PackedPart::raw(part).crc)));
+        assert_eq!(given.finish(b"footer"), raw.finish(b"footer"));
     }
     use std::cell::RefCell;
 

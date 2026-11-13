@@ -2,6 +2,11 @@
 
 # Decisions
 
+## A framing reads and packs its parts on threads, its buffers and compressors kept (TASK-336, 2026-11-13)
+Decided without you:
+- **A framing's parts are read, checksummed, sampled and compressed on threads**, as many as the host has CPUs for the daemon, each part in a buffer of its own (`extent_store::framing`); it read all 32 MiB on one thread first. On a host whose vCPUs keep its CPUs busy each thread gets its share, so framings take a larger share of the CPUs while they run: the sandboxes short mode's builders ran 84.5-85.3 s against 79.7-82.6 s (2 rounds a side, ubu1), for framings half as long and the daemons' CPU 3-5% less. *Instead:* a framer thread at a higher priority (needs CAP_SYS_NICE, which an unprivileged daemon lacks). *Undo:* `framing::on_threads` running on the calling thread alone.
+- **Two segments' worth of part buffers (64 MiB) and 64 compressors are kept in the daemon for framings to come** (`framing::KEPT`): taken afresh, each framing faulted in 8,192 pages, and its threads' compressors' tables. The daemon's resident memory grows by up to that much (peak RSS 1.74-1.92 GB against 1.70-1.99 GB on the same runs). *Undo:* `KEPT` to 0.
+
 ## Shared points: what is checked, and how a point is shared at its making (TASK-395.7, 2026-11-13)
 
 Decided without you:
