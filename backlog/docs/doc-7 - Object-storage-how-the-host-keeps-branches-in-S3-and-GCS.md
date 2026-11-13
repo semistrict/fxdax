@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 09:43'
+updated_date: '2026-11-13 12:49'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -157,9 +157,9 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `<C>checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
 | `<C>branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `<C>leases/<branch>` | the writer's epoch, who took it, and the token it was taken with: its cell's epoch (Cells) | created, then updated with a condition |
-| `gc/lease` | the collector's epoch | likewise |
+| `gc/lease` | the collector's epoch; per cell from format 8, `<C>gc/lease` (Garbage collection) | likewise |
 | `gc/marks/<epoch>` | what the mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
-| `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
+| `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is; under the cell from format 8, `<C>moves/...`, and references `<C>refs/...` with them (Garbage collection) | create-only, by the collector |
 | `objectid/<block>` | a block of object IDs taken by one allocator, which gives its IDs out, each once (Object IDs) | create-only; kept for good |
 
 A branch is named by its cell and its ID (`layout::Branch`, displayed `TENANT/CELL/ID`): footers,
@@ -724,77 +724,242 @@ points are shared or not as any other's. Forks of branches with writers into ano
 
 ## Garbage collection
 
+*Rewritten 2026-11-13 (TASK-395.1): per cell, conservative.* The protocol below is model-checked
+in `specs/bucket` (Bucket.tla, the `BucketCells*` models and every other model extended to cells)
+and is the design of record for TASK-395.2-.8; the code still runs the whole-bucket pass it
+replaces (one `gc/lease`, every object listed, every live branch recovered), which goes when the
+per-cell pass lands, never beside it.
+
 `fxdax-gc` is the only thing that deletes; writers only add. A live branch is one whose record says
 so, whether or not a host holds it, which only hosts know: `fxdax-gc URL --branches --held FILE`
 lists those no host holds, FILE naming what they do, and `fxdax-gc URL --delete-branch ID` deletes
-one for the next pass to reclaim. A pass:
+one for the next pass to reclaim.
 
-1. **Takes `gc/lease`**, at a new epoch, and stops before deleting if another pass took it since;
-   so it does too, without failing, where it finds lost what a live branch needs: what it read
-   before may be older than what the pass that took the lease read, deleting since (a point it read
-   live, and the point's fork being made, read after the point's deletion). A pass not fenced can't
-   find that: what a pass deletes, it read after it took the lease (TASK-180).
-2. **Lists every object first.** What is written after the listing is no candidate, which is what
-   makes reading branches' states after it safe: what they name was either listed, and is seen as
-   needed, or was not, and is left. Without this, a child's lease written after its record was read
-   would be deleted, and the child's next writer would mint IDs another had.
-3. **Finds the live branches:** the records not deleted, listed again after reading them until no
-   new one appears (a deleted branch's children got their records before it was marked), and the
-   forks in live branches' states, whose children may lack their records yet. It gives up on forks
-   being made of points deleted (Points). Once it has read the states it lists the records again,
-   and goes on with what it finds, while what it recovers has a checkpoint of its own (Points).
-   **A branch is recovered once by each origin it is named by**, its record's and each parent's
-   state naming a fork to it, not once: a child the pass recovered by its parent's state, that fork
-   refused, may have a record of another origin, a restore's that took the ID first, which only
-   listing the records again finds; what that origin needs is what the child does. Whether a
-   segment or an extent may yet land goes by every recovery of its branch (TASK-173).
-4. **Recovers each**, keeping what the recoveries read (checkpoints, segments to replay, records of
-   parents a child's state starts from). A branch whose recovery fails because it was deleted
-   meanwhile is not live; any other failure stops the pass, which never deletes what it could not
-   read.
-5. **Marks** the objects holding the extents the states name, and the moves the way to them goes
-   through, whose maps are needed even once their data moved on. A branch's writer names its
-   extents where the checkpoint it recovered from, or its own since, said, which the state the pass
-   read may name further along their moves: a checkpoint of another writer's landing after the
-   writer recovered the branch (the writer it took the branch from, which doesn't know), or the
-   parent's state a branch inherited them from, which its writer read as it was then. So **the way
-   starts where each extent was sealed**, every moves on it kept, unless the state's checkpoint is
-   by the writer holding the branch's lease, read after the checkpoint was listed: a writer taking
-   the branch after that recovers from that checkpoint or a later one, which names its extents no
-   less far along, and the writer that made it named them so before it wrote it. *Decided
-   2026-11-05 (TASK-175):* rather than checkpoints counting only once a later footer names them
-   (each footer naming its writer's newest), which needs the format, a rebase when a fence finds
-   one, and replays from older checkpoints while the newest waits; or a grace period after the last
-   pass that saw a state name the moves' object (time, which correctness doesn't depend on).
-6. **Compacts** objects whose live extents are under a fraction of their data: segments no recovery
-   reads, and moves. Their live extents go to `moves/<key>`, data and map in one object, written
-   whole, so there is never compaction output without its map, and no orphan of it. A reader that
-   finds an object gone reads its moves.
-7. **Deletes** what is listed and not needed:
-   - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
-     never a live branch's segments at or past its end, which may be uploaded and not yet in it,
-     nor its pins, the positions a writer of it, taken over or taking it over, may still create at
-     (`collector::pinned`; Fencing, TASK-371, TASK-388);
-   - checkpoints no recovery read;
-   - extents of their own no state names, once no segment will name them: by what their keys
-     declare, the writer that uploaded each and the segment that names it, an earlier writer's once
-     a later one's segment is in the branch, and the current writer's once a segment is at its
-     segment's place. Not by the branch's next sequence number: extents are committed in no order
-     of their sequence numbers (TASK-79.3). *Decided 2026-11-03 (TASK-153.7):* a writer declares
-     what it has in flight by these keys, written with the objects, rather than by an object of
-     its own, which would have to land before what it covers and be read after the listing, two
-     orderings more (`dead-ends/collector-in-flight-declarations.md`);
-   - moves no state's way goes through, once compacted in turn or once their object is gone;
-   - no record, deleted or not (Forks, TASK-174); leases of branches with no live record.
+**Decided with the user (2026-11-13, TASK-395):** the collector may be **conservative**, reclaiming
+late and wasting space for a time; **the unit of collection is the cell**, not the tenant, so that a
+tenant of a million branches is collected as independently as a million tenants. Everything a
+cell's collection decides by is under the cell's prefix: its branches' objects, their moves, its
+collector lease, and **references** from forks in other cells. A pass over a cell lists nothing
+else, and deletes nothing else but the references it retires; it reads other cells' objects
+(GETs) only where its branches inherit from them, or to read a point's record.
+
+### The layout (format 8, TASK-395.2)
+
+`<C>` is a cell's prefix, `tenants/<tenant>/cells/<cell>/`; numbers fixed-width hex as elsewhere.
+
+| Key | What | Written |
+|---|---|---|
+| `<C>gc/lease` | the cell's collector lease: its epoch and holder; replaces `gc/lease` | created, then updated with a condition, by passes over the cell |
+| `<C>gc/marks/<epoch>` | what the cell's mark-only pass of that epoch would have deleted | create-only, by the collector |
+| `<C>gc/...` | anything else a pass records to skip by (TASK-395.6) | by the collector; never a candidate |
+| `<C>moves/<rest>` | the moves of the object at `<C><rest>`, and `<C>moves/moves/<rest>` those moves' moves: a reader of `<C><rest>` that finds it gone, or not naming the extent, reads `<C>moves/<rest>`, then `<C>moves/moves/<rest>` | create-only, by the cell's passes |
+| `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference: the fork of the cell's branch `parent` at its segment `at` to `child` of cell `<cell>` of `<tenant>`, each ID 16 hex digits; its bytes the format and the fork's owner (a writable fork's, from its footer; a clone's, its restore's), unique to the fork, so that every writer of it writes the same | create-only (an object of identical bytes there is success), before the child's record; deleted by the passes of the child's cell |
+
+A listing of `<C>refs/` with delimiter `/` gives the cell's parents with forks in other cells; of
+`<C>refs/<parent>/` with delimiter `/`, that parent's distinct fork points
+(`<C>refs/<parent>/<at>/`), which is what a pass keeps by; a fork point's children are listed only
+when its state is found lost (below) or to count references. The child's key needs no listing to be
+found: its record's origin names the parent, with its cell, and the fork point. `<C>cell`, `<C>gc/`
+and `<C>refs/` are never a pass's candidates; branches' records are kept as before (Forks).
+
+### References
+
+A fork whose child is in another cell, as every fork, point and restore of the hosts' is (each makes
+a new cell), writes a reference under the **parent's** cell, the cell holding what the child
+inherits. For a clone of a point, that is the cell of the branch the point names (the point's
+origin), as the clone's record names that origin as its own.
+
+- **A writable fork** (or a point, which a fork of its branch makes): the reference before the
+  child's record, by whoever writes the record: the fork's host, the parent's writers recording the
+  forks they recover, the parent's deletion. A deletion writes its forks' references before it
+  marks the parent deleted (rule `referencesFirst`).
+- **A clone of a point**: the reference first, then the child's record being made (`forking`), then
+  the read of the point's record (rule `clonesReferFirst`). A clone that finds the point deleted
+  fails, its record deleted, and leaves its reference to be retired. A clone writes its reference
+  **whatever cell it is in**, the origin's too (as no host makes: every restore is a new cell):
+  the origin's cell's pass reads its records before the states and its references after, so a
+  clone in that cell, made after the records were read, whose point (in another cell) is deleted
+  and its own reference retired before the references are read, would be seen by neither
+  (`BucketOverlap` found it, 2026-11-13).
+- **A failed fork's claim** writes none: nothing must recover a claim (one that can't be is given
+  up on). Writing one would be harmless.
+- **Retired** by a pass over the child's cell, once that cell has **no live branch and no reference
+  of its own** (rule `referencesHeld`): then nothing anywhere inherits from its children, as a fork
+  of one of them in the cell has a record there, and one in another cell a reference there. The pass
+  deletes, for each of its cell's deleted records with an origin in another cell, the reference that
+  origin gives. A reference whose child's record names another origin (a child ID taken twice,
+  which object IDs rule out) is never retired: space wasted, nothing lost.
+- *Decided (TASK-395.1):* retiring is the **one delete a pass makes outside its cell**, a key it
+  computes from its own records, never lists. Whether a reference may go is a fact of the child's
+  cell (its records, its references), which only that cell's pass lists; the reference must be
+  under the parent's cell, which the parent's pass lists. The two other ways: the child's pass
+  writing a tombstone in its own cell that the parent's pass reads, or the parent's pass reading
+  the child's record, each cost the parent's pass a GET per reference per pass (a million for a base
+  cloned a million times) and leave the parent's listing unchanged when a child goes, so that
+  TASK-395.6's idle pass would never see it. A retirement changes the parent's listing, which is
+  what makes its next pass look again. The ordering is checked by `NoReferencesHeld`: retired once
+  the child is deleted, its cell still holding the reference of the child's own fork, the
+  parent's pass frees what the grandchild, live in a third cell, inherited through it.
+
+### A pass over a cell
+
+1. **Takes `<C>gc/lease`**, at a new epoch, and stops before deleting or retiring if another pass
+   over the cell took it since; so it does too, without failing, where it finds lost what a live
+   branch needs (TASK-180). Passes over other cells run at once, unfenced by it.
+2. **Lists `<C>` once.** What is written under it after the listing is no candidate (rule
+   `candidatesFirst`), and what is outside it never is: objects of other cells its branches name are
+   kept by those cells, by reference.
+3. **Reads the cell's records**, listed again until no new one appears, and gives up on forks of
+   points deleted being made (Points), reading the point's record wherever it is.
+4. **Recovers each live branch** of the cell, by each origin it is named by (TASK-173), reading other
+   cells' objects where it inherits. Of the forks in the states it recovers, a child in the cell
+   with no record yet is recovered by its parent's state, as before; for a child in another cell,
+   the parent's state at the fork point is kept (below), as the child may lack its reference yet
+   (rule `forksFromStates`).
+5. **Lists the cell's records again** (while a state it recovered is from a checkpoint, as before)
+   **and its references** (rule `referencesRelisted`), going back to 3 for new records. For each
+   fork point of a reference it recovers the parent's **state at the fork point** once, however
+   many references name it (a base cloned a million times is recovered once), and keeps it whole:
+   the extents it names, the objects and moves holding them along their ways from where they were
+   sealed (as a child with no checkpoint of its own names them where it read them), and what
+   recovering it reads: the parent's checkpoint at or before the fork point, or its segments from
+   its origin's state, and its record (rule `forkPointsKept`). What the child frees of it since is
+   ignored: the conservative step. A fork point's state found lost fails the pass if a child named
+   under it is live (its record, read then); one whose children are not (deleted, being made of a
+   deleted point, no record yet) loses nothing.
+6. **Marks, compacts and deletes** within the cell as the whole-bucket pass did (steps below), its
+   live branches' states and the fork points' together. A cell with no live branch and no reference
+   is reclaimed whole but its records and its cell object.
+7. **Retires** its deleted children's references, if the cell has no live branch and no reference.
+
+Why each ordering, as the model checks it (each rule's mutation in `specs/bucket/mutations` loses
+an acknowledged commit's data: `NothingNeededGone`):
+
+- A writable fork's child inherits the parent's state at the fork point from the parent's cell. A
+  pass there reading the parent live finds the fork in its state (a checkpoint drops a fork only once
+  its child is deleted) and keeps the fork point; one reading the parent deleted read it after the
+  deletion marked it, which came after the fork's reference, and lists the references after
+  (`NoReferences`, `NoReferencesFirst`).
+- A clone that read the point live wrote its reference before the point's deletion. A pass over the
+  origin's cell that keeps nothing for the point read the point deleted (a point of its cell), after
+  the deletion, or found the point's own reference retired, after the deletion too; in both it lists
+  the references after that, finding the clone's (`NoClonesReferFirst`). Listed with the
+  candidates instead, the clone's comes too late where a checkpoint of the origin, dropping the
+  deleted point, makes the pass recover the origin past the fork point (`NoReferencesRelisted`).
+- A child's own forks inherit through it what it inherited: their references in its cell hold its
+  reference in its parent's (`NoReferencesHeld`).
+- A child with no checkpoint recovers through the parent's checkpoint or segments, which hold no
+  extent of its own, at the fork point (`NoForkPointsKept`).
+
+**What a pass over `<C>` requests outside `<C>`**, so that *per cell* is exact (everything else, its
+lease, its LISTs, its other GETs and every PUT and DELETE, is under `<C>`):
+
+| Request | When | How many per pass |
+|---|---|---|
+| LIST | never | 0 |
+| GET of a parent's record, checkpoint or segments (another cell's) | recovering a live branch of `<C>` with no checkpoint of its own, or a fork point whose parent has none at or before it, through its origins until one has | per such branch, its ancestors' reads to their nearest checkpoint; 0 for a branch with a checkpoint |
+| GET of a point's record | a clone in `<C>` still being made | one per such clone (they last one restore) |
+| GET of a child's record | a fork point's state found lost | one per child of that fork point (never, when nothing is lost) |
+| DELETE of a reference under the parent's cell | `<C>` has no live branch and no reference | one per deleted record of `<C>` with an origin elsewhere, until `<C>`'s listing stops changing (TASK-395.6), and none after |
+
+None of them scales with another cell's size: what a pass costs grows with its own cell's objects,
+branches and fork points, plus its branches' ancestry where it has no checkpoint. A reference a
+parent's slow writer re-creates after its retirement (its fork recorded long before, by the
+parent's deletion) is not retired again once the dead cell's passes are skipped: space only, as
+its child is deleted.
+
+**Chains of forks.** A fork of a fork of a fork, each in its own cell (A forks B, B forks C, and so
+on): each cell keeps, for the reference of its child, its own branch's whole state at that fork
+point, and that state names what the branch inherited where the ancestors' cells keep it. A
+reference is retired only once its child's cell is dead, so **every ancestor's fork-point state
+stays while any descendant lives**, however deep: A's cell keeps A's state at B's fork point while
+B, C or anything after lives. What that holds for a long time is the sum over the chain of each
+ancestor's state at its fork point, less what they share (an extent inherited down the chain is
+one object), plus each ancestor's history to its fork point that recovering it reads. A lineage
+where each generation replaces the last (fork the VM, delete the old one, again) holds every
+generation's state at its fork: up to the chain's length times a disk's worth of data that was
+overwritten since, where an exact collector would hold one disk. Shallow chains (a base and its
+clones, a VM and its snapshots) cost nothing of note; a long replacing lineage is the case to
+watch. *Left open:* bounding it would take a child's cell rewriting what it still names of its
+inheritance into its own objects, with a checkpoint of its own, and then retiring its reference
+early, a copy across cells the model doesn't cover.
+
+**Rules a clone's reference covers too.** With every clone's reference listed after the states,
+TLC finds no violation without two older rules: listing the records again after the states
+(`recordsRelisted`: the clone, made after the records were read, is found by its reference) and
+recovering a branch once by each origin naming it (`recoveriesByOrigins`: a restore's origin is
+kept by its reference's fork point). Their mutations now remove `references` with them. A pass
+keeps both, which cost one listing of the records and nothing; TASK-395.4 may drop them once
+models of more branches agree.
+
+**What it wastes:** what a writable branch's forks freed of what they inherited, until they go, and
+the parent's history to the fork point; a live point's clones waste nothing, as the point keeps
+that state anyway. *Instead:* forks' cells publishing what they still hold of their parents',
+exact, but a protocol across cells every pass.
+
+**For the code, beyond the model** (TASK-395.3, 395.4):
+
+- **Listings are atomic in the model; a LIST is not**, its pages read one after another. A fork
+  point is missed if a clone's reference is created behind the listing's cursor while the point's
+  own reference ahead of it is retired. So a pass **lists its references twice**, keeping a fork
+  point either listing shows: a reference created during the first is in the second whole, and one
+  created after the first ended came while the point's reference still stood, throughout the first.
+- **The model's recoveries are atomic; the code's are not.** A clone being made whose recovery fails
+  is given up on if its point's record, read again, says deleted, rather than failing the pass.
+- **Several volumes in a cell:** retirement waits for the whole cell, so a deleted volume of a
+  cell forked whole (TASK-364.1) keeps its parent's fork point until the cell goes.
+
+The rest of a pass, unchanged within the cell:
+
+- **Marking.** The objects holding the extents the states name, and the moves the way to them goes
+  through, whose maps are needed even once their data moved on. A branch's writer names its
+  extents where the checkpoint it recovered from, or its own since, said, which the state the pass
+  read may name further along their moves: a checkpoint of another writer's landing after the
+  writer recovered the branch, or the parent's state a branch inherited them from, which its writer
+  read as it was then. So **the way starts where each extent was sealed**, every moves on it kept,
+  unless the state's checkpoint is by the writer holding the branch's lease, read after the
+  checkpoint was listed (TASK-175); for a fork point's state, always.
+- **Compaction** of objects whose live extents are under a fraction of their data: segments no
+  recovery reads, and moves. Their live extents go to the object's moves, data and map in one
+  object, written whole, so there is never compaction output without its map, and no orphan of it.
+  A reader that finds an object gone reads its moves.
+- **Deletion** of what is listed and not needed:
+  - segments a checkpoint covers that hold no live extent, or were compacted a grace period ago;
+    never a live branch's segments at or past its end, which may be uploaded and not yet in it,
+    nor its pins, the positions a writer of it, taken over or taking it over, may still create at
+    (`collector::pinned`; Fencing, TASK-371, TASK-388);
+  - checkpoints no recovery read;
+  - extents of their own no state names, once no segment will name them: by what their keys
+    declare, the writer that uploaded each and the segment that names it, an earlier writer's once
+    a later one's segment is in the branch, and the current writer's once a segment is at its
+    segment's place. Not by the branch's next sequence number: extents are committed in no order
+    of their sequence numbers (TASK-79.3). *Decided 2026-11-03 (TASK-153.7):* a writer declares
+    what it has in flight by these keys, written with the objects, rather than by an object of
+    its own, which would have to land before what it covers and be read after the listing, two
+    orderings more (`dead-ends/collector-in-flight-declarations.md`);
+  - moves no state's way goes through, once compacted in turn or once their object is gone;
+  - no record, deleted or not (Forks, TASK-174); leases of branches with no live record.
 
 **Time** (the grace period, by the store's clock) only spares readers that just looked an extent up
 a round trip; correctness does not depend on it.
+
+**The model's bounds** (`scripts/check-tla.sh`; on a laptop, the new models and mutations
+under five minutes each, BucketForks and BucketOverlap about 14 minutes, as long before cells,
+BucketTakeovers near two hours): the models of before, with a cell each for two branches (`CellEach`, every fork,
+point and clone across cells, as hosts make them) and the root's cell shared with branch 2 for
+three (`Pair`, forks within a cell and across), passes of any cell; `BucketCells`, a root, its
+child and grandchild in three cells, any deleted, three passes of any cells one after another,
+retiring down the chain; `BucketCellsPoints`, a point of the root restored to a third cell, point
+and root deleted, two passes of any cells at once. Passes of different cells overlap where a
+model has "overlap" (BucketOverlap, BucketCellsPoints). Invariant `ReferencesStand`: every live
+branch forked from another cell has its reference. The existing rules' mutations keep one cell
+(`OneCell`), the whole-bucket pass they were written against.
 
 **Watching before deleting** *(added 2026-11-08, TASK-264).* Two passes delete nothing, for an
 operator to see what the collector would do before trusting it with a bucket:
 
 - `fxdax-gc URL --dry-run [--grace S] [--compact-below F]` writes nothing at all. It does not take
-  `gc/lease`, which would bump the epoch and fence a pass running meanwhile out of its deletes; it
+  its cell's `<C>gc/lease`, which would bump the epoch and fence a pass running meanwhile out of its deletes; it
   reads the lease's epoch as it starts instead, and says it was fenced if a pass took the lease
   before it ended, what it read being possibly older than that pass's deletes. Nor does it write
   what giving up on forks writes (a fork of a deleted point being made, a failed fork's claim): it
@@ -804,19 +969,19 @@ operator to see what the collector would do before trusting it with a bucket:
   never finds doomed. With `--compact-below 0`, a pass deletes exactly what it lists.
 - `fxdax-gc URL --mark-only [--every S] [--grace S] [--compact-below F]` is a pass in every respect
   but deleting: it compacts as one does (the compacted originals are the keys most worth watching,
-  TASK-175), and instead of deleting writes `gc/marks/<epoch>`, the doomed objects as listed.
-  *Decided:* it **takes `gc/lease`** (step 1). Its marks are ordered by the epoch, each pass's its
+  TASK-175), and instead of deleting writes `<C>gc/marks/<epoch>`, the doomed objects of its cell as listed.
+  *Decided:* it **takes `<C>gc/lease`** (step 1). Its marks are ordered by the epoch, each pass's its
   own and later than every pass's before, so readers and the next mark-only pass find the newest by
   key; a pass that deletes, fenced by it, is late, never wrong; and where it finds lost what a live
   branch needs, it can tell a pass that deleted since (it was fenced, and stops, TASK-180) from a
   bug, which a pass not holding the lease could not. Fenced, it writes no marks, as a fenced pass
   deletes nothing. Nothing marked goes, so **storage grows**: originals and their moves both, and
   every marks object, until an operator collects for real or removes them. The collector never
-  takes `gc/marks/` for a candidate, nor for a branch's.
+  takes `<C>gc/` for a candidate, nor for a branch's.
   - **Readers warn.** Every reader of a bucket reads it through `store::Store` (extentd's remote
     stores, writers recovering, fxdaxctl, the collector), which holds the newest marks' keys,
-    read again every 60 s by a listing of `gc/marks/` (and a read once it changed) alongside one of
-    its reads, uncounted in its stats, never a round trip a read. A GET, ranged GET or HEAD of a
+    read again every 60 s by a listing of `gc/marks/` (and a read once it changed; per cell from
+    format 8, the marks of the cells it reads) alongside one of its reads, uncounted in its stats, never a round trip a read. A GET, ranged GET or HEAD of a
     marked key logs a `warn` with the key, its kind (naming its branch), the request, the marks'
     epoch and the current span's trace and span IDs; in extentd the log names the guest request too
     (`request_id`). A read costs one load with no marks, one set lookup with some. Listings are
