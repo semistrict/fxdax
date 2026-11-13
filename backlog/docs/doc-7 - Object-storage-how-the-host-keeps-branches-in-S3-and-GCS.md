@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 16:11'
+updated_date: '2026-11-13 18:27'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -637,7 +637,9 @@ immutable instead.
 
 The steps of a fork of point P to child C:
 
-1. C's record, created saying the fork is being made (`forking: P`).
+1. C's record, created saying the fork is being made (`forking: P`). fxdax: then its reference
+   under the cell of the branch P names (Garbage collection, References; after the record since
+   TASK-395.10).
 2. A read of P's record: deleted, the fork fails. fxdax: so does it if C is of another tenant's cell
    than P, and the record doesn't say P is shared (`Error::NotShared`, `EACCES`; TASK-395.7). The
    read is made then whatever the rule that checks for deletion says.
@@ -777,11 +779,14 @@ origin), as the clone's record names that origin as its own.
   child's record, by whoever writes the record: the fork's host, the parent's writers recording the
   forks they recover, the parent's deletion. A deletion writes its forks' references before it
   marks the parent deleted (rule `referencesFirst`).
-- **A clone of a point**: the reference first, then the child's record being made (`forking`), then
-  the read of the point's record (rule `clonesReferFirst`). A clone that finds the point deleted
-  fails, its record deleted, and leaves its reference to be retired. One whose child's ID has a
-  record already, of another origin, or deleted with none, takes its reference back: no record's
-  origin will name it (a host dying first leaves it: TASK-395.10). A clone writes its reference
+- **A clone of a point**: the child's record being made (`forking`), then the reference (rule
+  `clonesRecordFirst`, TASK-395.10), then the read of the point's record (rule `clonesReferFirst`).
+  So every clone's reference has a record naming its origin, by which the child's cell's pass
+  retires it, whatever comes of the clone: it fails as it finds the point deleted, its record
+  deleted; it is given up on by the collector as its point goes; its host dies and its directory,
+  left unmade, is deleted knowing nothing of the child. One refused by a record of its child's ID
+  there writes none. (Written first, before TASK-395.10, a host dying before the record left a
+  reference no record named, which nothing retired.) A clone writes its reference
   **whatever cell it is in**, the origin's too (as no host makes: every restore is a new cell):
   the origin's cell's pass reads its records before the states and its references after, so a
   clone in that cell, made after the records were read, whose point (in another cell) is deleted
@@ -789,12 +794,20 @@ origin), as the clone's record names that origin as its own.
   (`BucketOverlap` found it, 2026-11-13).
 - **A failed fork's claim** writes none: nothing must recover a claim (one that can't be is given
   up on). Writing one would be harmless.
+- **Taken back** (rule `referencesTakenBack`, TASK-395.10): whoever finds the record of a fork's
+  child naming another origin, or none, deletes the fork's reference, which no record will ever
+  name (records are kept, and their origins never change): a writable fork's writer whose read of
+  the child's record, or whose create of it, finds another branch's, or a deletion's naming no
+  origin; the parent's next writer and its deletion, which record every fork in the parent's
+  state again before any checkpoint drops it, so that a writer dying between its refused create
+  and the delete leaves it to them. A reference named by its child's record is that record's to
+  retire (`ReferencesNamed` checks that every reference is so named, or pending).
 - **Retired** by a pass over the child's cell, once that cell has **no live branch and no reference
   of its own** (rule `referencesHeld`): then nothing anywhere inherits from its children, as a fork
   of one of them in the cell has a record there, and one in another cell a reference there. The pass
   deletes, for each of its cell's deleted records with an origin in another cell, the reference that
-  origin gives. A reference whose child's record names another origin (a child ID taken twice,
-  which object IDs rule out) is never retired: space wasted, nothing lost.
+  origin gives. A reference whose child's record names another origin, or none, is taken back by
+  the fork's writers (above), never left for a pass.
 - *Decided (TASK-395.1):* retiring is the **one delete a pass makes outside its cell**, a key it
   computes from its own records, never lists. Whether a reference may go is a fact of the child's
   cell (its records, its references), which only that cell's pass lists; the reference must be
@@ -925,9 +938,14 @@ exact, but a protocol across cells every pass.
   model's fork point keeps; the checkpoint is a late one, as the model's writers' may land, of a
   segment acknowledged, so the model needs no change (`StateAt` reads the newest checkpoint up to
   the fork point, which it is). Gone, what the fork inherited is: kept while a reference names it.
-  The parent's state at the fork point gone already (the checkpoint's recovery `Lost`), the child,
-  which no reader could recover, is recorded deleted, and a failed fork's claim deleted from the
-  first (TASK-395.11 asks how a writer acknowledges such a fork).
+  The parent's state at the fork point is gone only once the child is deleted (TASK-395.11): the
+  parent's state names the fork until a checkpoint drops it, which only a child's deleted record
+  lets it, and the parent's deletion records the child before it marks the parent deleted. So a
+  writer whose read found no record, the child deleted before its checkpoint's recovery (its
+  host's fork failing, a later writer's checkpoint dropping the fork, a pass freeing the fork
+  point), finds it `Lost`, reads the record again, finds it deleted, and writes nothing: a stale
+  read, not a fork the writer should not have acknowledged. None there would break that, and
+  fails `Lost`. A failed fork's claim whose fork point is gone is deleted from the first.
 - **The model's recoveries are atomic; the code's are not.** A clone being made whose recovery fails
   is given up on if its point's record, read again, says deleted, rather than failing the pass.
 - **Several volumes in a cell:** retirement waits for the whole cell, so a deleted volume of a
@@ -935,15 +953,22 @@ exact, but a protocol across cells every pass.
 - **A writable fork's writer reads its child's record before its reference** (TASK-395.3): a child
   deleted, or another's, gets no reference, as nothing inherits through it and nothing would retire
   it, the record naming no such fork (a fork deleted before its host learned its origin, recorded as
-  a branch of its own, among them). The model writes the reference whatever the record. Without
+  a branch of its own, among them); another's taken back. The record is read again after the
+  checkpoint at the fork point. The model reads and writes in one step (TASK-395.10): the code's
+  requests let a writer that read no record, the child then deleted with none (or its ID taken)
+  and the reference taken back by another recorder, write it after, and, dying before its own
+  create, leave it: space only (TASK-395.13).
+  Without
   the rule `references_first`, the reference comes after the record, and the deletion's after it
   marks the parent deleted, as the model's mutation has it.
 - **A failed clone's cleanup names its origin** (`Remote::unfork` of a point's copy: a deleted
   forking record), so that its cell's pass retires its reference.
-- **References never retired** (TASK-395.10): a clone's whose host died between its reference and
-  its record (one refused by a record there takes its reference back), and a writable fork's whose
-  child's ID another branch took between the record's read and its create. Space, never data; the model has them too (`RefPoints`: "a reference left by a
-  fork that failed").
+- **References never retired**: since TASK-395.10, only the stale recorder's above (TASK-395.13). A clone's
+  record comes before its reference, and a reference whose child's record names another origin is
+  taken back. *Instead:* a pass retiring unnamed references a grace period old, by their
+  last-modified time against the longest a clone takes: a pass lists fork points by delimiter, not
+  references, so it would list every reference (a million for a base cloned a million times) and
+  GET each child's record, every pass.
 - **A lost fork point** is recovered again each pass (64 restarts, as any recovery) while a
   reference names it, its children's records read only then.
 - **Retiring is repeated** by every pass over a dead cell, the pass unable to tell the references
