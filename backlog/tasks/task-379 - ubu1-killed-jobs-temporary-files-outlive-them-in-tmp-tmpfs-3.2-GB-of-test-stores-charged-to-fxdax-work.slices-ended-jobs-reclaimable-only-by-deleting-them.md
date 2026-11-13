@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-12 10:51'
-updated_date: '2026-11-12 11:00'
+updated_date: '2026-11-13 15:15'
 labels:
   - bug
   - ubu1
@@ -42,4 +42,6 @@ Seen 2026-11-12 while fixing TASK-378. fxdax-work.slice held 4.0 GB with no job 
 2026-11-12, the coordinator cleaned ubu1's /tmp: removed 1,516 test temp dirs (.tmp*, tmp.*, fxdax-*) older than 6 h, none open by any process nor any process's cwd; 1,035 of them root's. /tmp went from 3.7G to 2.0G used.
 Three of them (.tmpKHntmR, .tmpy4Rk48, .tmprPqkTq, made 05:59 that day) each held a dead fuse.fxdax mount of a killed test ('Transport endpoint is not connected'): lazily unmounted, then removed. So a killed FUSE test leaves its mount behind as well as its files.
 Suggested fix: fxjob gives each job a TMPDIR of its own, which tests make their temp dirs under; at the job's end its reap lazily unmounts any fuse.fxdax mount under it and removes it.
+
+2026-11-13 ~10:15 EST, coordinator: ubu1's swap was full (8,187 of 8,191 MiB) with /tmp (tmpfs) at 7.1G; removed 288 more stale fxdax test dirs older than 6 h and open by no process (.tmp*, tmp.*, fxdax-*, and fuse_differential's differential.*/reference.*/script.* from root runs on 2026-11-11/12, e.g. a 4.6G .tmpkkVBEM store), lazily unmounting the 11 dead mounts left in them first. /tmp 7.1G -> 640M, swap 8.2G -> 3.0G used. Root test runs leave mounted images too, not only FUSE: the fix should unmount and remove a killed job's temp dirs (a per-job TMPDIR fxjob removes).
 <!-- SECTION:NOTES:END -->
