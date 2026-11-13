@@ -6,8 +6,8 @@ title: >-
   off
 status: To Do
 assignee: []
-created_date: '2026-11-12 09:39'
-updated_date: '2026-11-12 13:07'
+created_date: 2026-11-12 09:39
+updated_date: '2026-11-13T08:58:00Z'
 labels:
   - bug
   - ubu1
@@ -39,4 +39,6 @@ ubu1, 2026-11-12, step 146 (system-setup.d/146-fxdax_cgroups.sh): with no fxjob 
 
 <!-- SECTION:NOTES:BEGIN -->
 TASK-381 (duplicate) adds the cause: after a manager reload, fxdax.slice's subtree has no cpuset controller until a measurement runs, so the cpuset files fxjob ps and fxjob-isolate status read are missing.
+
+TASK-396: fxjob ps (scripts/fxjob) no longer errors: it reads a missing cpuset.cpus.effective from the nearest parent, and reads isolation status itself instead of sudo fxjob-isolate status. fxjob-isolate status itself (step 146, ~/docs) still reads cpuset.cpus.partition unguarded.
 <!-- SECTION:NOTES:END -->
