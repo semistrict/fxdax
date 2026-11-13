@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:52:00Z'
-updated_date: '2026-11-13 14:54'
+updated_date: '2026-11-13 19:38'
 labels:
   - bucket
   - collector
@@ -63,6 +63,8 @@ Runs (macOS laptop, scripts/check-tla.sh): all bucket models hold but BucketTake
 Decisions in OPEN_QUESTIONS.md (# Decisions, TASK-395.1). No Rust changed: DoD #1 holds trivially (cargo nextest not run). scripts/upstream-changes.py --check passes.
 
 BucketTakeovers on the per-cell spec (67ffb6377) still unchecked: a run at nice 19 on the macOS laptop beside TASK-395.2-.4's builds was stopped at the 2 h limit unfinished (TLC's log went with it). To run once the laptop is idle, un-niced (~1h47m).
+
+BucketTakeovers on ubu1 (main 04085cad, fxjob 12G 8 CPUs, 2026-11-13): no violation in 2h37m, 199.8M distinct states, 643M generated, 19.3M left on queue; far larger than the laptop's 1h47m before cells. Stopped by the parent (SIGTERM, exit 143) so the per-cell collector's qualification could run; its 12G sat at its limit. The 14:31 checkpoint is kept, hard-linked, at ubu1:/mnt/fxdax-scratch/claude-tla-395/keep.states (27G), with keep.log. To resume: java -cp tla2tools-1.8.0.jar tlc2.TLC -recover <keep.states/26-11-13-12-01-33.434> -workers auto -metadir keep.states -config specs/bucket/BucketTakeovers.cfg specs/bucket/Bucket.tla, under fxjob with more memory. Still unchecked.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
