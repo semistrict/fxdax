@@ -2,6 +2,10 @@
 
 # Decisions
 
+## Space per tenant and cell: the bucket's, from fxdax-gc (TASK-394, 2026-11-13)
+
+You asked for the space each tenant and each cell uses. I summed the bucket, where cells are kept whole. A host holds only the cells placed on it, and only the part it caches; its disk per tenant was already a metric (`fxdax_extentd_tenant_disk_bytes`). `fxdax-gc URL --usage` lists the bucket once and writes nothing. It gives bytes as stored (compressed). A cell's count includes its compacted objects (`moves/`) and garbage the collector hasn't reclaimed yet: that's what the bucket bills. *Instead:* live bytes only, which needs the collector's reachability pass (much costlier); or a per-cell host-disk metric in extentd. *Undoing it:* drop the flag; nothing else depends on it.
+
 ## A durable commit's local syncs off its path; no preallocation on a tenant's disk (TASK-369, TASK-333, TASK-384, 2026-11-12)
 Decided without you:
 - **A segment's upload waits for its framed file written, not durable** (TASK-384).

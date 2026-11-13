@@ -204,13 +204,67 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// TASK-394: `--usage` over a bucket on the host's filesystem sums what each tenant and each cell
+/// takes, as the bucket lists it, and writes nothing, the probe of conditional writes neither.
+#[test]
+fn usage_sums_a_file_buckets_tenants_and_cells() {
+    use extent_remote::Bucket as _;
+    use extent_remote::branch;
+    use extent_remote::bucket::PutMode;
+    use extent_remote::layout::{Branch, Cell};
+    use extent_remote::store::Store;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = url::Url::from_directory_path(dir.path()).unwrap().to_string();
+    let bucket = Store::from_url(&url).unwrap();
+    let cells =
+        [Cell { tenant: 1, id: 1 }, Cell { tenant: 1, id: 0x2f }, Cell { tenant: 0xb, id: 1 }];
+    let listed = futures::executor::block_on(async {
+        for (id, cell) in cells.into_iter().enumerate() {
+            branch::create(&bucket, Branch { cell, id: id as u64 + 1 }, 0).await.unwrap();
+        }
+        let moved =
+            format!("moves/{}segments/0000000000000002/0000000000000000", cells[1].prefix());
+        bucket.put(&moved, vec![9; 1000].into(), PutMode::Create).await.unwrap();
+        bucket.put("objectid/0000000000000000", vec![1; 10].into(), PutMode::Create).await.unwrap();
+        bucket.list("").await.unwrap()
+    });
+    let sum = |prefix: &str| {
+        let of = listed.iter().filter(|meta| meta.key.contains(prefix));
+        let (objects, bytes) =
+            of.fold((0, 0), |(objects, bytes), meta| (objects + 1, bytes + meta.size));
+        format!("{objects} {bytes}")
+    };
+    let expected = format!(
+        "tenant 1 {}\ncell 1/1 {}\ncell 1/2f {}\ntenant b {}\ncell b/1 {}\nunowned - {}\ntotal - {}\n",
+        sum("tenants/0000000000000001/"),
+        sum(&cells[0].prefix()),
+        sum(&cells[1].prefix()),
+        sum("tenants/000000000000000b/"),
+        sum(&cells[2].prefix()),
+        sum("objectid/"),
+        sum(""),
+    );
+    assert!(
+        expected.contains("cell 1/2f 2 "),
+        "its record and the moves of its segment: {expected}"
+    );
+    let out = gc(&[&url, "--usage"]);
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    assert!(out.status.success());
+    let after = futures::executor::block_on(bucket.list("")).unwrap();
+    assert_eq!(after, listed);
+}
+
 #[test]
 fn without_a_bucket_prints_its_usage() {
     let out = gc(&[]);
     let usage = "usage: fxdax-gc URL [--mark-only] [--every SECONDS] [--grace SECONDS] \
                  [--compact-below FRACTION] | fxdax-gc URL --dry-run [--grace SECONDS] \
                  [--compact-below FRACTION] | fxdax-gc URL --branches [--held FILE] | \
-                 fxdax-gc URL --delete-branch TENANT/CELL/ID (--mark-only deletes nothing, writing \
+                 fxdax-gc URL --delete-branch TENANT/CELL/ID | fxdax-gc URL --usage (--mark-only \
+                 deletes nothing, writing \
                  gc/marks/EPOCH: the bucket grows; --dry-run writes nothing, and finds less than \
                  a pass deletes)";
     assert_eq!(String::from_utf8_lossy(&out.stderr), format!("Error: {usage:?}\n"));

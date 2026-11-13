@@ -181,6 +181,21 @@ impl Kind<'_> {
     }
 }
 
+/// fxdax: the cell whose object `key` is, if a cell's: one under its prefix, or the moves of one,
+/// or of its moves, which hold what the collector kept of it (`fxdax-gc --usage`, TASK-394).
+pub fn owner(key: &str) -> Option<Cell> {
+    match kind(key) {
+        Kind::Segment { branch, .. }
+        | Kind::Extent { branch, .. }
+        | Kind::Checkpoint { branch, .. }
+        | Kind::Record { branch }
+        | Kind::Lease { branch } => Some(branch.cell),
+        Kind::Cell { cell } => Some(cell),
+        Kind::Moves { from } => owner(from),
+        Kind::ObjectIds { .. } | Kind::GcLease | Kind::Marks { .. } | Kind::Unknown => None,
+    }
+}
+
 fn hex(text: &str) -> Option<u64> {
     (text.len() == 16).then(|| u64::from_str_radix(text, 16).ok()).flatten()
 }
@@ -472,6 +487,38 @@ mod tests {
         assert_eq!(kind("tenants/000000000000000a/cell/000000000000000c/cell"), Kind::Unknown);
         let short = format!("{}segments/0000000000000003/7", cell.prefix());
         assert_eq!(kind(&short), Kind::Unknown);
+    }
+
+    /// TASK-394: every kind of a cell's objects is the cell's, and its moves, however many times
+    /// moved; the collector's, object-ID blocks and keys of no kind are no cell's.
+    #[test]
+    fn owners() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let branch = Branch { cell, id: 3 };
+        let keys = [
+            segment(branch, 7),
+            extent(cell, 2, 4, ExtentId::new(3, 9)),
+            checkpoint(branch, 7),
+            record(branch),
+            lease(branch),
+            self::cell(cell),
+            moves(&segment(branch, 7)),
+            moves(&moves(&extent(cell, 2, 4, ExtentId::new(3, 9)))),
+        ];
+        for key in keys {
+            assert_eq!(owner(&key), Some(cell), "{key}");
+        }
+        let keys = [
+            GC_LEASE.to_owned(),
+            marks(1),
+            objectid_block(1),
+            "probe/0000000000000001".to_owned(),
+            moves("probe/0000000000000001"),
+            format!("{}leases/3", cell.prefix()),
+        ];
+        for key in keys {
+            assert_eq!(owner(&key), None, "{key}");
+        }
     }
 
     #[test]
