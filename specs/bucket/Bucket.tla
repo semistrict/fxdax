@@ -66,8 +66,9 @@
 (* no field (TASK-178); then two doc-14's, its last two fields too         *)
 (* (TASK-165.5, crates/extent_remote/src/wal.rs); then five those of       *)
 (* commits spanning segments, which the code holds with no field           *)
-(* (TASK-92.41, TASK-149.45); the last six the per-cell collector's        *)
-(* (TASK-395.1), which TASK-395.3 and 395.4 are to make fields of Rules:   *)
+(* (TASK-92.41, TASK-149.45); then six the per-cell collector's           *)
+(* (TASK-395.1), fields of Rules since TASK-395.3 and 395.4; the last two   *)
+(* its references' retirement's (TASK-395.10), fields too:                 *)
 (*                                                                         *)
 (* - pinsFences, pinsOldFences, pinsVoidStrays, pinsLateStrays,            *)
 (*   pinsTakings (NoPinsFences, NoPinsOldFences, NoPinsVoidStrays,         *)
@@ -240,6 +241,21 @@
 (* the objects holding its extents: a child with no checkpoint of its own  *)
 (* recovers through it.                                                    *)
 (*                                                                         *)
+(* - clonesRecordFirst (NoClonesRecordFirst): a point's clone creates its  *)
+(* record, being made, before its reference (and reads the point's after   *)
+(* both, clonesReferFirst): a reference always has a record naming its     *)
+(* origin, by which its child's cell's pass retires it, whatever comes of  *)
+(* the clone. Written first, a host dying between leaves a reference no    *)
+(* record names, which no pass retires (ReferencesNamed).                  *)
+(*                                                                         *)
+(* - referencesTakenBack (NoReferencesTakenBack): whoever finds the record *)
+(* of a writable fork's child naming another origin, or none, deletes the  *)
+(* fork's reference: as it writes the record and finds another's there,   *)
+(* or as a later writer or the parent's deletion records the fork again.   *)
+(* Without it, a reference whose child's ID another branch took between    *)
+(* its writer's read of the child's record and its create stays for ever  *)
+(* (ReferencesNamed).                                                      *)
+(*                                                                         *)
 (* Where this differs from doc-14 and the code, by what TLC found:         *)
 (*                                                                         *)
 (* - doc-14 put the WAL after the branch by segments: WAL segments whose   *)
@@ -251,6 +267,12 @@
 (*   open, its guest's commits dropped by `take`, though the branch holds  *)
 (*   them or nothing came after them. By commits, as doc-7's recovery on   *)
 (*   the same host was, neither diverges.                                  *)
+(* - A writable fork's writer reads its child's record and writes the     *)
+(*   reference in one step here (the code's read-first, TASK-395.3): the   *)
+(*   code's requests let a writer that read no record, before the child    *)
+(*   was deleted with none, or its ID taken, write the reference after     *)
+(*   another recorder took it back, and, dying before its own create,      *)
+(*   leave it: space only (TASK-395.13, which the simulation finds).       *)
 (* - What TASK-177 found lost, a fork's deleted parent's record, which no *)
 (*   record is now (recordsKept), is here that parent's segments to the    *)
 (*   fork, which the collector lets go of for the same reason: the fork's  *)
@@ -320,7 +342,7 @@ AllRules == {"pinsFences", "pinsOldFences", "pinsVoidStrays", "pinsLateStrays", 
              "walAfterFence", "spansHeld", "spansFenced", "acksBetweenCommits",
              "walBetweenCommits", "wholeCommitsKept", "walContinues",
              "references", "referencesFirst", "clonesReferFirst", "referencesHeld",
-             "referencesRelisted", "forkPointsKept"}
+             "referencesRelisted", "forkPointsKept", "clonesRecordFirst", "referencesTakenBack"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
@@ -679,6 +701,25 @@ RefsOf(parent, F) == {RefOf(parent, f.at, f.child) : f \in {f \in F : NeedsRef(p
 \* The references under cell c.
 RefsUnder(c) == {r \in refs : CellOf[r.p] = c}
 
+\* Whether the record r is of the child of parent's fork f, live: its writers write its reference
+\* (again), having read it so (record_fork reads the child's record first, TASK-395.3).
+Refers(r, f) == r = None \/ (ChildOf(r, f.owner) /\ ~r.deleted)
+
+\* The reference of the fork of p at at to c taken back, the record r of c found naming another
+\* origin, or none (referencesTakenBack): no record will name it.
+TakenBack(p, at, c, r) ==
+    IF R("references") /\ R("referencesTakenBack") /\ r # None /\ r.origin # <<p, at>>
+    THEN {RefOf(p, at, c)} ELSE {}
+
+\* What writers of the records of parent's forks F to other cells write of their references, and
+\* take back, reading the records as they are.
+RefsWritten(parent, F) ==
+    {RefOf(parent, f.at, f.child) : f \in {f \in F : NeedsRef(parent, f) /\ Refers(rec[f.child], f)}}
+\* Those taken back by the records rs: as recorded, each fork's record found or made in turn.
+RefsTakenBackIn(rs, parent, F) ==
+    UNION {TakenBack(parent, f.at, f.child, rs[f.child]) : f \in {f \in F : NeedsRef(parent, f)}}
+RefsTakenBack(parent, F) == RefsTakenBackIn(rec, parent, F)
+
 RECURSIVE RecordAll(_, _, _, _)
 \* The records rs, the forks F of parent recorded, one after another; and the makings told.
 RecordAll(rs, ms, parent, F) ==
@@ -886,15 +927,18 @@ RecordForks(h, b) ==
              /\ ses' = [ses EXCEPT ![h][b].pc = "ready"]
              /\ UNCHANGED <<rec, makers, refs>>
           ELSE IF refer THEN
-             /\ refs' = refs \cup {RefOf(b, f.at, f.child)}
+             \* The child's record read first: its reference written if it has none, or its own
+             \* (again); taken back if another's.
+             /\ refs' = (refs \ RefsTakenBack(b, {f})) \cup RefsWritten(b, {f})
              /\ ses' = [ses EXCEPT ![h][b].reffed = @ \cup {f.child}]
              /\ UNCHANGED <<rec, makers>>
           ELSE
+             \* The record, unless one is there: another's, the reference taken back.
              /\ rec' = [rec EXCEPT ![f.child] = r.rec]
              /\ makers' = IF r.made THEN [makers EXCEPT ![f.child] = @ \cup {f.owner}]
                           ELSE makers
              /\ ses' = [ses EXCEPT ![h][b].recorded = @ \cup {f.child}]
-             /\ UNCHANGED refs
+             /\ refs' = refs \ RefsTakenBack(b, {f})
        /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, wal, tok, proc, gc>>
        /\ UNCHANGED <<commits, nextTag, acked, minted, twice, doomed, taken, placed, errors>>
        /\ UNCHANGED countVars
@@ -1199,14 +1243,16 @@ CloneRefs(q) == IF R("references") THEN {RefOf(q.og[1], q.og[2], q.c)} ELSE {}
 \* The record of the child of the restore q, being made (forksPending).
 Forking(q) == Record(IF R("forksPending") THEN "forking" ELSE "fork", q.og, q.p, q.o, q.bs)
 
-\* A fork of point P to C (fork_point), of the origin P names: first its reference, if C is of
-\* another cell than the origin (clonesReferFirst), then C's record, saying it is being made
-\* (forksPending). From a host's copy of P, stale perhaps.
+\* A fork of point P to C (fork_point), of the origin P names: first C's record, saying it is
+\* being made (forksPending), then its reference (clonesRecordFirst), before it reads P's
+\* (clonesReferFirst); without clonesRecordFirst, the reference first. From a host's copy of P,
+\* stale perhaps.
 StartRestore(h, c, p) ==
     LET q == [op |-> "restore", b |-> c, pc |-> "check", c |-> c, p |-> p, at |-> 0,
               o |-> <<"restore", c, h>>, live |-> FALSE, tk |-> tok[h][c], ck |-> -1, fs |-> {},
               og |-> rec[p].origin, bs |-> rec[p].base]
-        first == R("clonesReferFirst") /\ CloneRefs(q) # {}
+        refers == R("clonesReferFirst") /\ CloneRefs(q) # {}
+        first == refers /\ ~R("clonesRecordFirst")
     IN /\ "restore" \in Can /\ proc[h] = None
        /\ rec[p] # None /\ rec[p].kind = "point" /\ rec[c] = None /\ c \notin {Root, p}
        /\ IF first THEN
@@ -1215,7 +1261,7 @@ StartRestore(h, c, p) ==
              /\ UNCHANGED rec
           ELSE
              /\ rec' = [rec EXCEPT ![c] = Forking(q)]
-             /\ proc' = [proc EXCEPT ![h] = q]
+             /\ proc' = [proc EXCEPT ![h] = [q EXCEPT !.pc = IF refers THEN "refer" ELSE "check"]]
              /\ UNCHANGED refs
        /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, ses, wal, tok, gc, truthVars,
                       countVars>>
@@ -1349,9 +1395,14 @@ ProcStep(h) ==
                            ELSE rec
                  /\ Done(h)
                  /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, makers, errors>>
+            [] q.op = "restore" /\ q.pc = "refer" ->
+                 \* Its reference, its record made (clonesRecordFirst), before the point's read.
+                 /\ proc' = [proc EXCEPT ![h].pc = "check"]
+                 /\ UNCHANGED <<seg, own, ckpt, rec, lease, moves, inflight, makers, errors>>
             [] q.op = "restore" /\ q.pc = "fork" ->
-                 \* The child's record, its reference made (clonesReferFirst), unless its ID was
-                 \* taken since: the reference then left for the collector.
+                 \* Without clonesRecordFirst: the child's record, its reference made, unless its ID
+                 \* was taken since: the reference then taken back (referencesTakenBack), or left
+                 \* for good.
                  /\ IF rec[b] = None THEN /\ rec' = [rec EXCEPT ![b] = Forking(q)]
                                           /\ proc' = [proc EXCEPT ![h].pc = "check"]
                     ELSE Done(h) /\ UNCHANGED rec
@@ -1375,10 +1426,20 @@ ProcStep(h) ==
        /\ doomed' = IF q.op = "restore" /\ q.pc = "check" /\ R("forksCheckPoints")
                        /\ (rec[q.p] = None \/ rec[q.p].deleted)
                     THEN doomed \cup {q.o} ELSE doomed
-       /\ refs' = refs \cup CASE q.op = "delete" /\ q.pc = "refs" -> RefsOf(b, q.fs)
-                              [] (/\ q.op = "restore" /\ q.pc = "make" /\ ~R("clonesReferFirst")
-                                  /\ rec[b] # None /\ ~rec[b].deleted) -> CloneRefs(q)
-                              [] OTHER -> {}
+       \* A deletion's references of the forks it found, as their records read (record_fork):
+       \* written, or taken back, those records another's (referencesTakenBack), and taken back as
+       \* it records the children; a clone's.
+       /\ refs' = (refs \ CASE q.op = "delete" /\ q.pc = "refs" -> RefsTakenBack(b, q.fs)
+                              [] q.op = "delete" /\ q.pc = "record" ->
+                                  RefsTakenBackIn(RecordAll(rec, makers, b, q.fs).rec, b, q.fs)
+                              [] q.op = "restore" /\ q.pc = "fork" /\ rec[b] # None ->
+                                  TakenBack(q.og[1], q.og[2], q.c, rec[b])
+                              [] OTHER -> {})
+                 \cup CASE q.op = "delete" /\ q.pc = "refs" -> RefsWritten(b, q.fs)
+                         [] q.op = "restore" /\ q.pc = "refer" -> CloneRefs(q)
+                         [] (/\ q.op = "restore" /\ q.pc = "make" /\ ~R("clonesReferFirst")
+                             /\ rec[b] # None /\ ~rec[b].deleted) -> CloneRefs(q)
+                         [] OTHER -> {}
        /\ UNCHANGED <<ses, wal, tok, gc, countVars>>
        /\ UNCHANGED <<commits, nextTag, acked, minted, twice, taken, placed>>
 
@@ -1421,7 +1482,8 @@ Kept(fp) == [ext |-> fp.ext, touched |-> fp.touched]
 
 \* The fork points of the references Rs: the states kept, and whether one is lost that a live
 \* child of theirs needs. A child not live (deleted, being made of a deleted point, a claim, or
-\* no record yet: a reference left by a fork that failed) loses nothing.
+\* no record yet, or another's, its reference to be named or taken back: ReferencesNamed) loses
+\* nothing.
 RefPoints(Rs) ==
     LET P == {<<r.p, r.at>> : r \in Rs}
         lost(pt) == /\ ~ForkPoint(pt[1], pt[2]).ok
@@ -1826,6 +1888,23 @@ CreatesNeverFreed ==
     \A h \in Hosts, b \in Branches :
         LET C == Creatable(h, b) IN
         C # {} /\ rec[b] # None /\ ~rec[b].deleted => <<b, Min(C)>> \notin freed
+
+\* Every reference is named by its child's record, its origin the reference's fork point, which
+\* the child's cell's pass retires it by once the child is deleted (TASK-395.10); or is of a fork
+\* whose records' writers are yet to name or take it back: a live parent's state names the fork,
+\* whose next writer or deletion records it again; a writer or a deletion of it records it now; a
+\* clone of a point is being made. Any other no pass retires, for ever.
+RefPending(r) ==
+    LET at(F) == \E f \in F : f.child = r.c /\ f.at = r.at IN
+    \/ /\ rec[r.p] # None /\ ~rec[r.p].deleted
+       /\ LET st == Recover(r.p, rec[r.p].origin) IN st.ok /\ at(st.st.forks)
+    \/ \E h \in Hosts : ses[h][r.p] # None /\ ses[h][r.p].pc = "record" /\ at(ses[h][r.p].st.forks)
+    \/ \E h \in Hosts : /\ proc[h] # None /\ proc[h].op = "delete" /\ proc[h].b = r.p
+                       /\ proc[h].pc \in {"refs", "record"} /\ at(proc[h].fs)
+    \/ \E h \in Hosts : /\ proc[h] # None /\ proc[h].op = "restore" /\ proc[h].c = r.c
+                       /\ proc[h].og = <<r.p, r.at>>
+ReferencesNamed ==
+    \A r \in refs : (rec[r.c] # None /\ rec[r.c].origin = <<r.p, r.at>>) \/ RefPending(r)
 
 \* Every live branch forked from another cell, and every point's clone, has its reference under
 \* its origin's cell, naming its fork point (TASK-395): written before its record, retired only
