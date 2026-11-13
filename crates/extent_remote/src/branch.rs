@@ -174,13 +174,17 @@ pub(crate) async fn refer_fork(bucket: &impl Bucket, child: Child, origin: Origi
 /// either, and nothing would retire it, the record naming no such fork (a fork deleted before its
 /// host learned its origin, `Kind::Own`, among them). Read so, a child of another's that lands
 /// between the read and its own record's create leaves the reference: space wasted, never data
-/// lost (doc-7, References). The read costs a request a fork across cells, each of its writers.
+/// lost (doc-7, References). The read costs a request a fork across cells, each of its writers; a
+/// child recorded already, ours, gets its reference again, as the model has it, but not the
+/// checkpoint, which came first.
 ///
 /// fxdax: before both, for a child of another cell, the parent's checkpoint at the fork point
 /// ([`recovery::checkpoint_at`]): what the child's recovery reads of its parent by its key alone,
 /// so that a pass over the child's cell lists nothing of the parent's (TASK-395.4). A point's
 /// clones, of any cell, read the same, which its own recording wrote: a point in its origin's own
-/// cell, which no host makes, has none, and its clones into other cells recover not.
+/// cell, which no host makes, has none, and its clones into other cells recover not. The
+/// parent's state there gone, which no reader could recover the child from, the child is recorded
+/// deleted (TASK-395.11).
 ///
 /// Without the rule that it comes first, as a test shows it needed, the record's writers write it
 /// after: the writer once it recorded the fork, the deletion once it marked the parent deleted, as
@@ -197,9 +201,31 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
             Some(found) if !found.is_child_of(record.owner) => {
                 return Err(Error::IdTaken(child.branch));
             }
-            _ => {}
+            // Recorded: whoever did wrote the checkpoint first, and recovering the parent there
+            // again may find its segments gone, a checkpoint since covering them.
+            Some(_) => {}
+            None => match recovery::checkpoint_at(bucket, origin.parent, origin.at).await {
+                Ok(()) => {}
+                // The parent's state at the fork point gone, no reader can recover the child: it is
+                // recorded deleted, with no reference, so that no host takes it for live
+                // (TASK-395.11).
+                Err(Error::Lost(lost)) => {
+                    log::warn!(
+                        child:% = child.branch, parent:% = origin.parent, at = origin.at, lost:%;
+                        "extent_remote: the fork of {} at {:x} to {} names a state gone ({lost}): \
+                         its child recorded deleted",
+                        origin.parent, origin.at, child.branch
+                    );
+                    let deleted = Record { deleted: true, ..record };
+                    let step = |found: Option<Record>| match found {
+                        None => Ok(Step::Write(deleted, ())),
+                        Some(_) => Ok(Step::Stop(())),
+                    };
+                    return change(bucket, child.branch, Start::Found(found), step).await;
+                }
+                Err(error) => return Err(error),
+            },
         }
-        recovery::checkpoint_at(bucket, origin.parent, origin.at).await?;
         if rules().references_first {
             refer_fork(bucket, child, origin).await;
         }
@@ -690,15 +716,22 @@ pub async fn delete_fork(
             (Kind::Fork(origin), true)
         }
         Kind::Fork(origin) | Kind::Claim(origin) => {
-            match recovery::holds(bucket, origin.parent, origin.at).await? {
-                true => {
-                    // fxdax: a claim that lives, of another cell, reads its parent there by the
-                    // checkpoint at the fork point alone (TASK-395.4).
-                    if origin.parent.cell != child.cell {
-                        recovery::checkpoint_at(bucket, origin.parent, origin.at).await?;
+            // fxdax: a claim of another cell than its parent's lives only with the parent's
+            // checkpoint at the fork point, which is what its recovery reads of the parent there
+            // (TASK-395.4), as [`record_fork`] writes it: what is going since the parent's branch
+            // was found holding the segment, as a pass takes it, reads as not held, as there.
+            let held = match recovery::holds(bucket, origin.parent, origin.at).await? {
+                true if origin.parent.cell != child.cell => {
+                    match recovery::checkpoint_at(bucket, origin.parent, origin.at).await {
+                        Ok(()) => true,
+                        Err(Error::Lost(_)) => false,
+                        Err(error) => return Err(error),
                     }
-                    (Kind::Claim(origin), true)
                 }
+                held => held,
+            };
+            match held {
+                true => (Kind::Claim(origin), true),
                 false => (Kind::Fork(origin), false),
             }
         }

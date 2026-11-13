@@ -473,10 +473,14 @@ impl Remembered {
 }
 
 /// fxdax: whether a pass over `cell` has anything to go by, checked before it takes the cell's
-/// lease, which would be the cell's one object otherwise: the format of the cell's first record,
-/// which a pass of another format refuses ([`Error::Format`]) before writing anything; and, the
-/// cell holding no record, whether it holds anything (a reference, what a dead cell left).
+/// lease, which would be the cell's one object otherwise: the format of the cell's object, a GET,
+/// which a pass of another format refuses ([`Error::Format`]) before writing anything. A cell with
+/// none, its branches made without one, its first record's format; and, holding no record, whether
+/// it holds anything (a reference, what a dead cell left).
 async fn passable(bucket: &impl Bucket, cell: Cell) -> Result<bool, Error> {
+    if crate::cell::read(bucket, cell).await?.is_some() {
+        return Ok(true);
+    }
     let listed = bucket::list(bucket, &layout::records(cell)).await;
     for meta in &listed {
         let Kind::Record { branch } = layout::kind(&meta.key) else { continue };
@@ -4323,9 +4327,99 @@ mod tests {
         block_on(bucket::create(&bucket, &layout::record(branch), format8));
         let refused = block_on(collect_cell(&bucket, older, 1, &options));
         assert_eq!(refused, Err(Error::Format { branch, format: 8 }));
+        // A cell's object of format 8, whatever its records', refused as such.
+        let celled = layout::Cell { tenant: 1, id: 9 };
+        block_on(bucket::create(&bucket, &layout::cell(celled), 8u32.to_le_bytes().to_vec()));
+        let refused = block_on(collect_cell(&bucket, celled, 1, &options));
+        let branch = Branch { cell: celled, id: 0 };
+        assert_eq!(refused, Err(Error::Format { branch, format: 8 }));
         let leases: Vec<String> = (bucket.0.keys().into_iter())
             .filter(|key| matches!(layout::kind(key), Kind::GcLease { .. }))
             .collect();
         assert_eq!(leases, Vec::<String>::new());
+    }
+
+    /// TASK-395.4's review, found by the simulation (seed 11 of `restores`): a fork across cells
+    /// recorded again, by a later writer of its parent or the parent's deletion, after the parent
+    /// checkpointed past the fork point and passes reclaimed its segments up to there, the
+    /// checkpoint at the fork point kept: it records nothing more, recovering nothing of the
+    /// parent there, which it could not. Before, recording it again recovered the parent at the
+    /// fork point from its segments, gone, and failed the writer's acknowledgement.
+    #[test]
+    fn forks_across_cells_recorded_again_recover_nothing_of_their_parents() {
+        block_on(async {
+            let bucket = store();
+            let (parent, child) = (celled(1, 1), celled(2, 2));
+            branch::create(&*bucket, parent, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, writer.chain().next_sequence());
+            let at =
+                commit_and_fork(&writer, vec![(extent, b"held".to_vec())], forked(child)).await;
+            commit(&writer, Commit { tag: 3, frees: vec![extent], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+            sweep(&*bucket).await.unwrap();
+            let left = keys(&*bucket).await;
+            assert!(!left.contains(&layout::segment(parent, at)), "the fork's segment went");
+            assert!(left.contains(&layout::checkpoint(parent, at)), "the fork point kept");
+            let origin = crate::layout::Origin { parent, at };
+            assert_eq!(branch::record_fork(&*bucket, forked(child), origin).await, Ok(()));
+            // Its checkpoint at the fork point gone too, as nothing keeps it for a record of the
+            // fork's owner no reference keeps, a failed fork's claim landing late (seed 11's).
+            let point = layout::checkpoint(parent, at);
+            bucket::delete_all(&*bucket, &[point.as_str()]).await;
+            assert_eq!(branch::record_fork(&*bucket, forked(child), origin).await, Ok(()));
+            drop(writer);
+            assert_eq!(branch::delete(&*bucket, parent, 20, 0).await, Ok(()));
+        });
+    }
+
+    /// TASK-395.11: a fork across cells whose parent's state at the fork point is gone, as a
+    /// writer's state naming a fork its branch's checkpoints don't (sim restores seed 11), records
+    /// its child deleted, as a failed fork's cleanup does: no reader recovers it, nor fails on it.
+    /// (Here the parent's own checkpoint names the fork, which a pass over its cell then keeps,
+    /// so none runs: seed 11's did not.)
+    #[test]
+    fn forks_across_cells_of_a_state_gone_are_recorded_deleted() {
+        block_on(async {
+            let bucket = store();
+            let (parent, child, failed) = (celled(1, 1), celled(2, 2), celled(2, 3));
+            branch::create(&*bucket, parent, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+            let extent = ExtentId::new(1, writer.chain().next_sequence());
+            let at =
+                commit_and_fork(&writer, vec![(extent, b"held".to_vec())], forked(child)).await;
+            commit(&writer, Commit { tag: 3, frees: vec![extent], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+            sweep(&*bucket).await.unwrap();
+            let origin = crate::layout::Origin { parent, at };
+            // The fork forgotten: no record, no reference, no checkpoint at its point.
+            let gone = [
+                layout::record(child),
+                layout::reference(parent, at, child),
+                layout::checkpoint(parent, at),
+            ];
+            bucket::delete_all(&*bucket, &gone.iter().map(String::as_str).collect::<Vec<_>>())
+                .await;
+            assert!(!keys(&*bucket).await.contains(&layout::segment(parent, at)));
+            assert_eq!(branch::record_fork(&*bucket, forked(child), origin).await, Ok(()));
+            let recorded = branch::record(&*bucket, child).await.unwrap().unwrap();
+            assert_eq!((recorded.deleted, recorded.origin()), (true, Some(origin)));
+            assert!(!keys(&*bucket).await.contains(&layout::checkpoint(parent, at)));
+            // A failed fork there to another cell is deleted from the first, not claimed.
+            let owner = forked(failed).owner;
+            let deleted = branch::delete_fork(
+                &*bucket,
+                failed,
+                crate::record::Kind::Fork(origin),
+                owner,
+                30,
+                0,
+            );
+            assert_eq!(deleted.await, Ok(true));
+            let recorded = branch::record(&*bucket, failed).await.unwrap().unwrap();
+            assert_eq!((recorded.deleted, recorded.origin()), (true, Some(origin)));
+            drop(writer);
+            assert_eq!(branch::delete(&*bucket, parent, 20, 0).await, Ok(()));
+        });
     }
 }

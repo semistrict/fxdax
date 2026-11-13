@@ -307,7 +307,9 @@ fn deleted_forking() -> Profile {
 
 test_holds!(branches_deleted_twice_while_forking, deleted_forking());
 
-test_needs!(deletions_need_fences, deletions_fence, deleted_forking());
+// None of seeds 0..20,000 finds it since a pass reads its cell before taking its lease (TASK-395.4's
+// review); seeds 32,625, 44,627 and 67,583 of 20,000..80,000 did: so searched from 20,000.
+test_needs!(deletions_need_fences, deletions_fence, deleted_forking(), 20_000..40_000);
 
 // A deletion begun as another marks the branch deleted, recovering once a pass deleted that one's
 // fence and a writer's segment of a fork, taken over, landed where it was: the fork's child,
@@ -405,7 +407,10 @@ test_needs!(takeovers_need_void_strays_pinned, pins_void_strays, recreated());
 test_needs!(takeovers_need_late_strays_pinned, pins_late_strays, recreated());
 
 // ...and what the last writer landed after a later writer read the branch, until that one fenced.
-test_needs!(takeovers_need_takings_pinned, pins_takings, recreated());
+// A pass landing in a takeover's window: rarer since a pass reads its cell before taking its lease
+// (TASK-395.4's review), none of seeds 0..60,000 finding it, seeds 62,844, 135,431, 192,067,
+// 208,601 and 294,195 of 60,000..300,000 did; so searched from 60,000.
+test_needs!(takeovers_need_takings_pinned, pins_takings, recreated(), 60_000..80_000);
 
 // A deleted branch's writer, taken over, acknowledging a fork only after a read of its lease: the
 // deletion's fence goes with the branch.

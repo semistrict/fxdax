@@ -851,6 +851,7 @@ fn state_at<'a, B: Bucket>(
 /// its record ([`crate::branch::record_fork`]), from the newest checkpoint up to there and the
 /// segments after: the state any reader finds there, its extents named where they were sealed,
 /// never further along their moves than a reader names them. One there stands, any writer's.
+/// [`Error::Lost`] if the state there is gone: no reader recovers a fork from there either.
 pub(crate) async fn checkpoint_at(
     bucket: &impl Bucket,
     branch: Branch,

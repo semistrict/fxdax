@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 15:25'
+updated_date: '2026-11-13 16:11'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -925,6 +925,9 @@ exact, but a protocol across cells every pass.
   model's fork point keeps; the checkpoint is a late one, as the model's writers' may land, of a
   segment acknowledged, so the model needs no change (`StateAt` reads the newest checkpoint up to
   the fork point, which it is). Gone, what the fork inherited is: kept while a reference names it.
+  The parent's state at the fork point gone already (the checkpoint's recovery `Lost`), the child,
+  which no reader could recover, is recorded deleted, and a failed fork's claim deleted from the
+  first (TASK-395.11 asks how a writer acknowledges such a fork).
 - **The model's recoveries are atomic; the code's are not.** A clone being made whose recovery fails
   is given up on if its point's record, read again, says deleted, rather than failing the pass.
 - **Several volumes in a cell:** retirement waits for the whole cell, so a deleted volume of a
