@@ -41,6 +41,27 @@ pub struct Meta {
     pub modified: u64,
 }
 
+/// fxdax: one level of the keys under a prefix, as a listing by delimiter finds it
+/// ([`Bucket::list_delimited`], TASK-395.5).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    /// The prefixes, each ending with `/`, of the keys holding a `/` past the prefix listed, once
+    /// each, up to and with the first such `/`, in their order.
+    pub prefixes: Vec<String>,
+    /// The objects whose keys hold no `/` past it, in the order of their keys.
+    pub objects: Vec<Meta>,
+}
+
+/// fxdax: the most objects [`Bucket::delete_batch`] is given at once: as many as S3's
+/// DeleteObjects takes (TASK-395.5).
+pub const DELETE_BATCH: usize = 1000;
+
+/// fxdax: how many deletes of a batch a bucket with no batch delete has in flight at once.
+const DELETES_AT_ONCE: usize = 32;
+
+/// fxdax: how many batches [`delete_all`] has in flight at once.
+const BATCHES_AT_ONCE: usize = 4;
+
 /// An object, read whole.
 #[derive(Clone, Debug)]
 pub struct Object {
@@ -95,6 +116,12 @@ pub trait Bucket: Send + Sync + 'static {
     /// The objects whose keys start with `prefix`, in the order of their keys.
     fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send;
 
+    /// fxdax: one level of the keys under `prefix`, empty or ending with `/`, by delimiter `/`
+    /// (S3's and GCS's `delimiter=/`, TASK-395.5): the objects right under it, and the prefixes
+    /// of the rest, listing none of the objects under those. Every bucket lists so: none falls
+    /// back to listing every object under `prefix`, which costs a request a page of them.
+    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send;
+
     fn put(
         &self,
         key: &str,
@@ -104,6 +131,18 @@ pub trait Bucket: Send + Sync + 'static {
 
     /// Deletes the object at `key`. Deleting none is no error.
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send;
+
+    /// fxdax: deletes the objects at `keys`, at most [`DELETE_BATCH`] of them (TASK-395.5): in
+    /// one request where the store deletes many at once (S3's DeleteObjects), else, as here, one
+    /// each, [`DELETES_AT_ONCE`] at once. Deleting none is no error. It fails if a delete did,
+    /// which may or may not have taken effect, nor need the others have.
+    fn delete_batch(&self, keys: &[&str]) -> impl Future<Output = Result<(), Error>> + Send {
+        use futures::StreamExt as _;
+        futures::stream::iter(keys)
+            .map(|key| self.delete(key))
+            .buffer_unordered(DELETES_AT_ONCE)
+            .fold(Ok(()), |result, deleted| std::future::ready(result.and(deleted)))
+    }
 
     /// The store's clock, which [`Meta::modified`] is in.
     fn now(&self) -> u64;
@@ -198,11 +237,18 @@ pub(crate) async fn list(bucket: &impl Bucket, prefix: &str) -> Vec<Meta> {
     }
 }
 
-pub(crate) async fn delete(bucket: &impl Bucket, key: &str) {
-    let mut failures = 0;
-    while bucket.delete(key).await.is_err() {
-        failed(bucket, &mut failures).await;
-    }
+/// fxdax: deletes the objects at `keys`, in batches of [`DELETE_BATCH`] ([`Bucket::delete_batch`]),
+/// [`BATCHES_AT_ONCE`] at once, in any order, each batch retried whole while it fails: deleting
+/// what is gone is no error (TASK-395.5).
+pub(crate) async fn delete_all(bucket: &impl Bucket, keys: &[&str]) {
+    use futures::StreamExt as _;
+    let batches = futures::stream::iter(keys.chunks(DELETE_BATCH)).map(|batch| async move {
+        let mut failures = 0;
+        while bucket.delete_batch(batch).await.is_err() {
+            failed(bucket, &mut failures).await;
+        }
+    });
+    batches.buffer_unordered(BATCHES_AT_ONCE).collect::<()>().await;
 }
 
 /// What [`create`] found.
@@ -333,6 +379,45 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     expected.sort();
     assert_eq!(all, expected);
 
+    // fxdax: listed a level at a time, by delimiter (TASK-395.5): the objects right under the
+    // prefix and the prefixes of the rest, each once, none of what is under them; a prefix whole
+    // segments, as above. Then deleted in a batch, which deletes what is gone as nothing.
+    let level = |prefix: String| async move {
+        let listing = bucket.list_delimited(&prefix).await.unwrap();
+        let objects: Vec<(String, u64)> =
+            listing.objects.into_iter().map(|meta| (meta.key, meta.size)).collect();
+        (listing.prefixes, objects)
+    };
+    let deep = [format!("{root}/list/c/e/f"), format!("{root}/list/g/h")];
+    for key in &deep {
+        bucket.put(key, vec![9; 3].into(), PutMode::Create).await.unwrap();
+    }
+    let sized = |key: &String| (key.clone(), key.len() as u64);
+    assert_eq!(
+        level(format!("{root}/list/")).await,
+        (
+            vec![format!("{root}/list/c/"), format!("{root}/list/g/")],
+            vec![sized(&listed[1]), sized(&listed[0])]
+        )
+    );
+    assert_eq!(
+        level(format!("{root}/list/c/")).await,
+        (vec![format!("{root}/list/c/e/")], vec![sized(&listed[2])])
+    );
+    assert_eq!(
+        level(format!("{root}/")).await,
+        (
+            vec![format!("{root}/list/")],
+            vec![(listing.clone(), listing.len() as u64), (key.clone(), 7)]
+        )
+    );
+    assert_eq!(level(format!("{root}/nothing/")).await, (vec![], vec![]));
+    let gone = format!("{root}/list/gone");
+    let batch: Vec<&str> = deep.iter().map(String::as_str).chain([gone.as_str()]).collect();
+    assert_eq!(bucket.delete_batch(&batch).await, Ok(()));
+    assert_eq!(level(format!("{root}/list/c/")).await, (vec![], vec![sized(&listed[2])]));
+    assert_eq!(bucket.delete_batch(&[]).await, Ok(()));
+
     // Deleted, and gone: created anew after.
     for key in listed.iter().chain([&format!("{root}/listing"), key]) {
         assert_eq!(bucket.delete(key).await, Ok(()));
@@ -381,6 +466,10 @@ mod tests {
         }
 
         fn list(&self, _: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
+            std::future::ready(Err(Error::Unavailable))
+        }
+
+        fn list_delimited(&self, _: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
             std::future::ready(Err(Error::Unavailable))
         }
 
@@ -439,6 +528,13 @@ mod tests {
 
         fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
             self.0.list(prefix)
+        }
+
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Listing, Error>> + Send {
+            self.0.list_delimited(prefix)
         }
 
         fn put(

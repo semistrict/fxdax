@@ -24,7 +24,7 @@
 //! collector's newest mark-only pass marked ([`crate::marks`], TASK-264): on wherever a marks object
 //! is, as a store reads the newest every [`crate::marks::REFRESH`] alongside a read of its own.
 
-use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
+use crate::bucket::{Bucket, ByteRange, Error, Listing, Meta, Object, PutMode, Version};
 use crate::client::Client;
 use crate::layout::{self, Kind};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
@@ -68,10 +68,16 @@ pub enum Request {
     Update,
     Overwrite,
     Delete,
+    /// fxdax: a listing of one level of keys, by delimiter (TASK-395.5).
+    ListDelimited,
+    /// fxdax: a batch of deletes (TASK-395.5): one request where the store deletes many at once
+    /// (S3's DeleteObjects, of up to 1,000; Azure's, of 256 each), one an object behind it
+    /// where it does not (GCS, files, memory), which `object_store` does not say.
+    DeleteBatch,
 }
 
 impl Request {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Get,
         Self::GetRange,
         Self::Head,
@@ -80,6 +86,8 @@ impl Request {
         Self::Update,
         Self::Overwrite,
         Self::Delete,
+        Self::ListDelimited,
+        Self::DeleteBatch,
     ];
 
     /// fxdax: the name of its span ([`crate::trace`], TASK-258).
@@ -93,6 +101,8 @@ impl Request {
             Self::Update => "bucket.update",
             Self::Overwrite => "bucket.overwrite",
             Self::Delete => "bucket.delete",
+            Self::ListDelimited => "bucket.list_delimited",
+            Self::DeleteBatch => "bucket.delete_batch",
         }
     }
 
@@ -107,6 +117,8 @@ impl Request {
             Self::Update => "update",
             Self::Overwrite => "overwrite",
             Self::Delete => "delete",
+            Self::ListDelimited => "list-delimited",
+            Self::DeleteBatch => "delete-batch",
         }
     }
 }
@@ -594,16 +606,29 @@ impl Store {
         }
     }
 
-    fn meta(&self, meta: ObjectMeta) -> Meta {
-        let location = meta.location.as_ref();
-        let key = match self.prefix.is_empty() {
+    /// The path of the objects under the prefix `prefix` of keys, empty or ending with `/`, as
+    /// `object_store` lists by them: whole segments, none for every object of the store.
+    fn prefix_path(&self, prefix: &str) -> Option<Path> {
+        assert!(prefix.is_empty() || prefix.ends_with('/'), "a prefix of keys: {prefix}");
+        match (self.prefix.is_empty(), prefix.trim_end_matches('/')) {
+            (true, "") => None,
+            (_, prefix) => Some(self.path(prefix)),
+        }
+    }
+
+    /// The key at `location`, under its prefix.
+    fn key<'a>(&self, location: &'a str) -> &'a str {
+        match self.prefix.is_empty() {
             true => location,
             false => location
                 .strip_prefix(&self.prefix)
                 .map_or(location, |key| key.trim_start_matches('/')),
-        };
+        }
+    }
+
+    fn meta(&self, meta: ObjectMeta) -> Meta {
         Meta {
-            key: key.to_owned(),
+            key: self.key(meta.location.as_ref()).to_owned(),
             version: Version { e_tag: meta.e_tag, version: meta.version },
             size: meta.size,
             modified: meta.last_modified.timestamp_millis().max(0) as u64,
@@ -775,13 +800,8 @@ impl Bucket for Store {
     }
 
     fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
-        // Prefixes are whole segments: `object_store` lists by them.
-        assert!(prefix.is_empty() || prefix.ends_with('/'), "a prefix of keys: {prefix}");
         let store = self.store.clone();
-        let path = match (self.prefix.is_empty(), prefix.trim_end_matches('/')) {
-            (true, "") => None,
-            (_, prefix) => Some(self.path(prefix)),
-        };
+        let path = self.prefix_path(prefix);
         let refresh = self.marks_due();
         let prefix = prefix.to_owned();
         let list = async move {
@@ -799,6 +819,35 @@ impl Bucket for Store {
             let listed = futures::join!(list, refresh).0;
             if let Ok(metas) = &listed {
                 self.marks.listed(&prefix, metas);
+            }
+            listed
+        }
+    }
+
+    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
+        let store = self.store.clone();
+        let path = self.prefix_path(prefix);
+        let refresh = self.marks_due();
+        let prefix = prefix.to_owned();
+        let list = async move {
+            // A request a page, as a listing's (1,000 objects and prefixes on S3 and GCS): one.
+            let timed = self.counts.request(Request::ListDelimited, path.as_ref());
+            let listed = timed.answered(store.list_with_delimiter(path.as_ref()).await, |_| 0)?;
+            timed.span.set_count(crate::trace::OBJECTS, listed.objects.len() as u64);
+            timed.span.set_count(crate::trace::PREFIXES, listed.common_prefixes.len() as u64);
+            let mut prefixes: Vec<String> = (listed.common_prefixes.iter())
+                .map(|path| format!("{}/", self.key(path.as_ref())))
+                .collect();
+            prefixes.sort();
+            let mut objects: Vec<Meta> =
+                listed.objects.into_iter().map(|meta| self.meta(meta)).collect();
+            objects.sort_by(|a, b| a.key.cmp(&b.key));
+            Ok(Listing { prefixes, objects })
+        };
+        async move {
+            let listed = futures::join!(list, refresh).0;
+            if let Ok(listing) = &listed {
+                self.marks.listed(&prefix, &listing.objects);
             }
             listed
         }
@@ -843,6 +892,31 @@ impl Bucket for Store {
                 Some(Err(object_store::Error::NotFound { .. })) | Some(Ok(_)) | None => Ok(()),
                 Some(Err(other)) => Err(other),
             };
+            timed.answered(deleted, |_| 0)
+        }
+    }
+
+    /// fxdax: through `object_store`'s `delete_stream`, which deletes in batches where the store
+    /// has a batch delete (S3's DeleteObjects, Azure's), and several at once where it has not
+    /// (TASK-395.5); fxdax's buckets of files take their lock once a batch ([`crate::local`]).
+    fn delete_batch(&self, keys: &[&str]) -> impl Future<Output = Result<(), Error>> + Send {
+        let store = self.store.clone();
+        let paths: Vec<object_store::Result<Path>> =
+            keys.iter().map(|key| Ok(self.path(key))).collect();
+        async move {
+            let timed = self.counts.request(Request::DeleteBatch, None);
+            let objects = paths.len();
+            // Every answer awaited, the first failure kept: the rest took effect, or failed too.
+            let deleted = store
+                .delete_stream(stream::iter(paths).boxed())
+                .fold(Ok(()), |result, deleted| {
+                    std::future::ready(match deleted {
+                        Ok(_) | Err(object_store::Error::NotFound { .. }) => result,
+                        Err(failure) => result.and(Err(failure)),
+                    })
+                })
+                .await;
+            timed.span.set_count(crate::trace::OBJECTS, objects as u64);
             timed.answered(deleted, |_| 0)
         }
     }
@@ -981,7 +1055,8 @@ pub(crate) mod tests {
         assert_eq!(stats.failures(Request::Get), 0);
         assert!(stats.line().ends_with(
             " failed-get=0 failed-get-range=0 failed-head=0 failed-list=0 failed-create=25 \
-             failed-update=0 failed-overwrite=0 failed-delete=0"
+             failed-update=0 failed-overwrite=0 failed-delete=0 failed-list-delimited=0 \
+             failed-delete-batch=0"
         ));
         let object = format!("object={key}");
         let enospc = "error=Generic Faulty error: No space left on device (os error 28)";
@@ -1167,7 +1242,9 @@ pub(crate) mod tests {
             assert!(store.get(&layout::segment(test_branch(1), 9)).await.is_err());
             store.head(&segment).await.unwrap();
             store.list("segments/").await.unwrap();
+            store.list_delimited("segments/").await.unwrap();
             store.delete(&segment).await.unwrap();
+            store.delete_batch(&[&extent, &layout::moves(&segment)]).await.unwrap();
         });
         let stats = store.stats();
         let requests: Vec<_> =
@@ -1183,6 +1260,8 @@ pub(crate) mod tests {
                 ("update", 1),
                 ("overwrite", 1),
                 ("delete", 1),
+                ("list-delimited", 1),
+                ("delete-batch", 1),
             ]
         );
         assert_eq!(stats.uploaded, [150, 11, 30, 13, 9]);
@@ -1192,15 +1271,18 @@ pub(crate) mod tests {
         assert_eq!(stats.failures, [0; Request::ALL.len()]);
         // Its line, each kind of request's time after the rest, then its failures: as of times
         // and failures set here, as each request's time is its own.
-        let failures = [0, 1, 0, 0, 3, 0, 0, 2];
-        let stats = Stats { request_ns: [10, 20, 30, 40, 50, 60, 70, 80], failures, ..stats };
+        let failures = [0, 1, 0, 0, 3, 0, 0, 2, 0, 4];
+        let request_ns = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let stats = Stats { request_ns, failures, ..stats };
         assert_eq!(
             stats.line(),
             "object-store: get=2 get-range=1 head=1 list=1 create=5 update=1 overwrite=1 delete=1 \
+             list-delimited=1 delete-batch=1 \
              up-segments=150 up-extents=11 up-checkpoints=30 up-moves=13 up-other=9 down=70 \
              get-ns=10 get-range-ns=20 head-ns=30 list-ns=40 create-ns=50 update-ns=60 \
-             overwrite-ns=70 delete-ns=80 failed-get=0 failed-get-range=1 failed-head=0 \
-             failed-list=0 failed-create=3 failed-update=0 failed-overwrite=0 failed-delete=2"
+             overwrite-ns=70 delete-ns=80 list-delimited-ns=90 delete-batch-ns=100 failed-get=0 \
+             failed-get-range=1 failed-head=0 failed-list=0 failed-create=3 failed-update=0 \
+             failed-overwrite=0 failed-delete=2 failed-list-delimited=0 failed-delete-batch=4"
         );
     }
 
@@ -1226,6 +1308,13 @@ pub(crate) mod tests {
 
         fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
             self.0.list(prefix)
+        }
+
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Listing, crate::bucket::Error>> + Send {
+            self.0.list_delimited(prefix)
         }
 
         fn put(
@@ -1503,6 +1592,38 @@ pub(crate) mod tests {
             let bucket = s3(&server, "conformance", &Client::DEFAULT);
             crate::bucket::conformance(&*bucket, "conformance").await;
             branch_lifecycle(s3(&server, "branches", &Client::DEFAULT), 1).await;
+        });
+    }
+
+    /// fxdax: over S3, deletes go in DeleteObjects of 1,000 keys each, and a listing by delimiter
+    /// is one ListObjectsV2 by `delimiter=/`, listing none of the objects under the prefixes it
+    /// finds (TASK-395.5): as the server serves them, and the store counts them.
+    #[test]
+    fn s3_deletes_in_batches_and_lists_by_delimiter() {
+        runtime().block_on(async {
+            let server = S3Server::start(None);
+            let bucket = s3(&server, "batches", &Client::DEFAULT);
+            let keys: Vec<String> =
+                (0..2500).map(|n| format!("cells/{:02}/objects/{n:05}", n % 10)).collect();
+            futures::stream::iter(&keys)
+                .for_each_concurrent(64, |key| async {
+                    bucket.put(key, vec![1].into(), PutMode::Create).await.unwrap();
+                })
+                .await;
+            let level = bucket.list_delimited("cells/").await.unwrap();
+            let cells: Vec<String> = (0..10).map(|n| format!("cells/{n:02}/")).collect();
+            assert_eq!((level.prefixes, level.objects), (cells, vec![]));
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            crate::bucket::delete_all(&*bucket, &keys).await;
+            assert_eq!(bucket.list("cells/").await.unwrap(), vec![]);
+            let served = server.requests();
+            let served = ["list-delimited", "delete-objects", "delete"]
+                .map(|kind| served.get(kind).copied().unwrap_or(0));
+            assert_eq!(served, [1, 3, 0]);
+            let stats = bucket.stats();
+            let counted = [Request::ListDelimited, Request::DeleteBatch, Request::Delete]
+                .map(|request| stats.requests(request));
+            assert_eq!(counted, [1, 3, 0]);
         });
     }
 

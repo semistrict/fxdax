@@ -8,8 +8,9 @@
 //!
 //! It serves what branches ask of S3 ([`crate::bucket::conformance`] checks it does), path-style
 //! and unsigned: objects' PUTs, conditional on `If-None-Match: *` or `If-Match`, their GETs, whole
-//! or of a range, HEADs, DELETEs and DeleteObjects, and ListObjectsV2 by prefix, in one page. An update of no
-//! object is a failed precondition, as RustFS and Azure have it.
+//! or of a range, HEADs, DELETEs and DeleteObjects, and ListObjectsV2 by prefix, by delimiter `/`
+//! too (TASK-395.5), in one page. An update of no object is a failed precondition, as RustFS and
+//! Azure have it. It counts the requests it serves by kind ([`S3Server::requests`]).
 
 use bytes::Bytes;
 use http_body_util::{BodyExt as _, Full};
@@ -30,6 +31,8 @@ pub(crate) const BUCKET: &str = "fxdax";
 /// An S3 server, on 127.0.0.1, for as long as the runtime it started on runs.
 pub(crate) struct S3Server {
     address: SocketAddr,
+    /// Its objects, if it serves them.
+    objects: Option<Arc<Mutex<Objects>>>,
 }
 
 #[derive(Clone)]
@@ -44,6 +47,15 @@ struct Objects {
     objects: BTreeMap<String, Stored>,
     /// The number of the last version stored, whose ETag it is.
     versions: u64,
+    /// The requests served, by kind.
+    requests: BTreeMap<&'static str, u64>,
+}
+
+impl Objects {
+    /// Counts a request of kind `kind`.
+    fn count(&mut self, kind: &'static str) {
+        *self.requests.entry(kind).or_default() += 1;
+    }
 }
 
 impl S3Server {
@@ -58,6 +70,7 @@ impl S3Server {
         let address = listener.local_addr().unwrap();
         let link = rate.map(|rate| Arc::new(Link { rate, free: Mutex::new(Instant::now()) }));
         let objects = Arc::new(Mutex::new(Objects::default()));
+        let served = objects.clone();
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
@@ -75,12 +88,19 @@ impl S3Server {
                 });
             }
         });
-        Self { address }
+        Self { address, objects: Some(served) }
     }
 
     /// One that something else serves at `address`.
     pub(crate) fn at(address: SocketAddr) -> Self {
-        Self { address }
+        Self { address, objects: None }
+    }
+
+    /// The requests it served so far, by kind: `get`, `head`, `put`, `delete`, `delete-objects`
+    /// (DeleteObjects), `list` and `list-delimited` (ListObjectsV2, by delimiter or not).
+    pub(crate) fn requests(&self) -> BTreeMap<&'static str, u64> {
+        let objects = self.objects.as_ref().expect("a server of its own");
+        objects.lock().unwrap().requests.clone()
     }
 
     /// The options of an S3 store of its bucket, `s3://fxdax/...`.
@@ -218,14 +238,29 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
             let query = parts.uri.query().unwrap_or("");
             let query: BTreeMap<_, _> = url::form_urlencoded::parse(query.as_bytes()).collect();
             assert_eq!(query.get("list-type").map(|kind| &**kind), Some("2"), "{query:?}");
-            assert!(!query.contains_key("delimiter"), "a listing by delimiter: {query:?}");
+            let delimited = match query.get("delimiter").map(|delimiter| &**delimiter) {
+                None => false,
+                Some("/") => true,
+                Some(other) => panic!("a listing by delimiter {other:?}"),
+            };
+            objects.count(if delimited { "list-delimited" } else { "list" });
             let prefix = query.get("prefix").map_or("", |prefix| prefix);
             let mut xml =
                 String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult>");
             xml += &format!("<Name>{BUCKET}</Name><IsTruncated>false</IsTruncated>");
+            // The prefixes of the keys holding the delimiter past the prefix, each once, as their
+            // keys are in order: after the objects, as S3 lists them apart.
+            let mut prefixes: Vec<&str> = Vec::new();
             for (key, stored) in objects.objects.range(prefix.to_owned()..) {
                 if !key.starts_with(prefix) {
                     break;
+                }
+                if let Some(slash) = key[prefix.len()..].find('/').filter(|_| delimited) {
+                    let common = &key[..prefix.len() + slash + 1];
+                    if prefixes.last() != Some(&common) {
+                        prefixes.push(common);
+                    }
+                    continue;
                 }
                 let modified = chrono::DateTime::<chrono::Utc>::from(stored.modified)
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -237,10 +272,17 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
                     stored.bytes.len()
                 );
             }
+            for common in prefixes {
+                xml += &format!(
+                    "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
+                    escaped(common)
+                );
+            }
             xml += "</ListBucketResult>";
             Response::new(Full::new(Bytes::from(xml)))
         }
         (&Method::PUT, key) => {
+            objects.count("put");
             let there = objects.objects.get(key);
             let refused = match (header("if-none-match"), header("if-match")) {
                 (Some(any), _) => {
@@ -260,6 +302,7 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
             Response::builder().header("etag", e_tag).body(Full::default()).unwrap()
         }
         (&Method::GET | &Method::HEAD, key) => {
+            objects.count(if parts.method == Method::HEAD { "head" } else { "get" });
             let Some(stored) = objects.objects.get(key) else {
                 return status(StatusCode::NOT_FOUND);
             };
@@ -300,6 +343,7 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
         // DeleteObjects, which `object_store` deletes with.
         (&Method::POST, "") => {
             assert_eq!(parts.uri.query(), Some("delete"));
+            objects.count("delete-objects");
             let request = std::str::from_utf8(&body).unwrap();
             let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><DeleteResult>");
             for key in request.split("<Key>").skip(1) {
@@ -312,6 +356,7 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
             Response::new(Full::new(Bytes::from(xml)))
         }
         (&Method::DELETE, key) => {
+            objects.count("delete");
             objects.objects.remove(key);
             status(StatusCode::NO_CONTENT)
         }

@@ -3,9 +3,11 @@ id: TASK-395.5
 title: >-
   fxdax-gc sweeps every cell with bounded concurrency, across any number of
   collector processes
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13T08:53:00Z'
+updated_date: '2026-11-13 09:19'
 labels:
   - bucket
   - collector
@@ -37,3 +39,15 @@ With a pass per cell, collecting a bucket is running passes over all its cells: 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Scope of this round (agent @claude, 2026-11-13): AC #1's delimiter listing in Bucket and AC #3; AC #2 (the sweep over cells), #4 and #5 wait on the per-cell pass (TASK-395.1-.4).
+1. Bucket::list_delimited(prefix) -> Listing { prefixes, objects }: one level of keys under a prefix, none below. Required of every bucket (no costlier fallback through a whole listing). Store over object_store's list_with_delimiter (S3, GCS, Azure, files, memory); SimBucket/Direct an op of their own; the test doubles forward it.
+2. Bucket::delete_batch(keys): one request where the store batches (Store: object_store's delete_stream, S3 DeleteObjects of 1000, Azure's of 256), else one delete each, several at once (the default, which test doubles and the simulation keep, each delete a request of its own). bucket::delete_all: batches of DELETE_BATCH (1000), a few at once, each retried whole until it lands. Local (file buckets): its lock taken once a batch, not once an object.
+3. Store counts both (Request::ListDelimited, Request::DeleteBatch; spans bucket.list_delimited, bucket.delete_batch; trace::PREFIXES attribute). S3 test server answers delimiter= with CommonPrefixes and counts its requests by kind.
+4. Collector: moves footers read a hop at a time, every way's next moves at once (MovesMaps::read_listed, from the pass's listing, no listing of its own); compactions many at once (COMPACTIONS_AT_ONCE), all before what goes is worked out, as now; deletes through bucket::delete_all, after the fence check, as now (deletes are unordered already).
+5. Tests: conformance gains delimiter listing and batch deletes (memory, file, simulated, S3 server; RustFS/GCS/Azurite through their ignored runs); faults wrapper fails both; S3 server request counts show a pass's deletes in DeleteObjects batches; served_in_rounds shows moves footers and compactions in one round.
+6. clippy, nextest -p extent_remote, scripts/test.sh; commit; rebase; push to main.
+<!-- SECTION:PLAN:END -->

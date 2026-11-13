@@ -16,6 +16,14 @@
 //! time in microseconds and size. A replaced file's inode can't be the new one's, both existing as
 //! the rename goes; one a later write reuses would need the same size and microsecond as the
 //! version named, the clock not going back.
+//!
+//! Deletes in a stream take the lock once for each [`DELETES_LOCKED`] of them ready at once, and
+//! go several at once under it, as `LocalFileSystem` deletes (TASK-395.5): a collector's batch of
+//! deletes takes it once, not once an object. A delete removes the directories it leaves empty
+//! (`LocalFileSystem`'s automatic cleanup), which a listing by delimiter would list as prefixes
+//! of nothing, as no other store does, and which piled up before, a directory a branch, for
+//! good. A create racing it is unharmed: `LocalFileSystem` makes its directory again where it
+//! finds none, and a directory holding its staged file is not empty.
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -35,6 +43,9 @@ use std::sync::Arc;
 /// leave it out.
 pub const LOCK: &str = ".fxdax-lock";
 
+/// The most deletes of a stream one holding of the lock is for.
+pub const DELETES_LOCKED: usize = crate::bucket::DELETE_BATCH;
+
 /// A bucket's objects as files under a directory. See the module docs.
 #[derive(Clone)]
 pub struct Local {
@@ -47,7 +58,8 @@ impl Local {
     pub fn new(dir: &std::path::Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let files = LocalFileSystem::new_with_prefix(dir).map_err(std::io::Error::other)?;
-        Ok(Self { files: Arc::new(files.with_fsync(true)), dir: Arc::from(dir) })
+        let files = files.with_fsync(true).with_automatic_cleanup(true);
+        Ok(Self { files: Arc::new(files), dir: Arc::from(dir) })
     }
 
     /// The bucket's lock, held until what it returns is dropped: taken on a thread that may block,
@@ -160,14 +172,27 @@ impl ObjectStore for Local {
     ) -> BoxStream<'static, Result<Path>> {
         let bucket = self.clone();
         locations
-            .and_then(move |location| {
+            .ready_chunks(DELETES_LOCKED)
+            .then(move |locations| {
                 let bucket = bucket.clone();
                 async move {
-                    let _locked = bucket.lock().await?;
-                    bucket.files.delete(&location).await?;
-                    Ok(location)
+                    let deleted: Vec<Result<Path>> = match bucket.lock().await {
+                        Ok(_locked) => {
+                            let locations = futures::stream::iter(locations).boxed();
+                            bucket.files.delete_stream(locations).collect().await
+                        }
+                        // Each delete fails as the lock did.
+                        Err(failed) => (locations.into_iter())
+                            .map(|_| {
+                                let source = failed.to_string().into();
+                                Err(object_store::Error::Generic { store: "Local", source })
+                            })
+                            .collect(),
+                    };
+                    futures::stream::iter(deleted)
                 }
             })
+            .flatten()
             .boxed()
     }
 
@@ -260,6 +285,9 @@ mod tests {
             let listed: Vec<String> =
                 bucket.list("").await.unwrap().into_iter().map(|meta| meta.key).collect();
             assert_eq!(listed, ["a"]);
+            let level = bucket.list_delimited("").await.unwrap();
+            let listed: Vec<String> = level.objects.into_iter().map(|meta| meta.key).collect();
+            assert_eq!((level.prefixes, listed), (vec![], vec!["a".to_owned()]));
             assert_eq!(bucket.get("a").await.unwrap().bytes, [2]);
         });
     }

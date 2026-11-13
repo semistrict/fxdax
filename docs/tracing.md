@@ -69,7 +69,7 @@ request also has `fxdax.errno`.
 | `cache.relief` | an eviction pass freeing memory for an arena under pressure | root | `arena`, `bytes` evicted, `extents` evicted |
 | `upload.segment` | uploading a segment, its large extents first | root, on the uploader | `branch`, `segment`, `extents`, `bytes` |
 | `upload.checkpoint` | writing a branch checkpoint | root, on the uploader | `branch`, `segment`, `extents` |
-| `bucket.get`, `bucket.get_range`, `bucket.head`, `bucket.list`, `bucket.create`, `bucket.update`, `bucket.overwrite`, `bucket.delete` | each object-store request | the upload, checkpoint, page-in or open that made it | `object_key`, `bytes`, `objects` (list) |
+| `bucket.get`, `bucket.get_range`, `bucket.head`, `bucket.list`, `bucket.list_delimited`, `bucket.create`, `bucket.update`, `bucket.overwrite`, `bucket.delete`, `bucket.delete_batch` | each object-store request (a batch of deletes: one request where the store deletes in batches, as S3's DeleteObjects) | the upload, checkpoint, page-in, open or collector pass that made it | `object_key`, `bytes`, `objects` (listings, batches of deletes), `prefixes` (listings by delimiter) |
 
 Uploads run behind commits, so an upload is a trace of its own rather than a child of the commit
 it carries. A durable commit's `commit.upload_wait` span shows how long the commit waited for

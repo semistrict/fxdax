@@ -183,6 +183,14 @@ impl extent_remote::Bucket for Cut {
         self.request(self.bucket.list(prefix))
     }
 
+    fn list_delimited(
+        &self,
+        prefix: &str,
+    ) -> impl Future<Output = Result<extent_remote::bucket::Listing, BucketError>> + Send
+    {
+        self.request(self.bucket.list_delimited(prefix))
+    }
+
     fn put(
         &self,
         key: &str,

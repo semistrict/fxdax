@@ -61,6 +61,19 @@ impl MovesMaps {
         let (unread, unmoved): (Vec<String>, Vec<String>) =
             unread.into_iter().partition(|key| moved.contains(key));
         self.maps.extend(unmoved.into_iter().map(|key| (key, None)));
+        self.read_listed(bucket, unread).await
+    }
+
+    /// fxdax: reads the moves of the objects at `keys` not read yet, which a listing found moves
+    /// of, [`READ_AT_ONCE`] at once (TASK-395.5): the collector's, which listed every object
+    /// before. Moves gone since read as none, as they would one at a time.
+    pub(crate) async fn read_listed(
+        &mut self,
+        bucket: &impl Bucket,
+        keys: impl IntoIterator<Item = String>,
+    ) -> Result<(), Error> {
+        let unread: BTreeSet<String> =
+            keys.into_iter().filter(|key| !self.maps.contains_key(key)).collect();
         let read: Vec<_> = futures::stream::iter(unread)
             .map(|key| async move {
                 let moves: Option<Moves> = object::footer(bucket, &layout::moves(&key)).await?;
@@ -71,6 +84,15 @@ impl MovesMaps {
             .await?;
         self.maps.extend(read);
         Ok(())
+    }
+
+    /// fxdax: whether the collector moved `extent` from the object at `key`, and where to, of
+    /// moves read before ([`MovesMaps::read_listed`]).
+    pub(crate) fn moved_read(&self, extent: ExtentId, key: &str) -> Moved {
+        match self.maps.get(key).unwrap_or_else(|| panic!("{key}: its moves not read")) {
+            None => Moved::No,
+            Some(map) => map.get(&extent).cloned().map_or(Moved::Dropped, Moved::To),
+        }
     }
 
     /// Whether the collector moved `extent` from the object at `key`, and where to.
@@ -85,10 +107,7 @@ impl MovesMaps {
             let map = moves.map(|moves| moves.extents.into_iter().collect());
             self.maps.insert(key.to_owned(), map);
         }
-        Ok(match &self.maps[key] {
-            None => Moved::No,
-            Some(map) => map.get(&extent).cloned().map_or(Moved::Dropped, Moved::To),
-        })
+        Ok(self.moved_read(extent, key))
     }
 
     /// Where `extent` at `location` is now, following its moves as far as they go.

@@ -48,8 +48,10 @@ pub const STORE: &str = "fxdax.store";
 pub const ARENA: &str = "fxdax.arena";
 /// The attribute of an object's key in the bucket, without the bucket's prefix.
 pub const OBJECT_KEY: &str = "fxdax.object_key";
-/// The attribute of the objects a bucket's listing found.
+/// The attribute of the objects a bucket's listing found, or a batch of deletes deleted.
 pub const OBJECTS: &str = "fxdax.objects";
+/// The attribute of the prefixes a bucket's listing by delimiter found (TASK-395.5).
+pub const PREFIXES: &str = "fxdax.prefixes";
 /// The attribute of a segment's sequence number in its branch.
 pub const SEGMENT: &str = "fxdax.segment";
 

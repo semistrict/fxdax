@@ -347,6 +347,17 @@ mod tests {
         let listed: Vec<_> = store.list(None).collect().await;
         assert_eq!(listed.len(), 1);
         assert!(listed[0].is_err());
+        // fxdax: listings by delimiter and batches of deletes fail as every request (TASK-395.5).
+        let unavailable =
+            "Generic Faulty error: HTTP status server error (503 Service Unavailable)";
+        let level = store.list_with_delimiter(None).await.unwrap_err();
+        assert_eq!(level.to_string(), unavailable);
+        let deleting = futures::stream::iter([Ok(path.clone()), Ok(Path::from("b"))]).boxed();
+        let deleted: Vec<String> = (store.delete_stream(deleting).collect::<Vec<_>>().await)
+            .into_iter()
+            .map(|deleted| deleted.unwrap_err().to_string())
+            .collect();
+        assert_eq!(deleted, [unavailable]);
 
         std::fs::remove_file(&file).unwrap();
         tokio::time::sleep(READ_EVERY).await;
@@ -355,7 +366,15 @@ mod tests {
         let listed: Vec<_> = store.list(None).collect().await;
         assert_eq!(
             listed.into_iter().map(|meta| meta.unwrap().location).collect::<Vec<_>>(),
-            [path]
+            std::slice::from_ref(&path)
         );
+        let level = store.list_with_delimiter(None).await.unwrap();
+        let objects: Vec<Path> = level.objects.into_iter().map(|meta| meta.location).collect();
+        assert_eq!((level.common_prefixes, objects), (vec![], vec![path.clone()]));
+        let deleting = futures::stream::iter([Ok(path.clone())]).boxed();
+        let deleted: Vec<Path> =
+            store.delete_stream(deleting).map(|deleted| deleted.unwrap()).collect().await;
+        assert_eq!(deleted, [path]);
+        assert_eq!(store.list(None).collect::<Vec<_>>().await.len(), 0);
     }
 }

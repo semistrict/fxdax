@@ -1532,6 +1532,14 @@ mod shuttle_tests {
             self.direct.list(prefix)
         }
 
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<extent_remote::bucket::Listing, BucketError>> + Send
+        {
+            self.direct.list_delimited(prefix)
+        }
+
         fn put(
             &self,
             key: &str,

@@ -2,6 +2,13 @@
 
 # Decisions
 
+## Listings by delimiter and batch deletes in `Bucket`; a pass's moves, compactions and deletes at once (TASK-395.5, 2026-11-13)
+Decided without you:
+- **Every bucket lists by delimiter** (`Bucket::list_delimited`): a required method, with no default that lists every object under the prefix and folds them, as that would be a costlier path taken silently. S3, GCS, Azure, files and memory go through `object_store`'s `list_with_delimiter`; the simulation has an op of its own. *Undo:* drop the method; nothing but tests calls it until the sweep (AC #2) does.
+- **Batch deletes** (`Bucket::delete_batch`, `bucket::delete_all`): batches of 1,000 (S3's limit), 4 at once, each retried whole until it lands, deleting what is gone being no error. `Store` uses `object_store`'s `delete_stream`: one DeleteObjects per batch on S3, 4 bulk requests on Azure, 10 single deletes at a time on GCS and files. The trait's default sends one delete per object, 32 at once; the simulation and test doubles keep it, so every delete stays a request of its own that they can reorder or fail. *Instead:* per-key results, which `object_store` can't report reliably (a failed chunk gives one error with no paths). *Undo:* the collector back to `bucket::delete` per object.
+- **File buckets remove the directories a delete leaves empty** (`LocalFileSystem`'s automatic cleanup). Without it, a delimiter listing reported deleted objects' directories as prefixes, and file buckets kept one empty directory per deleted branch forever. Creates racing it are safe: `LocalFileSystem` recreates the directory when it's gone, and never removes a directory holding a staged file. *Undo:* `with_automatic_cleanup(false)` in `Local::new`, then file buckets list prefixes of nothing.
+- **A pass compacts 8 objects at once** (`COMPACTIONS_AT_ONCE`): each object is read whole, so memory is up to 8 objects plus their moves. Moves footers are read a hop at a time, every way's next hop at once (32 at once), taken from the pass's own listing with no extra listing. The order stays as it was: all compactions end before the pass works out what goes, and deletes start only after the fence check.
+
 ## The collector, per cell and conservative; shared points by a flag (TASK-395, 2026-11-13)
 
 Agreed with you: the collector may reclaim late, and cross-tenant sharing is needed only for base images and snapshots. Decided from that without you:

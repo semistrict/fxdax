@@ -1876,6 +1876,8 @@ mod tests {
                 ("update", 0),
                 ("overwrite", 0),
                 ("delete", 0),
+                ("list-delimited", 0),
+                ("delete-batch", 0),
             ]
         );
     }
@@ -1933,6 +1935,8 @@ mod tests {
                     ("update", 1),
                     ("overwrite", 0),
                     ("delete", 0),
+                    ("list-delimited", 0),
+                    ("delete-batch", 0),
                 ],
                 tails + 2 * record + 2 * lease + cell
             )

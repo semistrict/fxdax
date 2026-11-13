@@ -43,7 +43,8 @@
 //! read after the checkpoint was listed: a writer taking the branch after that recovers from that
 //! checkpoint or a later one, and the writer that made it took its moves first (TASK-175).
 //!
-//! A pass reads records, recovers branches and deletes objects many at once; what forks inherited
+//! A pass reads records, recovers branches, reads moves and compacts objects many at once, and
+//! deletes objects in batches where the store deletes so (TASK-395.5); what forks inherited
 //! together, their parent's state where they were forked, it reads once and takes once for them
 //! all; and a collector reads a record again only once it changed ([`Collector`], TASK-92.7).
 //!
@@ -81,8 +82,9 @@ const RECOVERIES_AT_ONCE: usize = 16;
 /// of a base, recovered one after another, which start from the base's.
 const CHECKPOINTS_KEPT: usize = 4;
 
-/// How many objects a pass deletes at once.
-const DELETES_AT_ONCE: usize = 32;
+/// How many objects a pass compacts at once, each read whole: what bounds the memory compacting
+/// takes, as many objects' bytes, and their moves'.
+const COMPACTIONS_AT_ONCE: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
@@ -164,9 +166,11 @@ impl Collector {
         if fenced(bucket, epoch).await? {
             return Ok(report);
         }
-        // Many at once, in any order: none of it is what a live branch needs, whatever else goes.
-        let deletes = futures::stream::iter(&doomed).map(|meta| bucket::delete(bucket, &meta.key));
-        report.deleted += deletes.buffer_unordered(DELETES_AT_ONCE).count().await;
+        // Many at once, in batches where the store deletes so, in any order: none of it is what a
+        // live branch needs, whatever else goes (TASK-395.5).
+        let doomed: Vec<&str> = doomed.iter().map(|meta| meta.key.as_str()).collect();
+        bucket::delete_all(bucket, &doomed).await;
+        report.deleted += doomed.len();
         Ok(report)
     }
 
@@ -777,6 +781,34 @@ async fn trailer_len(bucket: &impl Bucket, meta: &Meta) -> Result<Option<u64>, E
     Ok(Some(frame.data_len))
 }
 
+/// Compacts the object at `key`, of which `extents` are live: copies them to its moves, unless it
+/// is gone. Whether it did.
+async fn compact_object(
+    bucket: &impl Bucket,
+    key: &str,
+    extents: &BTreeMap<ExtentId, Location>,
+) -> Result<bool, Error> {
+    let moves = layout::moves(key);
+    let Some(object) = bucket::get(bucket, key).await else { return Ok(false) };
+    // Its data, checked: compacting copies none that is corrupt under new CRCs.
+    let object_data = layout::data(&object.bytes)?;
+    let mut data = Vec::new();
+    let mut entries = Vec::new();
+    for (&extent, location) in extents {
+        let range = location.offset as usize..(location.offset + location.len) as usize;
+        let bytes = object_data
+            .get(range)
+            .ok_or_else(|| Error::Corrupt(format!("{extent:?} past the end of {key}")))?;
+        let to = Location { key: moves.clone(), offset: data.len() as u64, len: location.len };
+        entries.push((extent, to));
+        data.extend_from_slice(bytes);
+    }
+    // Another pass's moves of it, if there are some, stand.
+    let bytes = layout::with_footer(&data, &Moves { extents: entries });
+    bucket::create(bucket, &moves, bytes).await;
+    Ok(true)
+}
+
 /// What a pass found: every object listed, and what the live branches need of them.
 struct Pass {
     objects: BTreeMap<String, Meta>,
@@ -814,29 +846,32 @@ impl Pass {
                 key = from;
             }
         }
+        // Each place once, however many branches name it, followed along its moves a hop at a
+        // time: the moves the ways reach at a hop read at once, as the listing says which there
+        // are (TASK-395.5).
         let mut maps = MovesMaps::default();
-        // Each place once, however many branches name it.
-        for (&extent, locations) in &located {
-            for location in locations {
-                let mut location = location.clone();
-                loop {
-                    if objects.contains_key(&location.key) {
-                        named
-                            .entry(location.key.clone())
-                            .or_default()
-                            .insert(extent, location.clone());
-                    }
-                    let moves = layout::moves(&location.key);
-                    if !objects.contains_key(&moves) {
-                        break;
-                    }
+        let mut ways: Vec<(ExtentId, Location)> = (located.iter())
+            .flat_map(|(&extent, locations)| locations.iter().map(move |at| (extent, at.clone())))
+            .collect();
+        while !ways.is_empty() {
+            let mut onward = Vec::new();
+            for (extent, location) in ways {
+                if objects.contains_key(&location.key) {
+                    named.entry(location.key.clone()).or_default().insert(extent, location.clone());
+                }
+                let moves = layout::moves(&location.key);
+                if objects.contains_key(&moves) {
                     hops.insert(moves);
-                    match maps.moved(bucket, extent, &location.key).await? {
-                        Moved::To(to) => location = to,
-                        Moved::No | Moved::Dropped => break,
-                    }
+                    onward.push((extent, location));
                 }
             }
+            maps.read_listed(bucket, onward.iter().map(|(_, at)| at.key.clone())).await?;
+            ways = (onward.into_iter())
+                .filter_map(|(extent, location)| match maps.moved_read(extent, &location.key) {
+                    Moved::To(to) => Some((extent, to)),
+                    Moved::No | Moved::Dropped => None,
+                })
+                .collect();
         }
         Ok(Self { objects, records, branches, touched, named, hops })
     }
@@ -898,6 +933,11 @@ impl Pass {
     }
 
     /// Compacts the objects mostly freed: copies the live extents of each to its moves.
+    /// [`COMPACTIONS_AT_ONCE`] at once, in any order (TASK-395.5): each writes the moves of an
+    /// object of its own, create-only, which no other compaction of the pass reads, as an object
+    /// is compacted only where no moves of it were listed, and moves only where they were, never
+    /// both of one way. They all end before the pass works out what goes, as one at a time: what
+    /// goes is of the listing before, which none of their moves is in.
     async fn compact(
         &self,
         bucket: &impl Bucket,
@@ -905,27 +945,13 @@ impl Pass {
         lengths: &mut Lengths,
         report: &mut Report,
     ) -> Result<(), Error> {
-        for (meta, extents) in self.compactable(bucket, options, lengths).await? {
-            let (key, moves) = (&meta.key, layout::moves(&meta.key));
-            let Some(object) = bucket::get(bucket, key).await else { continue };
-            // Its data, checked: compacting copies none that is corrupt under new CRCs.
-            let object_data = layout::data(&object.bytes)?;
-            let mut data = Vec::new();
-            let mut entries = Vec::new();
-            for (&extent, location) in extents {
-                let range = location.offset as usize..(location.offset + location.len) as usize;
-                let bytes = object_data
-                    .get(range)
-                    .ok_or_else(|| Error::Corrupt(format!("{extent:?} past the end of {key}")))?;
-                let to =
-                    Location { key: moves.clone(), offset: data.len() as u64, len: location.len };
-                entries.push((extent, to));
-                data.extend_from_slice(bytes);
-            }
-            // Another pass's moves of it, if there are some, stand.
-            let bytes = layout::with_footer(&data, &Moves { extents: entries });
-            bucket::create(bucket, &moves, bytes).await;
-            report.compacted += 1;
+        let compactable = self.compactable(bucket, options, lengths).await?;
+        let compactions = futures::stream::iter(compactable)
+            .map(|(meta, extents)| compact_object(bucket, &meta.key, extents))
+            .buffer_unordered(COMPACTIONS_AT_ONCE);
+        let mut compactions = std::pin::pin!(compactions);
+        while let Some(compacted) = compactions.next().await {
+            report.compacted += usize::from(compacted?);
         }
         Ok(())
     }
@@ -2208,6 +2234,14 @@ mod tests {
             }
         }
 
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
+        {
+            self.bucket.list_delimited(prefix)
+        }
+
         fn put(
             &self,
             key: &str,
@@ -2308,6 +2342,14 @@ mod tests {
                 then();
             }
             self.bucket.list(prefix)
+        }
+
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
+        {
+            self.bucket.list_delimited(prefix)
         }
 
         fn put(
@@ -2449,6 +2491,97 @@ mod tests {
         let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 3));
         report.unwrap();
         assert_eq!(asked(&rounds), [vec![1], vec![1], vec![2]]);
+    }
+
+    /// TASK-395.5: how many segments [`mostly_freed`] makes.
+    const SEGMENTS: u64 = 5;
+
+    /// Branch 1, [`SEGMENTS`] segments of it each holding a small extent it keeps and a large one
+    /// it freed after, and a checkpoint past them: what a pass compacts, a moves each, and the
+    /// next, the moves aged, deletes. The segments' keys.
+    async fn mostly_freed<B: Bucket>(bucket: Arc<B>) -> Vec<String> {
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
+        let (mut segments, mut frees) = (Vec::new(), Vec::new());
+        for n in 0..SEGMENTS {
+            let first = writer.chain().next_sequence();
+            let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let large_bytes: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+            let extents = vec![(small, b"small".to_vec()), (large, large_bytes)];
+            commit(&writer, Commit { tag: n + 1, extents, ..Commit::default() }).await;
+            segments.push(writer.location(small).unwrap().key);
+            frees.push(large);
+        }
+        commit(&writer, Commit { tag: SEGMENTS + 1, frees, ..Commit::default() }).await;
+        writer.checkpoint().await.unwrap();
+        segments
+    }
+
+    /// TASK-395.5: a pass compacts the objects mostly freed at once, reading them whole in one
+    /// round, and the next reads their moves' footers in one round and deletes them in one: no
+    /// request waits on another of its kind. Before, each compaction and each moves' footer was a
+    /// round of its own.
+    #[test]
+    fn passes_compact_and_read_moves_at_once() {
+        let bucket = SimBucket::new();
+        let (segments, _) = bucket.served(mostly_freed(bucket.clone()));
+        let mut collector = Collector::new(Options { compact_below: 0.5, grace: 0 });
+        // How many of the requests `asking` each round asked, of the rounds asking any.
+        let counted = |rounds: &[Vec<String>], asking: &dyn Fn(&str) -> bool| -> Vec<u64> {
+            let counts = rounds.iter().map(|round| round.iter().filter(|r| asking(r)).count());
+            counts.filter(|&count| count > 0).map(|count| count as u64).collect()
+        };
+        let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 1));
+        assert_eq!(report.unwrap().compacted, SEGMENTS as usize);
+        let whole = |asked: &str| segments.iter().any(|segment| asked == format!("get {segment}"));
+        assert_eq!(counted(&rounds, &whole), [SEGMENTS]);
+
+        let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 2));
+        assert_eq!(report.unwrap(), Report { deleted: SEGMENTS as usize, compacted: 0 });
+        // A footer is read by its range, once its trailer, the object's end, says where it is.
+        let footers = |asked: &str| {
+            let moves = |segment: &String| format!("get {} ", layout::moves(segment));
+            let of_moves = segments.iter().any(|segment| asked.starts_with(&moves(segment)));
+            of_moves && !asked.contains(" last ")
+        };
+        assert_eq!(counted(&rounds, &footers), [SEGMENTS]);
+        assert_eq!(counted(&rounds, &|asked| asked.starts_with("delete ")), [SEGMENTS]);
+        let left = bucket.keys();
+        assert_eq!(segments.iter().filter(|segment| left.contains(segment)).count(), 0);
+    }
+
+    /// TASK-395.5: over S3, a pass deletes what goes in one DeleteObjects, no DELETE: the S3
+    /// server and the store count one batch, of the segments [`mostly_freed`] makes, which the
+    /// pass before compacted.
+    #[test]
+    fn passes_delete_in_batches_over_s3() {
+        use crate::s3_server::{BUCKET, S3Server};
+        use crate::store::Request;
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let server = S3Server::start(None);
+            let url = format!("s3://{BUCKET}/collector");
+            let client = &crate::client::Client::DEFAULT;
+            let (objects, prefix) =
+                crate::store::object_store_with(&url, server.options(), client).unwrap();
+            let bucket = Arc::new(Store::new(objects, &prefix));
+            let segments = mostly_freed(bucket.clone()).await;
+            let mut collector = Collector::new(Options { compact_below: 0.5, grace: 0 });
+            let report = collector.collect(&*bucket, 1).await.unwrap();
+            assert_eq!(report.compacted, SEGMENTS as usize);
+
+            let (served, stats) = (server.requests(), bucket.stats());
+            let report = collector.collect(&*bucket, 2).await.unwrap();
+            assert_eq!(report, Report { deleted: SEGMENTS as usize, compacted: 0 });
+            let (served_after, stats_after) = (server.requests(), bucket.stats());
+            let served =
+                |kind| served_after.get(kind).unwrap_or(&0) - served.get(kind).unwrap_or(&0);
+            let counted = |request| stats_after.requests(request) - stats.requests(request);
+            assert_eq!((served("delete-objects"), served("delete")), (1, 0));
+            assert_eq!((counted(Request::DeleteBatch), counted(Request::Delete)), (1, 0));
+            let left = keys(&*bucket).await;
+            assert_eq!(segments.iter().filter(|segment| left.contains(segment)).count(), 0);
+        });
     }
 
     /// TASK-92.7: what forks inherited together, taken once for them all, goes only once none of
@@ -2700,6 +2833,13 @@ mod tests {
             self.bucket.list(prefix)
         }
 
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<crate::bucket::Listing, BucketError>> + Send {
+            self.bucket.list_delimited(prefix)
+        }
+
         fn put(
             &self,
             key: &str,
@@ -2753,6 +2893,14 @@ mod tests {
                 meanwhile();
             }
             self.bucket.list(prefix)
+        }
+
+        fn list_delimited(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
+        {
+            self.bucket.list_delimited(prefix)
         }
 
         fn put(

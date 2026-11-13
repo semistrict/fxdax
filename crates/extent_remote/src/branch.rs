@@ -902,6 +902,14 @@ mod tests {
                 self.bucket.list(prefix)
             }
 
+            fn list_delimited(
+                &self,
+                prefix: &str,
+            ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
+            {
+                self.bucket.list_delimited(prefix)
+            }
+
             fn put(
                 &self,
                 key: &str,

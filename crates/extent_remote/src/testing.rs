@@ -9,7 +9,7 @@
 //! reader does ([`MovesMaps`]). extent_store's simulation of doc-7's protocol runs on it, as this
 //! crate's own tests do.
 
-use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
+use crate::bucket::{Bucket, ByteRange, Error, Listing, Meta, Object, PutMode, Version};
 use crate::layout::{self, Branch, Kind};
 pub use crate::moves::{Moved, MovesMaps};
 use futures::channel::oneshot;
@@ -23,6 +23,7 @@ enum Op {
     GetRange(String, ByteRange),
     Head(String),
     List(String),
+    ListDelimited(String),
     Put(String, Vec<u8>, PutMode),
     Delete(String),
 }
@@ -32,6 +33,7 @@ enum Reply {
     Bytes(Vec<u8>),
     Meta(Meta),
     List(Vec<Meta>),
+    Listing(Listing),
     Version(Version),
     Done,
 }
@@ -208,6 +210,7 @@ impl Op {
             Op::Get(key) => format!("get {key}"),
             Op::Head(key) => format!("head {key}"),
             Op::List(prefix) => format!("list {prefix}"),
+            Op::ListDelimited(prefix) => format!("list-delimited {prefix}"),
             Op::Put(key, ..) => format!("put {key}"),
             Op::Delete(key) => format!("delete {key}"),
         }
@@ -283,6 +286,23 @@ impl Inner {
                     .map(|(key, _)| self.meta(key).unwrap())
                     .collect(),
             )),
+            Op::ListDelimited(prefix) => {
+                assert!(prefix.is_empty() || prefix.ends_with('/'), "a prefix of keys: {prefix}");
+                let mut listing = Listing::default();
+                let under = self.objects.range(prefix.clone()..);
+                for (key, _) in under.take_while(|(key, _)| key.starts_with(&prefix)) {
+                    match key[prefix.len()..].find('/') {
+                        Some(slash) => {
+                            let common = &key[..prefix.len() + slash + 1];
+                            if listing.prefixes.last().is_none_or(|last| last != common) {
+                                listing.prefixes.push(common.to_owned());
+                            }
+                        }
+                        None => listing.objects.push(self.meta(key).unwrap()),
+                    }
+                }
+                Ok(Reply::Listing(listing))
+            }
             Op::Put(key, bytes, mode) => {
                 let existing = self.objects.get(&key).map(|stored| stored.version);
                 match (mode, existing) {
@@ -351,6 +371,10 @@ impl Bucket for SimBucket {
         reply!(self.request(Op::List(prefix.to_owned())), List)
     }
 
+    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
+        reply!(self.request(Op::ListDelimited(prefix.to_owned())), Listing)
+    }
+
     fn put(
         &self,
         key: &str,
@@ -399,6 +423,10 @@ impl Bucket for Direct {
 
     fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
         reply!(std::future::ready(self.apply(Op::List(prefix.to_owned()))), List)
+    }
+
+    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
+        reply!(std::future::ready(self.apply(Op::ListDelimited(prefix.to_owned()))), Listing)
     }
 
     fn put(
