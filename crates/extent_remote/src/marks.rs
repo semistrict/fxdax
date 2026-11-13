@@ -17,9 +17,13 @@
 //! for too (`request_id`, `fxdax::request::current`).
 //!
 //! A read asks one load first, whether any marks held name a key, and only then one lookup in the
-//! set of its cell's: a bucket no mark-only pass marked costs a load a read. A cell's marks are
-//! read again every [`REFRESH`], alongside a read of the cell's (`store::Store`), never one a read;
-//! a cell no read reaches costs nothing.
+//! set of its cell's: a bucket no mark-only pass marked costs a load a read. Whether a mark-only
+//! pass marks the bucket at all, which it says by `gc/marking` ([`layout::MARKING`], removed by an
+//! operator with the marks), is read every [`REFRESH`] alongside a read (`store::Store`): a HEAD a
+//! minute a store. Only while it does are the marks of each cell read watched, read again every
+//! [`REFRESH`] alongside a read of the cell's, never one a read, and a cell not read for two of
+//! them forgotten (TASK-395.4's review: at a million VMs, a listing a minute for every cell each
+//! host reads was thousands a second).
 //!
 //! Listings are not warned of. A listing names what its caller passes over as well as what it goes
 //! by: a branch's older checkpoints, which recovery lists past to its newest; the segments a
@@ -34,7 +38,7 @@ use crate::layout::{self, Cell, Marks};
 use crate::store::Request;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// How often a bucket's readers read a cell's newest marks again. The collector marks once a pass,
@@ -49,8 +53,15 @@ pub const REFRESH: Duration = Duration::from_secs(60);
 pub(crate) struct Watch {
     /// Whether the marks held, of any cell, name any key: what each read asks first.
     any: AtomicBool,
+    /// How many cells' marks held name a key.
+    marked: AtomicUsize,
+    /// Whether a mark-only pass marks the bucket ([`layout::MARKING`]), as last read: the cells'
+    /// marks are watched only then.
+    marking: AtomicBool,
+    /// When, in milliseconds after `started`, whether it does is next read: at once, at first.
+    marking_due: AtomicU64,
     cells: RwLock<HashMap<Cell, Held>>,
-    /// What a cell's [`Held::due`] counts from.
+    /// What the times kept count from.
     started: Instant,
 }
 
@@ -63,28 +74,88 @@ struct Held {
     keys: HashSet<Box<str>>,
     /// When, in milliseconds after the watch started, they are next read.
     due: u64,
+    /// When the cell was last read, likewise: one not read for two [`REFRESH`]es is forgotten.
+    read: AtomicU64,
 }
 
 impl Watch {
     pub(crate) fn new() -> Self {
-        Self { any: AtomicBool::new(false), cells: RwLock::default(), started: Instant::now() }
+        Self {
+            any: AtomicBool::new(false),
+            marked: AtomicUsize::new(0),
+            marking: AtomicBool::new(false),
+            marking_due: AtomicU64::new(0),
+            cells: RwLock::default(),
+            started: Instant::now(),
+        }
+    }
+
+    /// Milliseconds since the watch started.
+    fn now(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Whether whether a mark-only pass marks the bucket is due to be read again, which this call
+    /// then takes on: one caller a [`REFRESH`], at once at first.
+    pub(crate) fn take_marking_refresh(&self) -> bool {
+        let now = self.now();
+        let due = self.marking_due.load(Ordering::Relaxed);
+        let next = now.saturating_add(REFRESH.as_millis() as u64);
+        now >= due
+            && (self.marking_due)
+                .compare_exchange(due, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
+    /// Whether a mark-only pass marks the bucket, as last read.
+    pub(crate) fn marking(&self) -> bool {
+        self.marking.load(Ordering::Relaxed)
+    }
+
+    /// Holds whether a mark-only pass marks the bucket, as read now: if not, no cell's marks, and
+    /// none watched; if so, it forgets the cells not read for two [`REFRESH`]es.
+    pub(crate) fn hold_marking(&self, marking: bool) {
+        self.marking.store(marking, Ordering::Relaxed);
+        let mut cells = self.cells.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let stale = self.now().saturating_sub(2 * REFRESH.as_millis() as u64);
+        cells.retain(|_, held| marking && held.read.load(Ordering::Relaxed) >= stale);
+        let marked = cells.values().filter(|held| !held.keys.is_empty()).count();
+        self.marked.store(marked, Ordering::Relaxed);
+        self.any.store(marked > 0, Ordering::Relaxed);
     }
 
     /// Whether `cell`'s marks are due to be read again, which this call then takes on: one caller
-    /// a [`REFRESH`]; at once, for a cell not read before.
+    /// a [`REFRESH`]; at once, for a cell not read before. Never while no mark-only pass marks the
+    /// bucket ([`Watch::marking`]), which costs the read the one load.
     pub(crate) fn take_refresh(&self, cell: Cell) -> bool {
-        let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let next = now.saturating_add(REFRESH.as_millis() as u64);
-        let due = |cells: &HashMap<Cell, Held>| cells.get(&cell).is_none_or(|held| now >= held.due);
-        if !due(&self.cells.read().unwrap_or_else(|poisoned| poisoned.into_inner())) {
+        if !self.marking() {
             return false;
+        }
+        let now = self.now();
+        let next = now.saturating_add(REFRESH.as_millis() as u64);
+        {
+            let cells = self.cells.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(held) = cells.get(&cell) {
+                held.read.store(now, Ordering::Relaxed);
+                if now < held.due {
+                    return false;
+                }
+            }
         }
         let mut cells = self.cells.write().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !due(&cells) {
+        let held = cells.entry(cell).or_default();
+        held.read.store(now, Ordering::Relaxed);
+        if held.due > now {
             return false;
         }
-        cells.entry(cell).or_default().due = next;
+        held.due = next;
         true
+    }
+
+    /// How many cells' marks it watches.
+    #[cfg(test)]
+    pub(crate) fn cells_watched(&self) -> usize {
+        self.cells.read().unwrap_or_else(|poisoned| poisoned.into_inner()).len()
     }
 
     /// Whether the marks held of `cell` are of `newest`, the newest marks object listed of it: at
@@ -101,18 +172,25 @@ impl Watch {
     pub(crate) fn hold(&self, cell: Cell, marks: Option<(&Meta, Marks)>) {
         let mut cells = self.cells.write().unwrap_or_else(|poisoned| poisoned.into_inner());
         let held = cells.entry(cell).or_default();
-        let due = held.due;
-        *held = match marks {
-            None => Held { due, ..Held::default() },
-            Some((of, marks)) => Held {
-                object: Some((of.key.clone(), of.version.clone())),
-                epoch: marks.epoch,
-                keys: marks.marked.into_iter().map(|marked| marked.key.into()).collect(),
-                due,
-            },
+        let had = !held.keys.is_empty();
+        match marks {
+            None => {
+                held.object = None;
+                held.epoch = 0;
+                held.keys = HashSet::new();
+            }
+            Some((of, marks)) => {
+                held.object = Some((of.key.clone(), of.version.clone()));
+                held.epoch = marks.epoch;
+                held.keys = marks.marked.into_iter().map(|marked| marked.key.into()).collect();
+            }
+        }
+        let marked = match (had, !held.keys.is_empty()) {
+            (false, true) => self.marked.fetch_add(1, Ordering::Relaxed) + 1,
+            (true, false) => self.marked.fetch_sub(1, Ordering::Relaxed) - 1,
+            _ => self.marked.load(Ordering::Relaxed),
         };
-        let any = cells.values().any(|held| !held.keys.is_empty());
-        self.any.store(any, Ordering::Relaxed);
+        self.any.store(marked > 0, Ordering::Relaxed);
     }
 
     /// Warns if `key`, which a request of kind `request` reads, is marked.
@@ -227,13 +305,42 @@ mod tests {
         Meta { key: key.to_owned(), version, size: 3, modified: 0 }
     }
 
-    /// A cell's marks are read at once, then once a [`REFRESH`], by one caller; another cell's apart.
+    /// A cell's marks are read at once, then once a [`REFRESH`], by one caller; another cell's apart;
+    /// and none while no mark-only pass marks the bucket, which is read at once, then once a
+    /// [`REFRESH`] (TASK-395.4's review).
     #[test]
-    fn refreshes_are_taken_once_an_interval_a_cell() {
+    fn refreshes_are_taken_once_an_interval_a_cell_while_marking() {
         let watch = Watch::new();
         let other = Cell { tenant: 1, id: 2 };
+        assert_eq!([watch.take_marking_refresh(), watch.take_marking_refresh()], [true, false]);
+        assert!(!watch.take_refresh(TEST_CELL), "not marking");
+        assert!(watch.cells.read().unwrap().is_empty());
+        watch.hold_marking(true);
         assert_eq!([watch.take_refresh(TEST_CELL), watch.take_refresh(TEST_CELL)], [true, false]);
         assert_eq!([watch.take_refresh(other), watch.take_refresh(other)], [true, false]);
+        watch.hold_marking(false);
+        assert!(watch.cells.read().unwrap().is_empty(), "no marking, no cell watched");
+    }
+
+    /// Cells not read for two [`REFRESH`]es are forgotten as whether the bucket is marked is read,
+    /// and what they held with them; those read are kept.
+    #[test]
+    fn cells_not_read_are_forgotten() {
+        // A watch started three REFRESHes ago, so that a cell read at its start is stale.
+        let watch = Watch { started: Instant::now() - 3 * REFRESH, ..Watch::new() };
+        watch.hold_marking(true);
+        assert!(watch.take_refresh(TEST_CELL));
+        let segment = layout::segment(test_branch(1), 2);
+        let of = meta(&layout::marks(TEST_CELL, 7), "a");
+        let marked = vec![Marked::of(&meta(&segment, "s"))];
+        watch.hold(TEST_CELL, Some((&of, Marks { epoch: 7, grace: 0, marked })));
+        assert!(watch.any.load(Ordering::Relaxed));
+        watch.hold_marking(true);
+        assert_eq!(watch.cells.read().unwrap().len(), 1, "read just now");
+        watch.cells.read().unwrap()[&TEST_CELL].read.store(0, Ordering::Relaxed);
+        watch.hold_marking(true);
+        assert!(watch.cells.read().unwrap().is_empty(), "forgotten");
+        assert!(!watch.any.load(Ordering::Relaxed));
     }
 
     /// Marks held name their keys, of their cell's, and those alone; a marks object of another

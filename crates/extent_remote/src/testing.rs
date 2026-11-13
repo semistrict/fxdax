@@ -485,6 +485,34 @@ pub async fn collect_until_quiet(
 /// fxdax: how many sweeps [`collect_until_quiet`] runs at most.
 pub const SWEEPS: u64 = 32;
 
+/// fxdax: what the parent's cell keeps for the fork point `origin` while a reference names it
+/// (TASK-395.4): what recovering the parent's state there reads, the objects holding the extents it
+/// names, and their moves along their ways from there; empty if it is lost. What a test excuses
+/// of a reference left behind (TASK-395.10), and no more.
+pub async fn fork_point_keeps(bucket: &impl Bucket, origin: layout::Origin) -> BTreeSet<String> {
+    let keys: BTreeSet<String> = (crate::bucket::list(bucket, &origin.parent.cell.prefix()).await)
+        .into_iter()
+        .map(|meta| meta.key)
+        .collect();
+    let checkpoints = crate::recovery::Checkpoints::new(bucket, 0);
+    let recovered = crate::recovery::recover_at(&checkpoints, origin.parent, origin.at).await;
+    let Ok((state, mut kept)) = recovered else { return BTreeSet::new() };
+    let mut maps = MovesMaps::default();
+    for (&extent, location) in &state.extents {
+        kept.insert(location.key.clone());
+        let mut at = location.clone();
+        while let Ok(moves) = layout::moves(&at.key)
+            && keys.contains(&moves)
+        {
+            let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
+            kept.insert(moves);
+            kept.insert(to.key.clone());
+            at = to;
+        }
+    }
+    kept
+}
+
 /// fxdax: what the collector should have collected of `bucket` and left (TASK-390), once
 /// passes ran alone, of `compact_below`, past the grace period, the branches' writers all done:
 /// each a line, `garbage left: KEY`, an object no live branch needs, or `left uncompacted: KEY, ...`,
@@ -527,6 +555,8 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         records.iter().filter(|(branch, _)| branch.cell == cell).all(|(_, record)| record.deleted)
             && !references.iter().any(|(_, parent, _, _)| parent.cell == cell)
     };
+    // The moves of a location's object: none of no cell's, which nothing compacts.
+    let moves_of = |key: &str| layout::moves(key).unwrap_or_default();
     let mut maps = MovesMaps::default();
     let mut needed = BTreeSet::new();
     let mut touched = BTreeSet::new();
@@ -598,9 +628,9 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             // where they went: as a point's do for as long as it lives, as it has no writer to
             // record them, and a branch's whose writer has not checkpointed since.
             let mut at: Location = location.clone();
-            while keys.contains(&layout::moves(&at.key)) {
+            while keys.contains(&moves_of(&at.key)) {
                 let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
-                needed.insert(layout::moves(&at.key));
+                needed.insert(moves_of(&at.key));
                 needed.insert(to.key.clone());
                 if point {
                     named.entry(to.key.clone()).or_default().insert(extent, to.len);
@@ -628,9 +658,9 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
                 key = from;
             }
             let mut at: Location = location.clone();
-            while keys.contains(&layout::moves(&at.key)) {
+            while keys.contains(&moves_of(&at.key)) {
                 let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
-                needed.insert(layout::moves(&at.key));
+                needed.insert(moves_of(&at.key));
                 needed.insert(to.key.clone());
                 named.entry(to.key.clone()).or_default().insert(extent, to.len);
                 at = to;
@@ -646,7 +676,8 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             Kind::Cell { .. }
             | Kind::ObjectIds { .. }
             | Kind::GcLease { .. }
-            | Kind::Marks { .. } => true,
+            | Kind::Marks { .. }
+            | Kind::Marking => true,
             Kind::Reference { .. } => !retirable.contains(key),
             _ => false,
         };
@@ -656,7 +687,7 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
     }
     for (key, extents) in named {
         let compactable = matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
-        if !compactable || touched.contains(&key) || keys.contains(&layout::moves(&key)) {
+        if !compactable || touched.contains(&key) || keys.contains(&moves_of(&key)) {
             continue;
         }
         let Some(object) = crate::bucket::get(bucket, &key).await else { continue };

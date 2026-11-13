@@ -397,19 +397,27 @@ impl Hosts {
         let keys = block_on(extent_remote::Bucket::list(&*self.bucket, "")).unwrap();
         // TASK-395.10: a reference whose child never got a record, its host dying between the
         // two, is never retired, and keeps its origin's state at the fork point: space, not data.
+        // Excused, it and exactly what it keeps.
         let recorded = |child| block_on(branch::record(&*self.bucket, child)).unwrap().is_some();
-        let unretired: Vec<crate::Branch> = (keys.iter())
-            .filter_map(|meta| match layout::kind(&meta.key) {
-                Kind::Reference { parent, child, .. } if !recorded(child) => Some(parent),
-                _ => None,
-            })
-            .collect();
+        let mut unretired = std::collections::BTreeSet::new();
+        for meta in &keys {
+            if let Kind::Reference { parent, at, child } = layout::kind(&meta.key)
+                && !recorded(child)
+            {
+                let origin = extent_remote::layout::Origin { parent, at };
+                unretired.extend(block_on(extent_remote::testing::fork_point_keeps(
+                    &*self.bucket,
+                    origin,
+                )));
+            }
+        }
         let leaked: Vec<_> = (keys.into_iter().map(|meta| meta.key))
             .filter(|key| match layout::kind(key) {
                 Kind::Reference { child, .. } => recorded(child),
-                Kind::Segment { branch, .. }
-                | Kind::Checkpoint { branch, .. }
-                | Kind::Extent { branch, .. } => !unretired.contains(&branch),
+                Kind::Segment { .. }
+                | Kind::Checkpoint { .. }
+                | Kind::Extent { .. }
+                | Kind::Moves { .. } => !unretired.contains(key),
                 Kind::Record { branch } => !block_on(branch::record(&*self.bucket, branch))
                     .unwrap()
                     .is_some_and(|record| record.deleted),

@@ -432,16 +432,25 @@ impl World {
         // the fork's read of the child's record and its create of it (`branch::referred`): never
         // retired, the child's record naming no such fork, it keeps the parent's state at the fork
         // point in the parent's cell, space wasted, as doc-7's References says (TASK-395.10).
-        let stray = taken
-            && keys.iter().any(|meta| {
-                matches!(layout::kind(&meta.key), Kind::Reference { child, .. } if child == self.child)
-            });
-        let pointed = |branch| stray && branch == self.branch;
+        // Excused, it and exactly what it keeps.
+        let mut pointed = std::collections::BTreeSet::new();
+        for meta in &keys {
+            if let Kind::Reference { parent, at, child } = layout::kind(&meta.key)
+                && taken
+                && child == self.child
+            {
+                let origin = extent_remote::layout::Origin { parent, at };
+                pointed.extend(block_on(extent_remote::testing::fork_point_keeps(
+                    &*self.bucket,
+                    origin,
+                )));
+            }
+        }
         let leaked: Vec<_> = (keys.into_iter().map(|meta| meta.key))
             .filter(|key| match layout::kind(key) {
                 Kind::Segment { branch, .. }
                 | Kind::Checkpoint { branch, .. }
-                | Kind::Extent { branch, .. } => !kept(branch) && !pointed(branch),
+                | Kind::Extent { branch, .. } => !kept(branch) && !pointed.contains(key),
                 Kind::Lease { branch } => !kept(branch),
                 // fxdax: a reference stays only if its child does, or if the fork's child's ID was
                 // another's, whose record names no fork of it: space wasted, never retired, as
@@ -456,9 +465,11 @@ impl World {
                 // A cell's object stays, as its records do (TASK-364).
                 Kind::GcLease { .. }
                 | Kind::Marks { .. }
+                | Kind::Marking
                 | Kind::Cell { .. }
                 | Kind::ObjectIds { .. } => false,
-                Kind::Moves { .. } | Kind::Unknown => true,
+                Kind::Moves { .. } => !pointed.contains(key),
+                Kind::Unknown => true,
             })
             .collect();
         assert_eq!(leaked, Vec::<String>::new(), "{case}: left in the bucket");

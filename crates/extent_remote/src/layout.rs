@@ -49,6 +49,10 @@ const MOVES: &str = "moves/";
 const REFS: &str = "refs/";
 /// fxdax: the prefix of the blocks of object IDs taken ([`objectid_block`]).
 const OBJECTIDS: &str = "objectid/";
+/// fxdax: there while a mark-only pass marks the bucket, which it writes and an operator removes
+/// with the marks: the one thing readers read to know whether to watch any cell's marks
+/// ([`crate::marks`], TASK-395.4's review). No cell's, and no candidate of any pass.
+pub const MARKING: &str = "gc/marking";
 
 pub fn segments(branch: Branch) -> String {
     format!("{}segments/{:016x}/", branch.cell.prefix(), branch.id)
@@ -125,12 +129,14 @@ pub fn cell_of_prefix(prefix: &str) -> Option<Cell> {
 /// live, and where in it each is. Being one object, written whole, it is never there without them.
 /// fxdax: under the cell of the object, `<C>moves/<rest>` for the object `<C><rest>`, and so
 /// `<C>moves/moves/<rest>` for its moves' moves, so that the cell's pass of the collector lists
-/// them with the cell (TASK-395.2). Only a cell's objects are compacted, nor do readers follow any
-/// other's moves: a location names a cell's object, one the bucket's branches wrote.
-pub fn moves(key: &str) -> String {
-    let (cell, rest) = in_cell(key)
-        .unwrap_or_else(|| panic!("the moves of {key}, of no cell's: only a cell's objects move"));
-    format!("{}{MOVES}{rest}", cell.prefix())
+/// them with the cell (TASK-395.2). Only a cell's objects are compacted: a key of no cell's, which
+/// a location read from a checkpoint or a footer may name if they are corrupt, has none
+/// ([`crate::Error::Corrupt`]).
+pub fn moves(key: &str) -> Result<String, crate::Error> {
+    let Some((cell, rest)) = in_cell(key) else {
+        return Err(crate::Error::Corrupt(format!("{key}: no cell's object, which has no moves")));
+    };
+    Ok(format!("{}{MOVES}{rest}", cell.prefix()))
 }
 
 /// fxdax: the key of the object the moves at `key` are of, if they are moves: the inverse of
@@ -257,6 +263,8 @@ pub enum Kind<'a> {
     GcLease {
         cell: Cell,
     },
+    /// fxdax: a mark-only pass's word that it marks the bucket ([`MARKING`]).
+    Marking,
     /// fxdax: a mark-only pass's marks over a cell ([`marks`]): the collector's own, never a
     /// candidate.
     Marks {
@@ -292,6 +300,7 @@ impl Kind<'_> {
             Self::ObjectIds { .. } => "objectid",
             Self::GcLease { .. } => "gc-lease",
             Self::Marks { .. } => "marks",
+            Self::Marking => "marking",
             Self::Moves { .. } => "moves",
             Self::Reference { .. } => "reference",
             Self::Unknown => "unknown",
@@ -312,7 +321,7 @@ pub fn owner(key: &str) -> Option<Cell> {
         | Kind::Reference { parent: branch, .. } => Some(branch.cell),
         Kind::Cell { cell } | Kind::GcLease { cell } | Kind::Marks { cell, .. } => Some(cell),
         Kind::Moves { cell, .. } => Some(cell),
-        Kind::ObjectIds { .. } | Kind::Unknown => None,
+        Kind::ObjectIds { .. } | Kind::Marking | Kind::Unknown => None,
     }
 }
 
@@ -322,6 +331,9 @@ fn hex(text: &str) -> Option<u64> {
 
 pub fn kind(key: &str) -> Kind<'_> {
     let parsed = || -> Option<Kind<'_>> {
+        if key == MARKING {
+            return Some(Kind::Marking);
+        }
         if let Some(block) = key.strip_prefix(OBJECTIDS) {
             return Some(Kind::ObjectIds { block: hex(block)? });
         }
@@ -566,6 +578,11 @@ impl Segment {
 mod tests {
     use super::*;
 
+    /// The moves of `key`, a cell's object's.
+    fn moves(key: &str) -> String {
+        super::moves(key).unwrap()
+    }
+
     /// A branch's extents stored on their own, whichever writer uploaded them, are under its
     /// prefix, and no other branch's are, of its cell or another.
     #[test]
@@ -664,12 +681,13 @@ mod tests {
         assert_eq!(moved_from(&sealed), None);
     }
 
-    /// The moves of an object of no cell's, which nothing writes: refused, not put at the bucket's
-    /// root as before format 9.
+    /// The moves of an object of no cell's, which nothing writes, and a location read from a
+    /// corrupt checkpoint may name: refused as corrupt, not put at the bucket's root as before
+    /// format 9, nor a panic of the reader's.
     #[test]
-    #[should_panic(expected = "the moves of probe/0000000000000001, of no cell's")]
     fn objects_of_no_cell_have_no_moves() {
-        moves("probe/0000000000000001");
+        let refused = "probe/0000000000000001: no cell's object, which has no moves".to_owned();
+        assert_eq!(super::moves("probe/0000000000000001"), Err(crate::Error::Corrupt(refused)));
     }
 
     #[test]

@@ -27,7 +27,8 @@
 //!
 //! `--mark-only` collects deleting nothing (TASK-264): each pass compacts as one that deletes does,
 //! and writes what it would delete to its cell's `gc/marks/<epoch>` instead, retiring no
-//! reference, which every reader of the cell
+//! reference, and `gc/marking`, which readers watch the cells' marks only while it is there: an
+//! operator removes it with the marks. Every reader of the cell
 //! (extentd, fxdaxctl, writers recovering, this collector) warns of reaching, a bug in the
 //! collector; and warns, loudly, of what the pass before marked that it finds kept, the same
 //! objects still, another. Nothing marked goes: the bucket grows by what passes would have
@@ -599,8 +600,8 @@ mod tests {
         let listed = [
             meta(layout::gc_lease(branch(1).cell), 1),
             meta(layout::reference(branch(1), 3, other), 9),
-            meta(layout::moves(&layout::moves(&layout::segment(other, 0))), 20),
-            meta(layout::moves(&layout::segment(branch(1), 0)), 300),
+            meta(layout::moves(&layout::moves(&layout::segment(other, 0)).unwrap()).unwrap(), 20),
+            meta(layout::moves(&layout::segment(branch(1), 0)).unwrap(), 300),
             meta(layout::objectid_block(0), 2),
             meta(layout::checkpoint(branch(1), 4), 4000),
             meta(layout::cell(branch(1).cell), 50_000),

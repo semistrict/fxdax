@@ -176,6 +176,12 @@ pub(crate) async fn refer_fork(bucket: &impl Bucket, child: Child, origin: Origi
 /// between the read and its own record's create leaves the reference: space wasted, never data
 /// lost (doc-7, References). The read costs a request a fork across cells, each of its writers.
 ///
+/// fxdax: before both, for a child of another cell, the parent's checkpoint at the fork point
+/// ([`recovery::checkpoint_at`]): what the child's recovery reads of its parent by its key alone,
+/// so that a pass over the child's cell lists nothing of the parent's (TASK-395.4). A point's
+/// clones, of any cell, read the same, which its own recording wrote: a point in its origin's own
+/// cell, which no host makes, has none, and its clones into other cells recover not.
+///
 /// Without the rule that it comes first, as a test shows it needed, the record's writers write it
 /// after: the writer once it recorded the fork, the deletion once it marked the parent deleted, as
 /// specs/bucket's NoReferencesFirst has it.
@@ -184,14 +190,18 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
     let kind = if child.point { Kind::Point(origin) } else { Kind::Fork(origin) };
     let record = kind.of(owner(child.owner));
     let mut start = Start::Create;
-    if rules().references_first && rules().references && origin.parent.cell != child.branch.cell {
+    if origin.parent.cell != child.branch.cell {
         let found = bucket::get(bucket, &layout::record(child.branch)).await;
         match found.as_ref().map(|found| Record::decode(child.branch, &found.bytes)).transpose()? {
             Some(found) if found.deleted => return Ok(()),
             Some(found) if !found.is_child_of(record.owner) => {
                 return Err(Error::IdTaken(child.branch));
             }
-            _ => refer_fork(bucket, child, origin).await,
+            _ => {}
+        }
+        recovery::checkpoint_at(bucket, origin.parent, origin.at).await?;
+        if rules().references_first {
+            refer_fork(bucket, child, origin).await;
         }
         failpoint!("branch::referred");
         start = Start::Found(found);
@@ -232,8 +242,9 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
 /// cell too, which no host makes: that cell's pass reads its records before the states and its
 /// references after, and a clone made between them, its point in another cell deleted and the
 /// point's reference retired before the references were listed, would be seen by neither (TLC
-/// found it, specs/bucket's BucketOverlap). A fork that fails leaves it, for its cell's pass to
-/// retire.
+/// found it, specs/bucket's BucketOverlap). A fork that fails as it finds the point deleted leaves
+/// it, for its cell's pass to retire; one refused by a record there before, of another origin, or
+/// deleted with none, deletes it (TASK-395.10).
 pub async fn fork_point(
     bucket: &impl Bucket,
     child: Branch,
@@ -252,14 +263,34 @@ pub async fn fork_point(
         false => Kind::Fork(origin),
     };
     let record = kind.of(owner);
-    // Whether the fork is still to be made.
+    // Whether the fork is still to be made; and the origin of a record found that refused it.
+    let mut refused = None;
     let making = change(bucket, child, Start::Create, |found| match found {
         None => Ok(Step::Write(record, true)),
-        Some(found) if found.deleted => Err(Error::Deleted),
-        Some(found) if !found.is_child_of(record.owner) => Err(Error::IdTaken(child)),
+        Some(found) if found.deleted => {
+            refused = Some(found.origin());
+            Err(Error::Deleted)
+        }
+        Some(found) if !found.is_child_of(record.owner) => {
+            refused = Some(found.origin());
+            Err(Error::IdTaken(child))
+        }
         Some(found) => Ok(Step::Stop(found.forking().is_some())),
     })
-    .await?;
+    .await;
+    // fxdax: refused by a record there before, its reference names a fork no record's origin
+    // will, which nothing would retire: it goes, unless that record is of the same origin, whose
+    // retirement is then the record's (TASK-395.10). A host dying first leaves it, the leak
+    // TASK-395.10 has.
+    if let (Err(Error::Deleted | Error::IdTaken(_)), Some(found)) = (&making, refused)
+        && found != Some(origin)
+        && rules().references
+        && rules().clones_refer_first
+    {
+        let key = layout::reference(origin.parent, origin.at, child);
+        bucket::delete_all(bucket, &[key.as_str()]).await;
+    }
+    let making = making?;
     if making {
         failpoint!("point::recorded");
         finish_point_fork(bucket, child, point).await?;
@@ -660,7 +691,14 @@ pub async fn delete_fork(
         }
         Kind::Fork(origin) | Kind::Claim(origin) => {
             match recovery::holds(bucket, origin.parent, origin.at).await? {
-                true => (Kind::Claim(origin), true),
+                true => {
+                    // fxdax: a claim that lives, of another cell, reads its parent there by the
+                    // checkpoint at the fork point alone (TASK-395.4).
+                    if origin.parent.cell != child.cell {
+                        recovery::checkpoint_at(bucket, origin.parent, origin.at).await?;
+                    }
+                    (Kind::Claim(origin), true)
+                }
                 false => (Kind::Fork(origin), false),
             }
         }

@@ -74,11 +74,11 @@ fn collects_a_file_bucket() {
         String::from_utf8_lossy(&out.stderr),
         "fxdax-gc: deleted 0, compacted 0, retired 0 references, over 1 cells, 0 failed\n"
     );
-    // Over both: the other's lease, which its pass took, is its one object.
+    // Over the one cell there: the other's pass, of a cell holding nothing, took no lease there.
     let out = gc(&[&url, "--grace", "0"]);
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 2 cells, 0 failed\n"
+        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 1 cells, 0 failed\n"
     );
     assert!(out.status.success());
     let left = futures::executor::block_on(async {
@@ -202,6 +202,8 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     // The bucket's lock, no object, then the objects, the collector's under the cell's prefix.
     let kept = [
         extent_remote::local::LOCK.to_owned(),
+        // The word that the bucket is marked, which an operator removes with the marks.
+        extent_remote::layout::MARKING.to_owned(),
         format!("{at}/branches/{branch}"),
         format!("{at}/checkpoints/{branch}/0000000000000002"),
         format!("{at}/gc/lease"),
@@ -245,7 +247,7 @@ fn usage_sums_a_file_buckets_tenants_and_cells() {
             branch::create(&bucket, Branch { cell, id: id as u64 + 1 }, 0).await.unwrap();
         }
         let segment = extent_remote::layout::segment(Branch { cell: cells[1], id: 2 }, 0);
-        let moved = extent_remote::layout::moves(&segment);
+        let moved = extent_remote::layout::moves(&segment).unwrap();
         bucket.put(&moved, vec![9; 1000].into(), PutMode::Create).await.unwrap();
         bucket.put("objectid/0000000000000000", vec![1; 10].into(), PutMode::Create).await.unwrap();
         bucket.list("").await.unwrap()

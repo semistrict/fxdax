@@ -502,22 +502,25 @@ mod tests {
         assert_eq!(Kind::named("ext4"), None);
     }
 
-    /// A cell's object of another format is refused, naming it, before the rest of it is read.
+    /// A cell's object of another format is refused, naming it, before the rest of it is read: a
+    /// newer one's, and format 8's, the format before the cells' collection under their prefixes
+    /// (TASK-395.2).
     #[test]
     fn cells_of_other_formats_are_refused() {
-        let bucket = Direct(SimBucket::new());
-        let object = Object {
-            format: FORMAT + 1,
-            epoch: 1,
-            holder: 0x11,
-            token: 5,
-            volumes: BTreeMap::new(),
-            deleted: false,
-        };
-        block_on(bucket::create(&bucket, &layout::cell(TEST_CELL), layout::encode(&object)));
-        let refused =
-            Error::Format { branch: Branch { cell: TEST_CELL, id: 0 }, format: FORMAT + 1 };
-        assert_eq!(block_on(read(&bucket, TEST_CELL)), Err(refused.clone()));
-        assert_eq!(block_on(take(&bucket, TEST_CELL, 0x12, 5)), Err(refused));
+        for format in [FORMAT + 1, 8] {
+            let bucket = Direct(SimBucket::new());
+            let object = Object {
+                format,
+                epoch: 1,
+                holder: 0x11,
+                token: 5,
+                volumes: BTreeMap::new(),
+                deleted: false,
+            };
+            block_on(bucket::create(&bucket, &layout::cell(TEST_CELL), layout::encode(&object)));
+            let refused = Error::Format { branch: Branch { cell: TEST_CELL, id: 0 }, format };
+            assert_eq!(block_on(read(&bucket, TEST_CELL)), Err(refused.clone()));
+            assert_eq!(block_on(take(&bucket, TEST_CELL, 0x12, 5)), Err(refused));
+        }
     }
 }

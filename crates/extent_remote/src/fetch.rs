@@ -665,7 +665,7 @@ impl<B: Bucket> Fetcher<B> {
     /// The key of the moves of the object at `key`, if the collector moved `extent` there when it
     /// compacted the object: their footer names it.
     async fn moved(&self, extent: ExtentId, key: &str) -> Result<Option<String>, Error> {
-        let moves = layout::moves(key);
+        let moves = layout::moves(key)?;
         let tail = self.shared.tail(&moves).await?;
         Ok(tail.is_some_and(|tail| tail.extents.contains_key(&extent)).then_some(moves))
     }
@@ -1491,11 +1491,11 @@ mod tests {
     /// it, then deletes it.
     fn compacted(bucket: &Arc<SimBucket>, data: &[u8]) {
         let direct = Direct(bucket.clone());
-        let to = Location { key: layout::moves(KEY), offset: 10, len: MOVED.1 };
+        let to = Location { key: layout::moves(KEY).unwrap(), offset: 10, len: MOVED.1 };
         let mut moved = vec![0; 10];
         moved.extend_from_slice(&data[MOVED.0 as usize..][..MOVED.1 as usize]);
         let moves = layout::with_footer(&moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY).unwrap(), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
     }
 
@@ -1572,7 +1572,7 @@ mod tests {
         let mut reads = Reads::new();
         let at = Location { key: KEY.into(), offset: MOVED.0, len: MOVED.1 };
         let read = reads.read(&fetcher, at, 100, 50, Priority::Demand);
-        let moves = layout::moves(KEY);
+        let moves = layout::moves(KEY).unwrap();
         let moved =
             extent_frame::Parts::of(&block_on(Direct(bucket.clone()).get(&moves)).unwrap().bytes);
         assert_eq!(
@@ -1607,17 +1607,17 @@ mod tests {
         assert_eq!(read().0, Some(Ok(want.clone())));
         // Compacted, then a segment far shorter recreated at its key.
         let direct = Direct(bucket.clone());
-        let to = Location { key: layout::moves(KEY), offset: 0, len: at.1 };
+        let to = Location { key: layout::moves(KEY).unwrap(), offset: 0, len: at.1 };
         let moved = data[at.0 as usize..][..at.1 as usize].to_vec();
         let moves = layout::with_footer(&moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY).unwrap(), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
         let stale = segment(&noise(100), vec![(ExtentId::new(1, 9), 0, 100)]);
         block_on(direct.put(KEY, stale.into(), PutMode::Create)).unwrap();
 
         let (read, asked) = read();
         assert_eq!(read, Some(Ok(want)));
-        let moves = layout::moves(KEY);
+        let moves = layout::moves(KEY).unwrap();
         assert_eq!(
             asked,
             [
@@ -1645,7 +1645,7 @@ mod tests {
         block_on(Direct(bucket.clone()).delete(KEY)).unwrap();
         let (lost, asked) = bucket.served(read(&bucket, EXTENT, &location));
         assert_eq!(lost, Err(Error::Lost(format!("{EXTENT:?} in {KEY}"))));
-        let moves = format!("get {} last {TAIL}", layout::moves(KEY));
+        let moves = format!("get {} last {TAIL}", layout::moves(KEY).unwrap());
         assert_eq!(asked, [format!("get {KEY} last {TAIL}"), moves]);
     }
 
@@ -2113,10 +2113,10 @@ mod tests {
         bucket.complete(0, Fault::None);
 
         let direct = Direct(bucket.clone());
-        let to = Location { key: layout::moves(KEY), offset: 0, len };
+        let to = Location { key: layout::moves(KEY).unwrap(), offset: 0, len };
         let moved = &data[at as usize..][..len as usize];
         let moves = layout::with_footer(moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY).unwrap(), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
         let other: Vec<u8> = data.iter().map(|byte| byte ^ 0x5a).collect();
         let other_extent = ExtentId::new(1, 9);

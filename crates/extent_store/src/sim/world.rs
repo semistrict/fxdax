@@ -2182,7 +2182,7 @@ impl World {
                 }
             }
             for (extent, location) in &state.extents {
-                let moves = layout::moves(&location.key);
+                let moves = layout::moves(&location.key).unwrap();
                 if !keys.contains(&location.key) && !keys.contains(&moves) {
                     violations.push(format!("{extent:?} of {id:x}: {} is gone", location.key));
                 }

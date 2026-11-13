@@ -32,8 +32,8 @@
 //! (TASK-395.4). It is kept while a reference names it, whatever the child frees of it since: the
 //! collector is conservative, reclaiming late rather than reading other cells to find what their
 //! branches still hold. A fork point shared by many references, a point cloned many times, is
-//! recovered once. The references are listed after the states, twice, a fork point kept if either
-//! listing has it: a listing is not atomic, its pages read one after another. Forks in the live
+//! recovered once. The references are listed after the states, by their fork points' prefixes
+//! ([`referenced`]). Forks in the live
 //! branches' states to other cells keep their fork points too, as a fork's child may lack its
 //! reference yet. A cell with no live branch and no reference is reclaimed whole, but its records
 //! and its object; and its pass retires the references of its deleted children under their
@@ -190,16 +190,16 @@ pub async fn collect_cell(
     Collector::new(*options).collect_cell(bucket, cell, holder).await
 }
 
-/// The collector, from one pass to the next: it remembers the branches' records it read, with the
-/// versions it read them at, and reads one again only once it changed: few do, and those of
-/// deleted branches, which stay, never do (TASK-92.7, TASK-174). fxdax: what it remembers is of
-/// each cell it passed over, apart (TASK-395.4).
+/// The collector. fxdax: it remembers nothing from one pass to the next (TASK-395.4): what a pass
+/// read of its cell goes with it, so that a sweep over millions of cells holds no more than the
+/// cells it is passing over. A pass reads a record again only once it changed, as it lists the
+/// records again (TASK-92.7); keeping what is worth keeping across passes, under the cell's prefix,
+/// is TASK-395.6's.
 pub struct Collector {
     options: Options,
-    cells: BTreeMap<Cell, Remembered>,
 }
 
-/// fxdax: what a collector remembers of a cell's passes.
+/// fxdax: what a pass over a cell keeps as it reads it, and drops with it.
 #[derive(Default)]
 struct Remembered {
     /// The records read, by their keys, with the versions they were read at.
@@ -209,7 +209,7 @@ struct Remembered {
 
 impl Collector {
     pub fn new(options: Options) -> Self {
-        Self { options, cells: BTreeMap::new() }
+        Self { options }
     }
 
     /// fxdax: a pass over every cell of `bucket`, one after another, as `holder`, which must differ
@@ -219,7 +219,6 @@ impl Collector {
     /// cells no longer there, it forgets.
     pub async fn collect(&mut self, bucket: &impl Bucket, holder: u64) -> Result<Report, Error> {
         let cells = crate::cell::listed(bucket).await;
-        self.cells.retain(|cell, _| cells.binary_search(cell).is_ok());
         let mut report = Report::default();
         let mut failed = None;
         for cell in cells {
@@ -239,8 +238,11 @@ impl Collector {
         cell: Cell,
         holder: u64,
     ) -> Result<Report, Error> {
+        if !passable(bucket, cell).await? {
+            return Ok(Report::default());
+        }
         let epoch = branch::take_lease(bucket, &layout::gc_lease(cell), holder, 0).await?;
-        let remembered = self.cells.entry(cell).or_default();
+        let mut remembered = Remembered::default();
         let Some(pass) = remembered.survey(bucket, cell, epoch, Writes::Some).await? else {
             return Ok(Report::default());
         };
@@ -283,8 +285,11 @@ impl Collector {
         cell: Cell,
         holder: u64,
     ) -> Result<Marking, Error> {
+        if !passable(bucket, cell).await? {
+            return Ok(Marking::default());
+        }
         let epoch = branch::take_lease(bucket, &layout::gc_lease(cell), holder, 0).await?;
-        let remembered = self.cells.entry(cell).or_default();
+        let mut remembered = Remembered::default();
         let Some(pass) = remembered.survey(bucket, cell, epoch, Writes::Some).await? else {
             return Ok(Marking::default());
         };
@@ -298,6 +303,8 @@ impl Collector {
             resurrected(bucket, cell, epoch, &self.options, &pass.objects, &doomed).await;
         let marked = doomed.into_iter().map(Marked::of).collect();
         let marks = Marks { epoch, grace: self.options.grace, marked };
+        // Readers watch the cells' marks only while the bucket says it is marked: first.
+        bucket::create(bucket, layout::MARKING, b"marking".to_vec()).await;
         // The epoch is this pass's taking of the lease alone: nothing else is at its key.
         bucket::create(bucket, &layout::marks(cell, epoch), layout::encode(&marks)).await;
         Ok(Marking { report, marks: Some(marks), resurrected })
@@ -318,7 +325,7 @@ impl Collector {
         cell: Cell,
     ) -> Result<DryRun, Error> {
         let epoch = branch::lease_epoch(bucket, &layout::gc_lease(cell)).await?;
-        let remembered = self.cells.entry(cell).or_default();
+        let mut remembered = Remembered::default();
         let Some(pass) = remembered.survey(bucket, cell, epoch, Writes::None).await? else {
             return Ok(DryRun { fenced: true, ..DryRun::default() });
         };
@@ -465,6 +472,23 @@ impl Remembered {
     }
 }
 
+/// fxdax: whether a pass over `cell` has anything to go by, checked before it takes the cell's
+/// lease, which would be the cell's one object otherwise: the format of the cell's first record,
+/// which a pass of another format refuses ([`Error::Format`]) before writing anything; and, the
+/// cell holding no record, whether it holds anything (a reference, what a dead cell left).
+async fn passable(bucket: &impl Bucket, cell: Cell) -> Result<bool, Error> {
+    let listed = bucket::list(bucket, &layout::records(cell)).await;
+    for meta in &listed {
+        let Kind::Record { branch } = layout::kind(&meta.key) else { continue };
+        if let Some(object) = bucket::get(bucket, &meta.key).await {
+            Record::decode(branch, &object.bytes)?;
+            return Ok(true);
+        }
+    }
+    let listing = bucket::list_delimited(bucket, &cell.prefix()).await;
+    Ok(!listing.objects.is_empty() || !listing.prefixes.is_empty())
+}
+
 /// fxdax: whether a pass writes to the bucket what giving up on forks needs: a dry run writes
 /// nothing (TASK-264).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -600,21 +624,19 @@ async fn listing(bucket: &impl Bucket, cell: Cell) -> BTreeMap<String, Meta> {
 }
 
 /// fxdax: the fork points the references under `cell` name, by delimiter listings: the parents
-/// with references, then each one's fork points, none of their children (doc-7, The layout). Listed
-/// twice, a fork point kept if either listing has it: a listing's pages are read one after
-/// another, and a clone's reference created behind its cursor, while the point's own reference
-/// ahead of it is retired, would be missed by one. A reference created during the first is in the
-/// second whole; one created after the first ended came while the point's reference stood,
-/// throughout the first.
+/// with references, then each one's fork points, none of their children (doc-7, The layout). Once:
+/// a listing's pages are read one after another, but what it shows is a fork point's prefix, not a
+/// reference, and a clone's reference and its point's own share it, `<C>refs/<origin>/<at>/`, the
+/// clone's written before the point's is retired; so the prefix holds a key all along, and a
+/// listing reaching it at any time shows it (a listing of the references whole would not: the
+/// clone's behind its cursor, the point's ahead, retired).
 async fn referenced(bucket: &impl Bucket, cell: Cell) -> BTreeSet<Origin> {
     let mut points = BTreeSet::new();
-    for _ in 0..2 {
-        for prefix in bucket::list_delimited(bucket, &layout::references(cell)).await.prefixes {
-            let Some(parent) = layout::referenced_parent(cell, &prefix) else { continue };
-            for at in bucket::list_delimited(bucket, &prefix).await.prefixes {
-                if let Some(at) = layout::referenced_at(parent, &at) {
-                    points.insert(Origin { parent, at });
-                }
+    for prefix in bucket::list_delimited(bucket, &layout::references(cell)).await.prefixes {
+        let Some(parent) = layout::referenced_parent(cell, &prefix) else { continue };
+        for at in bucket::list_delimited(bucket, &prefix).await.prefixes {
+            if let Some(at) = layout::referenced_at(parent, &at) {
+                points.insert(Origin { parent, at });
             }
         }
     }
@@ -1099,7 +1121,7 @@ async fn compact_object(
     key: &str,
     extents: &BTreeMap<ExtentId, Location>,
 ) -> Result<bool, Error> {
-    let moves = layout::moves(key);
+    let moves = layout::moves(key)?;
     let Some(object) = bucket::get(bucket, key).await else { return Ok(false) };
     // Its data, checked: compacting copies none that is corrupt under new CRCs.
     let object_data = layout::data(&object.bytes)?;
@@ -1178,7 +1200,7 @@ impl Pass {
                 if objects.contains_key(&location.key) {
                     named.entry(location.key.clone()).or_default().insert(extent, location.clone());
                 }
-                let moves = layout::moves(&location.key);
+                let moves = layout::moves(&location.key)?;
                 if objects.contains_key(&moves) {
                     hops.insert(moves);
                     onward.push((extent, location));
@@ -1239,7 +1261,7 @@ impl Pass {
                 Kind::Moves { .. } => true,
                 _ => false,
             };
-            if collectable && !self.objects.contains_key(&layout::moves(key)) {
+            if collectable && !self.objects.contains_key(&layout::moves(key)?) {
                 ours.push((&self.objects[key], extents));
             }
         }
@@ -1281,7 +1303,9 @@ impl Pass {
     async fn doomed(&self, bucket: &impl Bucket, options: &Options) -> Result<Vec<&Meta>, Error> {
         let now = bucket.now();
         let aged = |meta: &Meta| meta.modified.saturating_add(options.grace) <= now;
-        let moved_long_ago = |key: &str| self.objects.get(&layout::moves(key)).is_some_and(aged);
+        let moved_long_ago = |key: &str| {
+            layout::moves(key).ok().and_then(|moves| self.objects.get(&moves)).is_some_and(aged)
+        };
         let mut doomed = Vec::new();
         for (key, meta) in &self.objects {
             let named = self.named.contains_key(key);
@@ -1325,6 +1349,7 @@ impl Pass {
                 // (TASK-364).
                 Kind::GcLease { .. }
                 | Kind::Marks { .. }
+                | Kind::Marking
                 | Kind::Reference { .. }
                 | Kind::Cell { .. }
                 | Kind::ObjectIds { .. }
@@ -1527,7 +1552,7 @@ mod tests {
             let report = collect(&*bucket, 1, &compacting).await.unwrap();
             assert_eq!(report.compacted, 1);
             let after = keys(&*bucket).await;
-            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment)));
+            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment).unwrap()));
             assert!(after.contains(&layout::record(test_branch(1))));
             let report = collect(&*bucket, 2, &compacting).await.unwrap();
             assert_eq!(report, Report { deleted: 0, compacted: 0, retired: 0 });
@@ -1561,7 +1586,7 @@ mod tests {
             let report = collect(&*bucket, 1, &compacting).await.unwrap();
             assert_eq!(report.compacted, 1);
             let after = keys(&*bucket).await;
-            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment)));
+            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment).unwrap()));
             let location = writer.location(kept).unwrap();
             assert_eq!(crate::read(&bucket, kept, &location).await.unwrap(), vec![b'k'; 4096]);
         });
@@ -1616,7 +1641,9 @@ mod tests {
                 let corrupt = Error::Corrupt("an object's part, by its CRC".into());
                 assert_eq!(collect(&*bucket, 1, &compacting).await, Err(corrupt));
                 let after = keys(&*bucket).await;
-                assert!(after.contains(&segment) && !after.contains(&layout::moves(&segment)));
+                assert!(
+                    after.contains(&segment) && !after.contains(&layout::moves(&segment).unwrap())
+                );
                 let location = writer.location(kept).unwrap();
                 let read = crate::read(&bucket, kept, &location).await;
                 let twice = format!("part 0 of {segment}, by its CRC, twice");
@@ -1668,7 +1695,10 @@ mod tests {
         commit(&writer, Commit { tag, frees: vec![moved], ..Commit::default() }).await;
         collect_all(&*bucket).await;
         let left = keys(&*bucket).await;
-        assert!(!left.contains(&sealed) && left.contains(&layout::moves(&layout::moves(&sealed))));
+        assert!(
+            !left.contains(&sealed)
+                && left.contains(&layout::moves(&layout::moves(&sealed).unwrap()).unwrap())
+        );
         crate::read(&bucket, kept, &writer.location(kept).unwrap()).await
     }
 
@@ -2818,9 +2848,9 @@ mod tests {
             writer.checkpoint().await.unwrap();
             collect(&*bucket, 2, &now).await.unwrap();
             let left = keys(&*bucket).await;
-            assert!(!left.contains(&segment) && left.contains(&layout::moves(&segment)));
+            assert!(!left.contains(&segment) && left.contains(&layout::moves(&segment).unwrap()));
             collect(&*bucket, 3, &now).await.unwrap();
-            assert!(!keys(&*bucket).await.contains(&layout::moves(&segment)));
+            assert!(!keys(&*bucket).await.contains(&layout::moves(&segment).unwrap()));
         });
     }
 
@@ -2885,8 +2915,11 @@ mod tests {
 
     /// TASK-92.7: a pass of the collector over a base and its forks reads the branches' records
     /// many at once, the checkpoint the base's recovery and its forks' start from once, and
-    /// deletes what goes many at once; a second pass of the same collector reads no record it
-    /// read unchanged, and one that changed again.
+    /// deletes what goes many at once. TASK-395.4: a second pass of the same collector reads every
+    /// record again, as the first: a collector keeps nothing of a cell from one pass to the next,
+    /// so that a sweep over every cell holds no more than the cell it passes over (TASK-395.6 is to
+    /// keep what is worth keeping under the cell's prefix). Each pass reads one record first, its
+    /// format, before taking the cell's lease.
     #[test]
     fn passes_read_records_and_checkpoints_once_and_delete_at_once() {
         let bucket = SimBucket::new();
@@ -2901,13 +2934,14 @@ mod tests {
         // Its record, its children's, the deleted ones' too; its checkpoint; the segments the
         // checkpoint covers that hold no extent its branches hold but its fence (TASK-371), its
         // extents freed, and the leases and deletions' fences of its children deleted (TASK-183).
-        assert_eq!(passes, [[vec![9], vec![1], vec![9]], [vec![], vec![1], vec![]]]);
+        let first = [vec![1, 9], vec![1], vec![9]];
+        assert_eq!(passes, [first, [vec![1, 9], vec![1], vec![]]]);
 
         // The fork deleted: its lease and its deletion's fence go.
         bucket.served(branch::delete(&*bucket, test_branch(2), 20, 0)).0.unwrap();
         let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 3));
         report.unwrap();
-        assert_eq!(asked(&rounds), [vec![1], vec![1], vec![2]]);
+        assert_eq!(asked(&rounds), [vec![1, 9], vec![1], vec![2]]);
     }
 
     /// TASK-395.5: how many segments [`mostly_freed`] makes.
@@ -2960,7 +2994,7 @@ mod tests {
         );
         // A footer is read by its range, once its trailer, the object's end, says where it is.
         let footers = |asked: &str| {
-            let moves = |segment: &String| format!("get {} ", layout::moves(segment));
+            let moves = |segment: &String| format!("get {} ", layout::moves(segment).unwrap());
             let of_moves = segments.iter().any(|segment| asked.starts_with(&moves(segment)));
             of_moves && !asked.contains(" last ")
         };
@@ -3613,8 +3647,10 @@ mod tests {
             };
             let mut more: Vec<String> = after.iter().map(|(meta, _)| meta.key.clone()).collect();
             more.retain(|key| !listed.contains_key(key));
-            let moved = layout::moves(&layout::segment(test_branch(1), 1));
-            assert_eq!(more, [layout::marks(layout::TEST_CELL, 2), moved]);
+            let moved = layout::moves(&layout::segment(test_branch(1), 1)).unwrap();
+            // And the word that the bucket is marked, which readers go by (TASK-395.4's review).
+            let marking = layout::MARKING.to_owned();
+            assert_eq!(more, [marking, layout::marks(layout::TEST_CELL, 2), moved]);
             let left: Vec<_> = kept(&after)
                 .into_iter()
                 .filter(|(meta, _)| listed.contains_key(&meta.key))
@@ -3810,8 +3846,9 @@ mod tests {
         use crate::layout::Origin;
         let bucket = SimBucket::new();
         let (origin, point) = (Origin { parent: celled(1, 1), at: 3 }, celled(2, 2));
-        let made = Child { branch: point, owner: 0x22, point: true };
-        bucket.served(branch::record_fork(&*bucket, made, origin)).0.unwrap();
+        // The point's record, of an origin no bucket here has: what the clones read of it.
+        let point_record = layout::encode(&crate::record::Kind::Point(origin).of(0x22));
+        bucket.served(bucket::create(&*bucket, &layout::record(point), point_record));
         for clone in [celled(3, 3), celled(1, 4)] {
             let (forked, asked) =
                 bucket.served(branch::fork_point(&*bucket, clone, point, origin, 0x33));
@@ -4165,13 +4202,13 @@ mod tests {
             let (report, asked) =
                 bucket.served(collect_cell(&*bucket, origin_branch.cell, 7, &options));
             report.unwrap();
-            let segment = layout::segment(origin_branch, at);
-            let read =
-                asked.iter().filter(|asked| asked.starts_with(&format!("get {segment}"))).count();
+            // The fork point's state, the checkpoint at it the point's recording wrote.
+            let point = format!("get {}", layout::checkpoint(origin_branch, at));
+            let read = asked.iter().filter(|asked| **asked == point).count();
             (asked.len(), read)
         };
         let (one, read) = asked(1);
-        assert_eq!(read, 1, "the fork point's segment, by its tail");
+        assert_eq!(read, 1, "the fork point's checkpoint");
         assert_eq!(asked(8), (one, read));
     }
 
@@ -4198,5 +4235,97 @@ mod tests {
         let report = block_on(collector.collect_cell(&*bucket, child.cell, 2)).unwrap();
         assert_eq!(report.retired, 1);
         assert!(!block_on(keys(&*bucket)).contains(&reference));
+    }
+
+    /// TASK-395.4's AC #1, a live fork's cell (TASK-395.4's review): a pass over the cell of a
+    /// fork of a branch in another cell, the fork live with no checkpoint of its own, lists nothing
+    /// outside its cell, reading its parent's state by the checkpoint at the fork point alone,
+    /// which recording the fork wrote; whether the parent had a checkpoint before the fork, or
+    /// none. The fork reads what it inherited.
+    #[test]
+    fn passes_over_a_live_forks_cell_list_nothing_of_its_parents() {
+        for checkpointed in [true, false] {
+            let bucket = SimBucket::new();
+            let (parent, child) = (celled(1, 1), celled(2, 2));
+            let (extent, at) = bucket
+                .served(async {
+                    branch::create(&*bucket, parent, 0).await.unwrap();
+                    let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+                    let extent = ExtentId::new(1, writer.chain().next_sequence());
+                    if checkpointed {
+                        commit(&writer, Commit { tag: 9, ..Commit::default() }).await;
+                        writer.checkpoint().await.unwrap();
+                    }
+                    let held = vec![(extent, b"held".to_vec())];
+                    (extent, commit_and_fork(&writer, held, forked(child)).await)
+                })
+                .0;
+            let options = Options { compact_below: 0.0, grace: 0 };
+            let (report, asked) = bucket.served(collect_cell(&*bucket, child.cell, 7, &options));
+            report.unwrap();
+            let prefix = child.cell.prefix();
+            let outside: Vec<&String> = (asked.iter())
+                .filter(|asked| asked.starts_with("list"))
+                .filter(|asked| !asked.split(' ').nth(1).unwrap().starts_with(&prefix))
+                .collect();
+            assert_eq!(outside, Vec::<&String>::new(), "checkpointed {checkpointed}");
+            let point = format!("get {}", layout::checkpoint(parent, at));
+            assert!(asked.contains(&point), "{asked:#?}");
+            let direct = Arc::new(Direct(bucket.clone()));
+            assert_eq!(block_on(read_inherited(&direct, child, extent)), Ok(b"held".to_vec()));
+        }
+    }
+
+    /// TASK-395.4's review: a clone refused by a record of its child's ID there before, of another
+    /// origin or deleted with none, takes back the reference it wrote, which no record's origin
+    /// names; one refused by a record of its own origin leaves it, that record's to retire.
+    #[test]
+    fn clones_refused_by_records_there_take_their_references_back() {
+        use crate::layout::Origin;
+        use crate::record::Kind as Made;
+        let bucket = Direct(SimBucket::new());
+        let (origin, point) = (Origin { parent: celled(1, 1), at: 3 }, celled(2, 2));
+        let other = Origin { parent: celled(1, 1), at: 4 };
+        let record = layout::record(point);
+        block_on(bucket::create(&bucket, &record, layout::encode(&Made::Point(origin).of(0x22))));
+        let found = |made: crate::record::Record| layout::encode(&made);
+        let cases = [
+            (celled(3, 3), found(Made::Fork(other).of(0x44)), Error::IdTaken(celled(3, 3)), false),
+            (
+                celled(4, 4),
+                found(crate::record::Record { deleted: true, ..Made::Own.of(0x45) }),
+                Error::Deleted,
+                false,
+            ),
+            (celled(5, 5), found(Made::Fork(origin).of(0x46)), Error::IdTaken(celled(5, 5)), true),
+        ];
+        for (clone, there, refused, stays) in cases {
+            block_on(bucket::create(&bucket, &layout::record(clone), there));
+            let forked = block_on(branch::fork_point(&bucket, clone, point, origin, 0x33));
+            assert_eq!(forked, Err(refused), "{clone}");
+            let reference = layout::reference(origin.parent, origin.at, clone);
+            let left = block_on(bucket::get(&bucket, &reference)).is_some();
+            assert_eq!(left, stays, "{clone}");
+        }
+    }
+
+    /// TASK-395.4's review: a pass over a cell holding nothing takes no lease there, which would be
+    /// its one object; one over a cell of another format's records refuses before taking it.
+    #[test]
+    fn passes_take_no_lease_of_cells_empty_or_of_other_formats() {
+        let bucket = Direct(SimBucket::new());
+        let (empty, older) = (layout::Cell { tenant: 1, id: 7 }, layout::Cell { tenant: 1, id: 8 });
+        let options = Options { compact_below: 0.0, grace: 0 };
+        assert_eq!(block_on(collect_cell(&bucket, empty, 1, &options)), Ok(Report::default()));
+        let branch = Branch { cell: older, id: 9 };
+        let mut format8 = 8u32.to_le_bytes().to_vec();
+        format8.extend_from_slice(b"what format 8 held");
+        block_on(bucket::create(&bucket, &layout::record(branch), format8));
+        let refused = block_on(collect_cell(&bucket, older, 1, &options));
+        assert_eq!(refused, Err(Error::Format { branch, format: 8 }));
+        let leases: Vec<String> = (bucket.0.keys().into_iter())
+            .filter(|key| matches!(layout::kind(key), Kind::GcLease { .. }))
+            .collect();
+        assert_eq!(leases, Vec::<String>::new());
     }
 }

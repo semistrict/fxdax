@@ -507,7 +507,7 @@ mod tests {
                 .into_iter()
                 .map(|meta| meta.key)
                 .collect();
-        let moves = extent_remote::layout::moves(&extent_remote::layout::segments(branch));
+        let moves = extent_remote::layout::moves(&extent_remote::layout::segments(branch)).unwrap();
         let first = extent_remote::layout::segment(branch, 1);
         assert!(keys.iter().any(|key| key.starts_with(&moves)), "{keys:?}");
         assert!(!keys.contains(&first), "{keys:?}");
@@ -606,8 +606,8 @@ mod tests {
                 })
                 .collect();
         let sealed = extent_remote::layout::segments(branch);
-        let once = extent_remote::layout::moves(&sealed);
-        let twice = extent_remote::layout::moves(&once);
+        let once = extent_remote::layout::moves(&sealed).unwrap();
+        let twice = extent_remote::layout::moves(&once).unwrap();
         let compacted: Vec<String> = (keys.iter())
             .filter(|key| key.starts_with(&once))
             .filter_map(|key| extent_remote::layout::moved_from(key))
@@ -674,8 +674,8 @@ mod tests {
                     )
                 })
                 .collect();
-        let once = extent_remote::layout::moves(&extent_remote::layout::segments(branch));
-        let twice = extent_remote::layout::moves(&once);
+        let once = extent_remote::layout::moves(&extent_remote::layout::segments(branch)).unwrap();
+        let twice = extent_remote::layout::moves(&once).unwrap();
         assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
         // The store, open all along, reads it there, and so does its follower.

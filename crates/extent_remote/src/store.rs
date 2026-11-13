@@ -580,15 +580,39 @@ impl Store {
         }
     }
 
-    /// The reading of the marks of the cell `key` is under again ([`Store::refresh_marks`]), a key
-    /// or a prefix, if it is due, which a read goes alongside: nothing, if not, or if it is of no
-    /// cell's.
+    /// fxdax: reads whether a mark-only pass marks the bucket ([`layout::MARKING`]), a HEAD, which
+    /// says whether readers watch the cells' marks at all (TASK-395.4's review). A request failed,
+    /// it keeps what it held, until the next.
+    pub async fn refresh_marking(&self) {
+        let head = GetOptions { head: true, ..GetOptions::default() };
+        match self.store.get_opts(&self.path(layout::MARKING), head).await {
+            Ok(_) => self.marks.hold_marking(true),
+            Err(object_store::Error::NotFound { .. }) => self.marks.hold_marking(false),
+            Err(error) => {
+                log::debug!(error:%; "object storage: reading whether the bucket is marked: {error}")
+            }
+        }
+    }
+
+    /// The reading of whether the bucket is marked again, if it is due, and of the marks of the
+    /// cell `key` is under, a key or a prefix, if the bucket is marked and they are due
+    /// ([`Store::refresh_marks`]), which a read goes alongside: nothing, if neither is.
     fn marks_due(
         &self,
         key: &str,
     ) -> futures::future::OptionFuture<impl Future<Output = ()> + Send + '_> {
+        let marking = self.marks.take_marking_refresh();
         let cell = layout::cell_of(key).filter(|&cell| self.marks.take_refresh(cell));
-        cell.map(|cell| self.refresh_marks(cell)).into()
+        (marking || cell.is_some())
+            .then(|| async move {
+                if marking {
+                    self.refresh_marking().await;
+                }
+                if let Some(cell) = cell {
+                    self.refresh_marks(cell).await;
+                }
+            })
+            .into()
     }
 
     /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`
@@ -1202,6 +1226,14 @@ pub(crate) mod tests {
                 let key = layout::marks(cell, epoch);
                 writer.put(&key, put(marks).into(), PutMode::Create).await.unwrap();
             }
+            // The marks there, but the bucket not said marked: a reader watches no cell's
+            // (TASK-395.4's review).
+            let blind = Store::new(objects.clone(), "p");
+            blind.get(&marked).await.unwrap();
+            blind.get(&marked).await.unwrap();
+            assert!(!blind.marks.marking() && blind.marks.cells_watched() == 0);
+            assert_eq!(warned(), Vec::<String>::new());
+            writer.put(layout::MARKING, vec![1].into(), PutMode::Create).await.unwrap();
 
             let reader = Store::new(objects.clone(), "p");
             // Its first read reads the marks, alongside: what it reads after, it warns of.
@@ -1258,7 +1290,10 @@ pub(crate) mod tests {
             let extent =
                 layout::extent(layout::TEST_CELL, 1, 0, storage_device::ExtentId::new(1, 5));
             store.put(&extent, vec![6; 11].into(), PutMode::Create).await.unwrap();
-            store.put(&layout::moves(&segment), vec![7; 13].into(), PutMode::Create).await.unwrap();
+            store
+                .put(&layout::moves(&segment).unwrap(), vec![7; 13].into(), PutMode::Create)
+                .await
+                .unwrap();
             assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
             let range = ByteRange::Bounded(10..30);
             assert_eq!(store.get_range(&segment, range).await.unwrap().len(), 20);
@@ -1267,7 +1302,7 @@ pub(crate) mod tests {
             store.list("segments/").await.unwrap();
             store.list_delimited("segments/").await.unwrap();
             store.delete(&segment).await.unwrap();
-            store.delete_batch(&[&extent, &layout::moves(&segment)]).await.unwrap();
+            store.delete_batch(&[&extent, &layout::moves(&segment).unwrap()]).await.unwrap();
         });
         let stats = store.stats();
         let requests: Vec<_> =

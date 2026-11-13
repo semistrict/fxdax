@@ -51,7 +51,7 @@ impl MovesMaps {
             unread.iter().map(|key| &key[..key.rfind('/').map_or(0, |slash| slash + 1)]).collect();
         let mut moved = BTreeSet::new();
         for prefix in prefixes {
-            let listed = bucket::list(bucket, &layout::moves(prefix)).await;
+            let listed = bucket::list(bucket, &layout::moves(prefix)?).await;
             moved.extend(listed.into_iter().filter_map(|meta| layout::moved_from(&meta.key)));
         }
         let (unread, unmoved): (Vec<String>, Vec<String>) =
@@ -72,7 +72,7 @@ impl MovesMaps {
             keys.into_iter().filter(|key| !self.maps.contains_key(key)).collect();
         let read: Vec<_> = futures::stream::iter(unread)
             .map(|key| async move {
-                let moves: Option<Moves> = object::footer(bucket, &layout::moves(&key)).await?;
+                let moves: Option<Moves> = object::footer(bucket, &layout::moves(&key)?).await?;
                 Ok::<_, Error>((key, moves.map(|moves| moves.extents.into_iter().collect())))
             })
             .buffer_unordered(READ_AT_ONCE)
@@ -99,7 +99,7 @@ impl MovesMaps {
         key: &str,
     ) -> Result<Moved, Error> {
         if !self.maps.contains_key(key) {
-            let moves: Option<Moves> = object::footer(bucket, &layout::moves(key)).await?;
+            let moves: Option<Moves> = object::footer(bucket, &layout::moves(key)?).await?;
             let map = moves.map(|moves| moves.extents.into_iter().collect());
             self.maps.insert(key.to_owned(), map);
         }
