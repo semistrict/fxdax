@@ -3,10 +3,11 @@ id: TASK-395.2
 title: >-
   Bucket layout: everything a cell's collection reads under its prefix (moves,
   collector lease, references), format 8
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 09:43'
+updated_date: '2026-11-13 14:30'
 labels:
   - bucket
   - collector
@@ -38,8 +39,27 @@ Moves objects live at `moves/<key>` (and `moves/moves/...`), so a cell's compact
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. layout: format 9 (8 refused by name); <C>moves/<rest> and <C>moves/moves/<rest> (moves(), moved_from(), further() within a cell); <C>gc/lease, <C>gc/marks/<epoch>; <C>refs/<parent>/<at>/<tenant>.<cell>.<child> with references(), references_of(), fork_point(), reference(), referenced_parent/at() for delimiter listings; root gc/lease, gc/marks and moves/ gone (keys of no kind).
+2. Kind: GcLease{cell}, Marks{cell,epoch}, Moves{cell,of}, Reference{parent,at,child}; owner() attributes each to its cell; layout::Reference bytes (format, owner).
+3. Readers follow moves at the new keys (fetch, MovesMaps::read, writer/extent_store further); marks per cell in Store/marks::Watch (each cell read refreshed every REFRESH).
+4. Cell Display/FromStr (TENANT/CELL), cell::listed() by delimiter listings.
+5. Tests: layout kinds/owners/prefix/references/moves; record format 8 refused; cell listing; store marks per cell; fxdax-gc --usage over the new keys.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Format 8 is taken by TASK-395.7 (a point's record says whether it is shared): this task's layout change is format 9.
+
+Round 1 (@claude, 2026-11-13), batch with TASK-395.3 and .4 on branch t3/395-per-cell-collector.
+Landed:
+- layout: FORMAT 9; format 8 refused by name (record::tests::records_of_other_formats_are_refused). Under a cell's prefix <C>: moves `<C>moves/<rest>`, their moves `<C>moves/moves/<rest>` (layout::moves, moved_from, further within a cell; moves of an object of no cell panic: only a cell's objects move); collector lease `<C>gc/lease` (gc_lease), marks `<C>gc/marks/<epoch>` (marks_of, marks); references `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` (references, references_of, fork_point, reference; referenced_parent/referenced_at parse delimiter prefixes). The root gc/lease, gc/marks/ and moves/ are keys of no kind now.
+- Kind: GcLease{cell}, Marks{cell,epoch}, Moves{cell,of}, Reference{parent,at,child}; owner() gives every one its cell (references their parent's). layout::Reference {format, owner} is a reference's bytes. cell_of / cell_of_prefix helpers.
+- extent_frame Cell: Display/FromStr TENANT/CELL. cell::listed(): every cell by delimiter listings of tenants/ and each tenant's cells/, listing none of their objects.
+- Readers: MovesMaps::read and fetch follow the new keys; marks::Watch holds marks per cell, a cell's refreshed every REFRESH alongside a read of that cell (Store::refresh_marks(cell)); the collector's census of a cell isn't logged.
+Where code differs from the spec: none in layout; marks per cell cost a LIST a minute per cell read (OPEN_QUESTIONS.md, Decisions).
+Tests: layout::tests (a_cells_objects_are_under_its_tenants_prefix, references_list_by_parent_then_fork_point, moves_are_further_along_the_way_in_their_cell, objects_of_no_cell_have_no_moves, kinds, owners), cell::tests::cells_are_listed_by_their_prefixes, marks::tests (per cell), store::tests::stores_warn_of_reading_what_the_newest_marks_name (two cells), fxdax-gc unit + tests/gc.rs (usage over the new keys, file bucket layout).
 <!-- SECTION:NOTES:END -->
