@@ -3,9 +3,11 @@ id: TASK-395.8
 title: >-
   Usage per tenant and cell from the collector's passes, not a listing of the
   whole bucket
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13T08:53:00Z'
+updated_date: '2026-11-13 19:48'
 labels:
   - bucket
   - collector
@@ -26,9 +28,9 @@ TASK-394's `fxdax-gc --usage` lists the whole bucket into memory: 30-40 GB and h
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each cell pass records its cell's objects and bytes (by kind) under the cell, with the time of its listing
+- [x] #1 Each cell pass records its cell's objects and bytes (by kind) under the cell, with the time of its listing
 - [ ] #2 `fxdax-gc --usage` reads the recorded usage of every cell (or of one tenant's), streaming one JSON object a line per tenant and per cell, in memory bounded independently of the bucket's size, each with when it was measured
-- [ ] #3 A test shows usage after writes, compaction and deletion matching a listing of the cells
+- [x] #3 A test shows usage after writes, compaction and deletion matching a listing of the cells
 <!-- AC:END -->
 
 ## Definition of Done
@@ -37,3 +39,21 @@ TASK-394's `fxdax-gc --usage` lists the whole bucket into memory: 30-40 GB and h
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Each full pass records Usage {measured (listing's start, store clock), kinds: objects/bytes by layout kind name} in <C>gc/lease: its listing less what it deleted, plus the moves it compacted to; the lease counts itself as written.
+2. fxdax-gc --usage [--tenant TENANT]: tenants by delimiter listing, a tenant's cells by delimiter listing, each cell's lease GET (32 at once, in order): a JSON line per cell then per tenant (IDs hex, measured_unix_ms, objects, bytes, kinds); nulls for a cell no pass ended on. Memory: one tenant's cell IDs. TASK-394's whole-bucket listing removed.
+3. Tests: line formats (unit), collector test that recorded usage matches a listing after writes, compaction and deletion, CLI test over a file bucket (usage vs listing, measured time window, unpassed cell nulls, --tenant).
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round 1 (@claude, 2026-11-13), batch with TASK-395.6 on branch t3/395-incremental-usage.
+Landed: each full pass records Usage {measured: its listing's start by the store's clock, kinds: objects/bytes by layout kind name} in <C>gc/lease: the listing less what it deleted, plus the moves it compacted to; the lease counts itself (bincode fixint keeps its length). Skipping passes don't re-measure. fxdax-gc --usage [--tenant TENANT]: cell::tenants and cell::of_tenant by delimiter listings, each cell's lease read 32 at once in order, a JSON line per cell ({scope, tenant, cell, measured_unix_ms, objects, bytes, kinds}; nulls for a cell no pass ended on) then per tenant (cells, measured_cells, oldest/newest measured, sums). IDs hex. TASK-394's whole-bucket listing removed (its unowned/total lines with it).
+Tests: collector::tests::passes_record_what_their_cells_take (usage == listing by kind after writes + compaction + deleting the compacted, and after a deletion with the cell reclaimed and the reference retired; unchanged cells keep their older measurement); tests/gc.rs usage_says_what_each_files_cell_and_tenant_takes_as_passes_found (file bucket via the binary: per-cell lines equal a listing, measured within the pass's window, unpassed cell nulls, tenant sums, --tenant, writes nothing); fxdax-gc unit tests for the line formats and flags.
+Verified as in TASK-395.6's notes.
+ACs: #1 and #3 proven. #2 left unchecked: streams JSON per tenant and cell with times (tested), but memory holds one tenant's cell IDs at a time, since Bucket::list_delimited returns a level whole: bounded by the largest tenant's cell count, not independent of the bucket's size. A paged delimiter listing (start-after) would close it.
+<!-- SECTION:NOTES:END -->

@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10 13:14'
+updated_date: '2026-11-13 19:22'
 labels:
   - testing
   - flaky
@@ -34,3 +35,9 @@ Seen 2026-11-10 on ubu1 (TASK-320's branch at c8e4ff56, scripts/test.sh workspac
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-13 (TASK-395.6/.8 batch, branch t3/395-incremental-usage): fails 3 of 6 runs alone on the macOS laptop (cargo nextest run -p fxdax images_dropped_as_their_pass_runs), also with the new skipping of unchanged cells turned off by hand, so not that change; once in scripts/test.sh's workspace part, passing in two runs before.
+<!-- SECTION:NOTES:END -->
