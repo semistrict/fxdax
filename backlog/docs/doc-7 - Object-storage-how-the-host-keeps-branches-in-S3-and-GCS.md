@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 18:27'
+updated_date: '2026-11-13 18:39'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -157,7 +157,7 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `<C>checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
 | `<C>branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `<C>leases/<branch>` | the writer's epoch, who took it, and the token it was taken with: its cell's epoch (Cells) | created, then updated with a condition |
-| `<C>gc/lease` | the collector's epoch over the cell, which its passes take (Garbage collection, TASK-395.2) | likewise |
+| `<C>gc/lease` | the collector's epoch over the cell, which its passes take, and what the last pass over the cell to end recorded: its listing's digest, what it deferred, what the cell takes (Garbage collection, Passes that skip; TASK-395.2, TASK-395.6, TASK-395.8) | likewise |
 | `<C>gc/marks/<epoch>` | what the cell's mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
 | `<C>moves/<rest>` | the live extents of the object at `<C><rest>`, compacted, and where in it each is; `<C>moves/moves/<rest>` those moves' (Garbage collection) | create-only, by the collector |
 | `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference of a fork of the cell's branch `parent` to a child of another cell, or a clone's (Garbage collection, References) | create-only, before the child's record; retired by the child's cell's pass |
@@ -755,9 +755,8 @@ else, and deletes nothing else but the references it retires; it reads other cel
 
 | Key | What | Written |
 |---|---|---|
-| `<C>gc/lease` | the cell's collector lease: its epoch and holder; replaces `gc/lease` | created, then updated with a condition, by passes over the cell |
+| `<C>gc/lease` | the cell's collector lease: the format, its epoch and holder; replaces `gc/lease`; and what the last pass over the cell to end recorded, carried by each taking to the next (Passes that skip) | created, then updated with a condition, by passes over the cell |
 | `<C>gc/marks/<epoch>` | what the cell's mark-only pass of that epoch would have deleted | create-only, by the collector |
-| `<C>gc/...` | anything else a pass records to skip by (TASK-395.6) | by the collector; never a candidate |
 | `<C>moves/<rest>` | the moves of the object at `<C><rest>`, and `<C>moves/moves/<rest>` those moves' moves: a reader of `<C><rest>` that finds it gone, or not naming the extent, reads `<C>moves/<rest>`, then `<C>moves/moves/<rest>` | create-only, by the cell's passes |
 | `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference: the fork of the cell's branch `parent` at its segment `at` to `child` of cell `<cell>` of `<tenant>`, each ID 16 hex digits; its bytes the format and the fork's owner (a writable fork's, from its footer; a clone's, its restore's), unique to the fork, so that every writer of it writes the same | create-only (an object of identical bytes there is success), before the child's record; deleted by the passes of the child's cell |
 
@@ -879,7 +878,7 @@ lease, its LISTs, its other GETs and every PUT and DELETE, is under `<C>`):
 | GET of a parent's checkpoint at the fork point, by its key (another cell's) | recovering a live branch of `<C>` with no checkpoint of its own, forked from another cell; or a fork point of `<C>` whose parent has no checkpoint at or before it, and inherits from another cell | one per such branch or fork point; 0 for a branch with a checkpoint |
 | GET of a point's record | a clone in `<C>` still being made | one per such clone (they last one restore) |
 | GET of a child's record | a fork point's state found lost | one per child of that fork point (never, when nothing is lost) |
-| DELETE of a reference under the parent's cell | `<C>` has no live branch and no reference | one per deleted record of `<C>` with an origin elsewhere, until `<C>`'s listing stops changing (TASK-395.6), and none after |
+| DELETE of a reference under the parent's cell | `<C>` has no live branch and no reference | one per deleted record of `<C>` with an origin elsewhere, every pass, those that skip the cell too (TASK-395.6, Passes that skip; TASK-395.14) |
 
 None of them scales with another cell's size: what a pass costs grows with its own cell's objects,
 branches and fork points, plus its branches' ancestry where it has no checkpoint. A reference a
@@ -973,13 +972,15 @@ exact, but a protocol across cells every pass.
   reference names it, its children's records read only then.
 - **Retiring is repeated** by every pass over a dead cell, the pass unable to tell the references
   gone from those not without listing other cells: a delete each (sent in batches), counted in
-  `Report::retired`, until TASK-395.6 skips the dead cell's unchanged listing.
+  `Report::retired`; passes that skip the cell send them again too, reading nothing (Passes that
+  skip): a parent's writer may write a reference again after its retirement.
 - **A pass checks the cell before taking its lease**: the format of its first record, refused
   before anything is written, and, the cell holding no record, whether it holds anything at all: a
-  pass over a cell of nothing writes nothing.
+  pass over a cell of nothing writes nothing. Only the first: one finding the lease there, of this
+  format, which a pass that checked wrote, checks nothing more (TASK-395.6).
 - **A collector keeps nothing of a cell from one pass to the next** (TASK-395.4's review): a sweep
-  over every cell holds no more than the cell it passes over; TASK-395.6 is to keep what is worth
-  keeping, under the cell's prefix.
+  over every cell holds no more than the cell it passes over; what passes keep for those after
+  them is in the cell's lease (Passes that skip).
 
 The rest of a pass, unchanged within the cell:
 
@@ -1076,6 +1077,96 @@ operator to see what the collector would do before trusting it with a bucket:
 **Not yet:** merging small objects. Compaction writes each object's live extents to its own moves;
 merging several into one needs the moves of each to name it, and a moves object can be deleted only
 while none of them could still be written.
+
+### Passes that skip, and what a cell takes (TASK-395.6, TASK-395.8)
+
+Most cells are idle between sweeps: a stopped VM, a base image, a snapshot. A pass records, as it
+ends, in the cell's collector lease (`extent_remote::passed`), by a write conditional on the lease
+being its own taking still (a pass fenced records nothing), what the next goes by; every taking of
+the lease reads it and carries it to the next:
+
+- **the digest of its listing** of the cell, the one it decided by: SHA-256 over each object's key,
+  size, time written, ETag and version, in the order of their keys, but the collector's own
+  (`<C>gc/`: its lease, which every pass writes, and its marks, which no pass decides by);
+- **the options** it decided by (`--grace`, `--compact-below`);
+- **what it deferred**: what it found no live branch needs but for the time since an object was
+  written (a compacted object whose moves are too recent; moves of an object gone, or compacted in
+  turn, too recent), each with when it may go;
+- **what it retired**, its cell dead: the references of its deleted children under their parents'
+  cells;
+- **what the cell takes** (TASK-395.8): its objects and bytes by kind, as of its listing, and when
+  that began by the store's clock, less what the pass deleted and with the moves it compacted to,
+  the lease counting itself as written.
+
+A pass takes the lease, a GET and a conditional PUT, and lists the cell. If its listing has the
+digest recorded, of the same options, it **skips**: it recovers and reads nothing, and deletes what
+was deferred once due (after its check of the lease, as every pass), then records that the next
+pass goes in full, as what goes once those are gone (moves of an object deleted) none worked out;
+and retires again what was retired. Otherwise it passes in full. An idle cell costs a pass three
+requests: the lease's GET and PUT, and one LIST; a dead one with children in other cells, a GET of
+the lease and a DELETE more. Mark-only passes and dry runs never skip, and record nothing.
+
+**Why a pass that skips is as safe as one in full.** What a pass decides is a function of what it
+reads. What it reads under the cell's prefix is in its listing: an object written, written again (a
+record's or a lease's compare-and-swap, a writer's takeover), or deleted since changes the listing's
+keys, ETags, versions, sizes or times; what is written after the listing began, behind its cursor,
+is a candidate of neither pass (`candidatesFirst`). So a listing of the digest recorded means the
+recorded pass's candidates are all there, listed before its reads, and nothing under the prefix it
+read changed. What a pass reads outside the prefix, case by case:
+
+- *A parent's state at a fork point, for a branch of the cell forked from another cell*: the
+  parent's checkpoint at the fork point, by its key, create-only, written before the child's record
+  (TASK-395.4's review), and kept by the child's reference. It never changes.
+- *A child in another cell reading the cell's objects*: reading changes nothing. What the child
+  inherits the cell keeps by its reference, which is under the prefix: a reference written (a fork,
+  a clone) or retired (by the child's cell's pass) changes the listing, which retiring under the
+  parent's cell was chosen for (References).
+- *The state at a fork point the cell keeps*: of its own branch, changed only by the cell's own
+  compactions and checkpoints, under the prefix.
+- *Leases and takeovers*: branches' leases are under the prefix, and a takeover writes its branch's
+  again. The collector's lease is left out of the digest, as every pass writes it: passes at once
+  are fenced by it as before.
+- *A point's record in another cell*, read for a clone of the cell being made, to give it up once its
+  point is deleted: it changes with nothing of the cell's. A pass that finds such a clone live
+  records no digest, and the next goes in full. So too a pass that found a fork point lost (its
+  children's records read, in their cells), or a branch's recovery lost and nothing lost after all
+  (its record read again, and its point's).
+- *Time*: only for the grace period, which what is deferred carries.
+
+A pass that skips makes the recorded pass's deletes, late: what the model's pass may do, slow, its
+deletes coming any time after its reads while no other pass took the lease. Passes that took it
+between changed nothing under the prefix before the listing (it would show), are fenced by the
+skipping pass's taking, and what they write after the listing is none of what the recorded pass
+deferred: it defers only objects whose moves it listed, which no pass compacts again, and records no
+digest while a clone is being made, which a pass may give up on. So Bucket.tla needs no change: a
+pass that skips is the tail of the pass it goes by.
+
+*What it costs:* a pass that deleted or compacted anything changed its cell's listing, so the next
+goes in full too, and finds the cell settled. A dead cell's passes, skipping or not, retire its
+references again, every pass: `branch::record_fork`, having read a child's record live, writes its
+reference again, which may come after the child's deletion and the reference's retirement, and
+which nothing of the dead cell's shows; kept, it would hold the parent's state at the fork point
+for good (the simulation's restores, seed 53, found it once passes first skipped dead cells).
+TASK-395.14 is to make that impossible, so that dead cells cost their lease and listing alone. A
+cell with a reference at a fork point found lost (a clone's left by its host dying, TASK-395.10)
+never skips.
+
+*Decided (TASK-395.6):* **fork-point states are not cached.** A pass in full recovers the state at
+each fork point its references name: for a fork across cells one GET of the checkpoint at the fork
+point. A cache under the cell's prefix would hold the same states, as many bytes; and would have to
+be checked against the listing for a checkpoint of the parent written at or before the fork point
+since it was cached (a fork across cells writes one at its fork point where none is), or the pass
+would keep the older checkpoint it cached and delete the newer, which the child's recovery reads by
+its key: the child lost. Idle cells, where most fork points are (bases, snapshots), are skipped
+whole; a written cell with many fork points is TASK-395.12's.
+
+**What each cell and tenant takes** (TASK-395.8): `fxdax-gc URL --usage [--tenant TENANT]` reads
+each cell's lease (one GET a cell, 32 at once, the cells of a tenant found by a delimiter listing)
+and writes a JSON object a line, a cell's then its tenant's sum, IDs in hexadecimal, each with when
+it was measured: a cell as of its last pass in full, which nothing under its prefix changed since if
+passes since skipped it; a cell no pass ended on, nulls. It holds one tenant's cells' IDs at a time
+(a delimiter listing gives its level whole), never their objects. TASK-394's sum by a listing of the
+whole bucket is gone, with what it said of what is no cell's (object-ID blocks, `gc/marking`).
 
 ## Testing
 
