@@ -2598,21 +2598,37 @@ mod tests {
     /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
     /// `to`: its stores copied there, no store of them open. What the crashed host's writes
     /// had in flight may land still, as a dead host's PUTs may.
+    ///
+    /// Copied again if a file it listed went before it copied it, renamed or removed by the
+    /// host's stores meanwhile, as they go on: a crash leaves a renamed file under one name or the
+    /// other, where a copy that listed it under the first would have neither. The stores rename
+    /// files on threads of their own, framings made durable and the next segment's log placed
+    /// ahead of it (TASK-384), which a copy raced.
     pub(super) fn restart(from: &std::path::Path, to: &std::path::Path) {
-        copy_dir(from, to);
+        for _ in 0..100 {
+            match copy_dir(from, to) {
+                Ok(()) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::remove_dir_all(to).unwrap();
+                }
+                Err(err) => panic!("copying {}: {err}", from.display()),
+            }
+        }
+        panic!("copying {}: its files went as it was copied, again and again", from.display());
     }
 
     /// Copies the directory `from` to `to`, every file in it as it is.
-    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
-        std::fs::create_dir(to).unwrap();
-        for entry in std::fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
             let (from, to) = (entry.path(), to.join(entry.file_name()));
-            match entry.file_type().unwrap().is_dir() {
-                true => copy_dir(&from, &to),
-                false => drop(std::fs::copy(&from, &to).unwrap()),
+            match entry.file_type()?.is_dir() {
+                true => copy_dir(&from, &to)?,
+                false => drop(std::fs::copy(&from, &to)?),
             }
         }
+        Ok(())
     }
 
     /// A fork, waiting in a thread of its own: what it gives.
