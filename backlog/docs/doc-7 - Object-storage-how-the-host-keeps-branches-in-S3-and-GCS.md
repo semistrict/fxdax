@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 12:50'
+updated_date: '2026-11-13 13:49'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -157,9 +157,10 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `<C>checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
 | `<C>branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `<C>leases/<branch>` | the writer's epoch, who took it, and the token it was taken with: its cell's epoch (Cells) | created, then updated with a condition |
-| `gc/lease` | the collector's epoch; per cell from TASK-395.2's layout, `<C>gc/lease` (Garbage collection) | likewise |
-| `gc/marks/<epoch>` | what the mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
-| `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is; under the cell from TASK-395.2's layout, `<C>moves/...`, and references `<C>refs/...` with them (Garbage collection) | create-only, by the collector |
+| `<C>gc/lease` | the collector's epoch over the cell, which its passes take (Garbage collection, TASK-395.2) | likewise |
+| `<C>gc/marks/<epoch>` | what the cell's mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
+| `<C>moves/<rest>` | the live extents of the object at `<C><rest>`, compacted, and where in it each is; `<C>moves/moves/<rest>` those moves' (Garbage collection) | create-only, by the collector |
+| `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference of a fork of the cell's branch `parent` to a child of another cell, or a clone's (Garbage collection, References) | create-only, before the child's record; retired by the child's cell's pass |
 | `objectid/<block>` | a block of object IDs taken by one allocator, which gives its IDs out, each once (Object IDs) | create-only; kept for good |
 
 A branch is named by its cell and its ID (`layout::Branch`, displayed `TENANT/CELL/ID`): footers,
@@ -167,8 +168,7 @@ fork children (`Child`) and origins (`Origin`) name branches so, so that recover
 reach a parent or a child in another cell, or another tenant's. An extent's ID names its branch by
 the ID alone, as forks share their parents' extents by it and a host's extent cache keys them by
 it, so a branch's ID is unique in its bucket, whatever its cell (Object IDs). The collector lists
-`tenants/` whole for the records it reads again
-(Garbage collection). A checkpoint's table stores its keys front-coded (`extent_frame::table`), as
+a cell's `branches/` for the records it reads again, a cell at a time (Garbage collection). A checkpoint's table stores its keys front-coded (`extent_frame::table`), as
 a branch's keys share their cell's prefix and their kind's.
 
 ### Cells
@@ -726,9 +726,12 @@ points are shared or not as any other's. Forks of branches with writers into ano
 
 *Rewritten 2026-11-13 (TASK-395.1): per cell, conservative.* The protocol below is model-checked
 in `specs/bucket` (Bucket.tla, the `BucketCells*` models and every other model extended to cells)
-and is the design of record for TASK-395.2-.8; the code still runs the whole-bucket pass it
-replaces (one `gc/lease`, every object listed, every live branch recovered), which goes when the
-per-cell pass lands, never beside it.
+and is the design of record for TASK-395.2-.8. The code runs it since TASK-395.2-.4 (format 9,
+`extent_remote::collector`): the whole-bucket pass is gone. `fxdax-gc` sweeps every cell, a pass
+over each one after another, the cells found by delimiter listings of `tenants/` and each tenant's
+`cells/`, listing none of their objects (`cell::listed`), or passes over the one `--cell
+TENANT/CELL` names; `--dry-run`, `--mark-only` and `--branches` go per cell the same way. The
+concurrent sweep across processes is TASK-395.5's.
 
 `fxdax-gc` is the only thing that deletes; writers only add. A live branch is one whose record says
 so, whether or not a host holds it, which only hosts know: `fxdax-gc URL --branches --held FILE`
@@ -908,6 +911,25 @@ exact, but a protocol across cells every pass.
   is given up on if its point's record, read again, says deleted, rather than failing the pass.
 - **Several volumes in a cell:** retirement waits for the whole cell, so a deleted volume of a
   cell forked whole (TASK-364.1) keeps its parent's fork point until the cell goes.
+- **A writable fork's writer reads its child's record before its reference** (TASK-395.3): a child
+  deleted, or another's, gets no reference, as nothing inherits through it and nothing would retire
+  it, the record naming no such fork (a fork deleted before its host learned its origin, recorded as
+  a branch of its own, among them). The model writes the reference whatever the record. Without
+  the rule `references_first`, the reference comes after the record, and the deletion's after it
+  marks the parent deleted, as the model's mutation has it.
+- **A failed clone's cleanup names its origin** (`Remote::unfork` of a point's copy: a deleted
+  forking record), so that its cell's pass retires its reference.
+- **References never retired** (TASK-395.10): a clone's whose host died between its reference and
+  its record, and a writable fork's whose child's ID another branch took between the record's read
+  and its create. Space, never data; the model has them too (`RefPoints`: "a reference left by a
+  fork that failed").
+- **A lost fork point** is recovered again each pass (64 restarts, as any recovery) while a
+  reference names it, its children's records read only then.
+- **Retiring is repeated** by every pass over a dead cell, the pass unable to tell the references
+  gone from those not without listing other cells: a delete each (sent in batches), counted in
+  `Report::retired`, until TASK-395.6 skips the dead cell's unchanged listing.
+- **A pass over a cell its listing finds empty** still takes the cell's lease, which is then the
+  cell's one object (`fxdax-gc --cell` of a cell with nothing).
 
 The rest of a pass, unchanged within the cell:
 
@@ -980,10 +1002,10 @@ operator to see what the collector would do before trusting it with a bucket:
   moves both, and every marks object, until an operator collects for real or removes them. The
   collector never takes `<C>gc/` for a candidate, nor for a branch's.
   - **Readers warn.** Every reader of a bucket reads it through `store::Store` (extentd's remote
-    stores, writers recovering, fxdaxctl, the collector), which holds the newest marks' keys, read
-    again every 60 s by a listing of `gc/marks/` (and a read once it changed; per cell in
-    TASK-395.2's layout, the marks of the cells it reads) alongside one of its reads, uncounted in
-    its stats, never a round trip a read. A GET, ranged GET or HEAD of a marked key logs a `warn`
+    stores, writers recovering, fxdaxctl, the collector), which holds the newest marks' keys of
+    each cell it reads, read again every 60 s by a listing of the cell's `gc/marks/` (and a read
+    once it changed) alongside one of its reads of the cell, uncounted in its stats, never a round
+    trip a read: a listing a minute for each cell read (TASK-395.2). A GET, ranged GET or HEAD of a marked key logs a `warn`
     with the key, its kind (naming its branch), the request, the marks' epoch and the current span's
     trace and span IDs; in extentd the log names the guest request too (`request_id`). A read costs
     one load with no marks, one set lookup with some. Listings are logged at `debug` only: they name

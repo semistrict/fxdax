@@ -2,6 +2,18 @@
 
 # Decisions
 
+## The per-cell collector as built: layout, references, passes (TASK-395.2, .3, .4, 2026-11-13)
+
+Decided without you:
+- **Format 9**, format 8 refused by name: moves at `<C>moves/<rest>` (their moves `<C>moves/moves/<rest>`), the collector's lease and marks at `<C>gc/`, references at `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>`; nothing at the bucket's root but `objectid/`. *Undo:* a format change.
+- **Readers watch each cell's marks** they read, a listing of the cell's `gc/marks/` a minute per cell read (before: one listing of `gc/marks/` a minute per bucket). A host reading a thousand cells lists a thousand times a minute, uncounted. *Instead:* watching marks only when asked (a flag), as mark-only passes are an operator's tool. *Undo:* `marks::Watch` back to one set, fed by whatever lists the marks.
+- **A writable fork's writer reads the child's record before writing its reference**, a GET more per fork across cells: a child deleted, or another's, gets no reference, which nothing would ever retire (the fault tests found both). The model writes it whatever the record. *Instead:* references always, and a reaper (TASK-395.10).
+- **References left by forks that never made their child stay** (a clone's host dying between its reference and its record; an ID taken between the read and the create): space, never data, as the model has it; filed as TASK-395.10, which the fault tests name where they excuse them.
+- **A clone being made whose recovery fails is given up on** if its point's record, read again, says deleted (doc-7's "beyond the model"). TASK-180's test (a fenced pass finding such a fork lost) now gives the fork up; the rule `passes_fenced_stop` is shown needed by a claim with a writer instead.
+- **`collector::collect` sweeps every cell in a plain loop**, one pass after another, a pass failing stopping none of the others; the first error is returned after all ran. Tests that need the bucket settled sweep until two in a row delete and compact nothing (`testing::collect_until_quiet`), as a dead cell's pass retires the references its parents' cells reclaim at their next pass.
+- **A `Collector` remembers each cell's records and lengths apart**, for every cell it passed over, forgetting cells no longer listed: memory grows with the bucket's records across a long `--every` run, as before. TASK-395.5/.6 can bound it.
+- **The conservative cost shows in fxdax's tests:** a fork's parent keeps the fork point while its state names the fork, until a checkpoint drops the fork (its child deleted); inherited extents are compacted no further while a fork lives (`forks_read_what_they_inherited_compacted_twice` now checks one compaction). Both as specs/bucket has it.
+
 ## A framing's part buffers and compressors are kept in the daemon (TASK-336, 2026-11-13)
 Decided without you:
 - **Two segments' worth of part buffers (64 MiB) and 64 compressors are kept in the daemon for framings to come** (`extent_store::framing::KEPT`): taken afresh, each framing faulted in 8,192 pages for its data, and its packing threads' compressors' tables, which on a host whose vCPUs keep its CPUs busy was most of a framing's time. The daemon's resident memory grows by up to that much (peak RSS within the runs' spread on ubu1's short and long modes). *Instead:* a buffer per framing as before, faulted in each time. *Undo:* `KEPT` to 0.
