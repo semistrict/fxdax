@@ -2,6 +2,14 @@
 
 # Decisions
 
+## The collector, per cell and conservative; shared points by a flag (TASK-395, 2026-11-13)
+
+Agreed with you: the collector may reclaim late, and cross-tenant sharing is needed only for base images and snapshots. Decided from that without you:
+- **The unit of collection is the cell**, not the tenant, so that one large tenant is collected as independently as many small ones. *Instead:* a pass per tenant, which keeps the protocol exact but leaves a large tenant as costly as today's whole bucket.
+- **A fork keeps its parent's state at the fork point** in the parent's cell while it lives (by a reference under the parent's cell), ignoring what it frees of it since. Space wasted: what a writable branch's forks freed of what they inherited, until they go. A live point's clones waste nothing, since the point keeps that state anyway. *Instead:* forks' cells publishing what they still hold of their parents', exact but a cross-cell protocol per pass.
+- **Shared points are marked in the point's record**, set only through the control API, not by a reserved tenant ID. Reasons: no tenant is special, any point can be published in place, and tenant 0 already means the daemon's own stores.
+- **Order:** the spec first (TASK-395.1), as the per-cell protocol drops the rules today's proof stands on. *Undoing any of it:* before TASK-395.2 lands, edit the tasks; after, a format change like any other.
+
 ## Space per tenant and cell: the bucket's, from fxdax-gc (TASK-394, 2026-11-13)
 
 You asked for the space each tenant and each cell uses. I summed the bucket, where cells are kept whole. A host holds only the cells placed on it, and only the part it caches; its disk per tenant was already a metric (`fxdax_extentd_tenant_disk_bytes`). `fxdax-gc URL --usage` lists the bucket once and writes nothing. It gives bytes as stored (compressed). A cell's count includes its compacted objects (`moves/`) and garbage the collector hasn't reclaimed yet: that's what the bucket bills. *Instead:* live bytes only, which needs the collector's reachability pass (much costlier); or a per-cell host-disk metric in extentd. *Undoing it:* drop the flag; nothing else depends on it.
