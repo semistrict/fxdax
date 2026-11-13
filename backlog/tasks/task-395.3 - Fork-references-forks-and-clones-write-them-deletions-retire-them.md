@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 14:59'
+updated_date: '2026-11-13 17:37'
 labels:
   - bucket
   - collector
@@ -69,4 +69,6 @@ Tests: collector::tests writable_forks_refer_before_their_childrens_records, clo
 Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on origin/main c6ba0d117): scripts/test.sh before the rebase exit 0: clippy clean, workspace 2315/2315, sim 59/59, Shuttle 37+10+33+6+10+18 all passed, scripts 312 OK, mutant checks 0 broken, go ok. After it: clippy gate clean, nextest extent_remote+extent_store+fxdax 807/807, sim 59/59, mutant checks 0 broken. Commits 1d07b12e8 (code and tests), a05be7dc2 (doc-7, OPEN_QUESTIONS.md), 675fd333b (backlog). Not run: ubu1 (the parent's), TLA+ (specs untouched). Flake seen once under load, outside this change: TASK-399.
 
 AC #4 left unchecked: the simulation and the fault rounds cover a host dying at each reference step and lose nothing, but a reference without a child is not always retired: a clone's whose host died between its reference and its record stays (TASK-395.10, excused by name in restore_faults).
+
+Review round (@claude, 2026-11-13; a6cc31ba1, 0de908c63): a clone refused by a record of its child's ID (Deleted, IdTaken) deletes the reference it wrote, test clones_refused_by_records_there_take_their_references_back; TASK-395.10's description has the case. fork_faults/restore_faults excuse exactly what a left reference keeps (testing::fork_point_keeps). record_fork re-puts the reference of a child recorded already (as the model), skipping the checkpoint's recovery; a child whose fork point's state is gone is recorded deleted with no reference (TASK-395.11).
 <!-- SECTION:NOTES:END -->

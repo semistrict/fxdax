@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 14:59'
+updated_date: '2026-11-13 17:37'
 labels:
   - bucket
   - collector
@@ -70,4 +70,14 @@ Simulation: the per-cell passes moved the seeds of five rules' searches, which t
 Upload's Shuttle tests gate a cell's whole listing, a pass's of its candidates, as they gated the bucket's.
 
 Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on origin/main c6ba0d117): scripts/test.sh before the rebase exit 0: clippy clean, workspace 2315/2315, sim 59/59, Shuttle 37+10+33+6+10+18 all passed, scripts 312 OK, mutant checks 0 broken, go ok. After it: clippy gate clean, nextest extent_remote+extent_store+fxdax 807/807, sim 59/59, mutant checks 0 broken. Commits 1d07b12e8 (code and tests), a05be7dc2 (doc-7, OPEN_QUESTIONS.md), 675fd333b (backlog). Not run: ubu1 (the parent's), TLA+ (specs untouched). Flake seen once under load, outside this change: TASK-399.
+
+Review round (@claude, 2026-11-13; a6cc31ba1, 7e1eeac79, 0de908c63 on t3/395-per-cell-collector):
+1. AC #1 made true: a recovery reads a parent in another cell by its checkpoint at the fork point, GET by key (recovery::state_at's from cell), no LIST of its checkpoints; record_fork (and a live claim in delete_fork) writes that checkpoint first if missing (recovery::checkpoint_at, create-only). Test passes_over_a_live_forks_cell_list_nothing_of_its_parents (live uncheckpointed cross-cell child; parent checkpointed before the fork or not); red with the LIST back. Spec unchanged: argued in doc-7 and OPEN_QUESTIONS.md (the newest checkpoint up to the fork point is what StateAt reads).
+2. Collector keeps nothing across passes (Remembered pass-local); passes_read_records_and_checkpoints_once_and_delete_at_once shows every record read again on the next pass.
+3. Marks watched only while gc/marking exists (written by mark-only passes; readers HEAD it once a minute); cells unread for 2 min forgotten. Tests in marks.rs and store.rs (a blind reader lists no marks). Decision in OPEN_QUESTIONS.md.
+4. References listed once, by delimiter: a clone's reference and its point's share the fork point's prefix, so the prefix holds a key all along; doc-7 and OPEN_QUESTIONS.md say why; NoReferencesRelisted unchanged (the model's rule is listing references after the states, which the code keeps).
+7. passable() checks the cell before the lease: the cell object's format (a GET; format 8 refused by name, tested), else the first record's, and emptiness; layout::moves returns Error::Corrupt for a key of no cell's (objects_of_no_cell_have_no_moves).
+Also: a fork across cells whose parent's state at the fork point is gone (sim restores seed 11) is recorded deleted, not failing the uploader (TASK-395.11 filed for why); a cross-cell claim with that state gone is deleted from the first (seed 143). The pre-lease GET moved two seed searches out of 0..20,000: takeovers_need_takings_pinned (first seed now 62,844) and deletions_need_fences (32,625); wider parallel searches showed the rules still needed; their windows now start there.
+Linux: extentd's Report literal fixed (ubu1 t395w2). cargo check --workspace --tests --target x86_64-unknown-linux-gnu WORKS on macOS with CC_x86_64_unknown_linux_gnu='zig cc -target x86_64-linux-gnu' (CXX likewise, AR='zig ar') and CRATE_CC_NO_DEFAULTS=1; also guest/tests (-p test_cases -p runner --features test_cases/host). Both clean.
+Tests (macOS): scripts/test.sh exit 0: workspace 2325/2325, sim 59/59, Shuttle and scripts parts pass; hand mutants 22+2 apply.
 <!-- SECTION:NOTES:END -->
