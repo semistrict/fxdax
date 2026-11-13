@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 22:52'
-updated_date: '2026-11-12 07:46'
+updated_date: '2026-11-13 00:02'
 labels:
   - extent_store
   - durability
@@ -50,4 +50,19 @@ Evidence, traced pgbench-dax under a disk loader (one run each, pre-TASK-310 23d
 - Main's extra: the durable thread's directory syncs of open-segments/logs, 50+49 s of journal wait (pre's framer: 26+14 s), which is fix 1; and log-header syncs on the write path, 58 s vs 24 s, which is fix 2.
 The interleaved A/B (main vs both fixes; pgbench and pgbench-dax 6 rounds under the loader, shared-disk-dax 3) was inconclusive: the loader saturated both sides (flushes 4-33 s, most runs failing doc-12's median on both), and shared-disk-dax's framing held at about 500 ms on both. The loader also ran as plain fxjob work beside TASK-330.4's bench A/B, the coordinator stopped it; a loader now runs inside its rounds' fxjob --bench job.
 Next: rebase on TASK-371 (one durable commit per sync, same path) when it lands, then re-measure with the bench slot.
+
+2026-11-12, the version landed (branch t3/369-lean, rebuilt from main):
+- **Kept:**
+  - de-duplicated entry syncs;
+  - the next segment's log prepared off the state lock (TASK-333), by a flush that made commits durable, not at open;
+  - recovery taking a log as its segment's only if its header names it;
+  - a store's close waiting for a preparation in progress.
+- **Dropped:** raw-file recycling (spare raw files) and log room (zero-filled room past a log's records). Both keep files on a tenant's disk that write admission doesn't count:
+  - Linux's tenant disk tests failed (hostile a_tenant_filling_its_disk_leaves_others_committing and a_compromised_vm_process_harms_no_tenant_beside_it, disk.rs tenants_past_their_disk_limits_are_refused_while_others_write);
+  - serves_hundreds_of_forks_of_a_base held a file per fork more.
+  - A frugality switch (no preallocation near a tenant's limit) fixed the hostile tests but not disk.rs: freed data must leave the disk, and preallocated files stay.
+- **Their worth, measured:**
+  - durable_commits_through_the_daemon on a quiet ubu1 (bucket on /dev/shm, 25 ms, 5 interleaved runs): main 39.2-40.6 ms median rounds, with room and recycling 39.6-42.9, without them 39.8-42.2. Nothing.
+  - Recycling's one gain: doc-12's median under load, within 50 ms 68% vs 56% (pgbench) and 63% vs 52% (pgbench-dax). Its cost: about 10% more host writes and up to a segment of disk per store. Filed as TASK-387.
+- The daemon test's gain is TASK-384's: 32.0 ms against a 30.1-30.6 ms round trip.
 <!-- SECTION:NOTES:END -->

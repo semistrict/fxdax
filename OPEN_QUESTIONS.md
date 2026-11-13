@@ -2,6 +2,23 @@
 
 # Decisions
 
+## A durable commit's local syncs off its path; no preallocation on a tenant's disk (TASK-369, TASK-333, TASK-384, 2026-11-12)
+Decided without you:
+- **A segment's upload waits for its framed file written, not durable** (TASK-384).
+  - The framed file's sync and its directory's run at the same time as the upload. The store hears of the acknowledgement only once they are done, and the files leave then as before.
+  - A first version heard of it at once. Acknowledged segments then stayed in the store until the next acknowledgement, page-ins missed the host's cache, and fxdax's lag-bound tests hung.
+  - Safety: the commits' records were synced before the upload, as before. Recovery takes a segment the base acknowledged as the bucket's (an existing rule). doc-12 says so; the TLA+ model's crash cuts the WAL by commits, not framed files, so it doesn't change.
+  - *Undo:* `close_for_upload` back to `close_now`, and `closed` waiting for framings, not writings.
+- **The next segment's raw file and log are placed ahead of it** (TASK-384).
+  - They go under their own names, holding the state lock, and their entries are made durable by the store's opener thread. A segment opened then costs its commits' flush no directory sync.
+  - Only a flush that made commits durable prepares the next segment, so a fork that only reads prepares nothing.
+  - Measured: `durable_commits_through_the_daemon` on ubu1 (bucket on /dev/shm, 25 ms) went from 38.5 ms to 32.0 ms median rounds, against a 30.1-30.6 ms round trip.
+  - *Undo:* `Segments::prepared` returning the preparation unplaced.
+- **No preallocation on a tenant's disk:** TASK-369's raw-file recycling and log room were dropped.
+  - Their files sit in the tenant's directory, which its limit counts as the daemon walks it, not as it admits writes. Linux's tenant disk tests failed.
+  - They bought nothing in the daemon test on a quiet host. Recycling did lift doc-12's median under load (within 50 ms: 68% vs 56%), for about 10% more host writes and up to a segment of disk per store.
+  - TASK-392 is to find a way within the limit; the switch I tried (frugal near the limit) is on branch t3/batch-syncs-off-critical-path.
+
 ## Writes take turns once one fails; a CPU budget per guest MiB in the qualification (TASK-382, 2026-11-12)
 Main's soak daemon spent 1.55x the pin's CPU (TASK-330.4's A/B). Profiled on ubu1 (perf, both sides alike, as work beside others' jobs, writes capped): 68% of main's CPU was in the full and out-of-service phases, every upload in flight (2.7x the pin's PUT-time) sending its object whole to the failing bucket again and again: the kernel's socket copies and the pages it zeroed for them. Decided without you:
 - **Once a write of a kind fails, writes of that kind take turns** (`extent_remote::store`'s `Turns`): one probe, after the backoff of the failures in a row (50 ms to 5 s), until one lands; then one more in flight per write answered (TCP slow start), no turns from 64 on. Reads take none. In the same environment the soak's daemon CPU went 1,582 s -> 173 s, catch-up after the bucket answered 212-245 s -> 41-44 s. *Instead:* release every waiting write at the first answer, which RustFS on a slow disk refused (503 SlowDown) until the soak ran out of time; or drop `object_store`'s own retries. *Undo:* the `turn()` call in `Store::put`.

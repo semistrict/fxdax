@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-10 14:51'
+updated_date: '2026-11-13 00:03'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -38,6 +38,21 @@ pgbench cases to the median (`durable_lag_within_50ms`). Shortening the tail is 
 A guest's **fsync, fdatasync, msync and O_SYNC** wait for *ordered*. **sync, syncfs, unmount and
 freeze** ask for `COMMIT_DURABLE`, and wait for *durable locally*, and with a remote, for *uploaded*.
 So an acknowledged fsync is not yet durable: it is ordered, and survives what leaves extentd alive.
+
+*Added 2026-11-12 (TASK-384):* *uploaded* needs *durable locally* of the commits, not of the
+segment's framed file. A segment's upload waits for its commits' records synced in its log (the
+flush), and for its framed file written, not synced: the framed file's sync, and its directory's,
+go on at once with the upload, and the store hears of the acknowledgement only once they are done,
+its files leaving then as before. A crash meanwhile keeps every commit: the segment's raw file and
+log, which hold them, stay until its framed file is durable; once the bucket acknowledged it,
+recovery takes its commits as the bucket's (`wal::recover`: a log's commits the base acknowledged
+are the bucket's), and, the store not told yet, the bucket's state, which the store opens on, holds
+them. And the next segment's raw file and log are made ahead of it, under their names, their
+entries made durable off the commits: a raw file and log holding no record, past the last segment,
+hold nothing, and an opening removes them (`ending`, TASK-334). A durable commit, closing a segment
+and opening the next for its upload, waited for those syncs one after another, ext4 journal
+commits, some 8 ms over the bucket's round trip on ubu1; 2 ms after
+(`durable_commits_through_the_daemon`, crash test `segments_upload_before_their_framed_files_are_durable`).
 
 The lag is bounded by commits and bytes (`remote::Options`: 4096 commits, 1 GiB, by default) and in
 time by the segment's age. Past the bound, commits wait: the lag is what a lost host can cost, and
