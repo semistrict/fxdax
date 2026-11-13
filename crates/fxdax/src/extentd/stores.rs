@@ -1413,7 +1413,13 @@ fn timed_fields<const N: usize>(
     for (which, phases) in [("slowest", &timed.slowest), ("max", &timed.max)] {
         let named = names.iter().zip(phases.us);
         fields.extend(named.map(|(phase, us)| format!("{kind}_{which}_{phase}_us={us}")));
+        // fxdax: and how long of it the threads waited to run (TASK-336).
+        fields.push(format!("{kind}_{which}_runnable_us={}", phases.runnable_us));
     }
+    // fxdax: and each phase summed over all of them, and their waits to run (TASK-336).
+    let named = names.iter().zip(timed.sum.us);
+    fields.extend(named.map(|(phase, us)| format!("{kind}_sum_{phase}_us={us}")));
+    fields.push(format!("{kind}_sum_runnable_us={}", timed.sum.runnable_us));
     fields
 }
 

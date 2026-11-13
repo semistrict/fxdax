@@ -168,31 +168,37 @@ pub fn packed_len(part: &[u8]) -> u64 {
     pack_part(part, &mut compressor).map_or(part.len(), |packed| packed.len()) as u64
 }
 
-/// `data`'s parts, packed: on threads of their own if there are several.
-fn pack_parts(data: &[u8]) -> Vec<Option<Vec<u8>>> {
+/// `data`'s parts, packed: on threads of their own if there are several. fxdax: and the most
+/// `count`, a count each thread keeps of its own, rose on any of them as it packed: what
+/// [`Packer::push_counting`] returns.
+fn pack_parts(data: &[u8], count: fn() -> u64) -> (Vec<Option<Vec<u8>>>, u64) {
     let parts: Vec<&[u8]> = data.chunks(PART as usize).collect();
     if level() == 0 {
-        return vec![None; parts.len()];
+        return (vec![None; parts.len()], 0);
     }
     let threads =
         std::thread::available_parallelism().map_or(1, |threads| threads.get()).min(parts.len());
     let compressor = || zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor");
-    if threads <= 1 {
+    let counted = |parts: &[&[u8]]| {
+        let since = count();
         let mut compressor = compressor();
-        return parts.iter().map(|part| pack_part(part, &mut compressor)).collect();
+        let packed: Vec<_> = parts.iter().map(|part| pack_part(part, &mut compressor)).collect();
+        (packed, count().saturating_sub(since))
+    };
+    if threads <= 1 {
+        return counted(&parts);
     }
     let each = parts.len().div_ceil(threads);
     std::thread::scope(|scope| {
-        let packing: Vec<_> = parts
-            .chunks(each)
-            .map(|parts| {
-                scope.spawn(move || {
-                    let mut compressor = compressor();
-                    parts.iter().map(|part| pack_part(part, &mut compressor)).collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        packing.into_iter().flat_map(|thread| thread.join().unwrap()).collect()
+        let packing: Vec<_> =
+            parts.chunks(each).map(|parts| scope.spawn(move || counted(parts))).collect();
+        let (mut all, mut most) = (Vec::with_capacity(parts.len()), 0);
+        for thread in packing {
+            let (packed, counted) = thread.join().unwrap();
+            all.extend(packed);
+            most = most.max(counted);
+        }
+        (all, most)
     })
 }
 
@@ -237,9 +243,18 @@ impl Packer {
     /// Packs `data`, the object's next parts: whole parts, but for the object's last. Returns the
     /// object's next bytes, which follow those returned before.
     pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
+        self.push_counting(data, || 0).0
+    }
+
+    /// fxdax: [`Packer::push`], and the most `count`, a count each thread keeps of its own, rose
+    /// on any of the threads that packed the parts, as it did: so a store tells how long packing
+    /// them waited for the host's CPUs, each thread's wait to run its `count` (TASK-336). The
+    /// calling thread's, if it packed them alone.
+    pub fn push_counting(&mut self, data: &[u8], count: fn() -> u64) -> (Vec<u8>, u64) {
         assert!(self.data_len.is_multiple_of(PART), "parts follow a part cut short");
         let mut bytes = Vec::new();
-        for (part, packed) in data.chunks(PART as usize).zip(pack_parts(data)) {
+        let (packed, counted) = pack_parts(data, count);
+        for (part, packed) in data.chunks(PART as usize).zip(packed) {
             let offset = self.end.next_multiple_of(ALIGN);
             bytes.resize(bytes.len() + (offset - self.end) as usize, 0);
             let (stored, encoding) = match &packed {
@@ -252,7 +267,7 @@ impl Packer {
             self.data_len += part.len() as u64;
             self.end = offset + len;
         }
-        bytes
+        (bytes, counted)
     }
 
     /// The object's last bytes, which follow those [`Packer::push`] returned: `footer`, the table,
@@ -525,6 +540,18 @@ pub fn footer(bytes: &[u8]) -> Result<&[u8], Corrupt> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fxdax: packing counts the most its threads' counts rose, as each packed its parts, and
+    /// packs as `push` does (TASK-336).
+    #[test]
+    fn packing_counts_its_threads() {
+        thread_local!(static CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+        let count = || CALLS.with(|calls| calls.replace(calls.get() + 1000));
+        let data: Vec<u8> = (0..5 * PART as usize).map(|i| (i / 4096 % 7) as u8).collect();
+        let (bytes, counted) = Packer::new().push_counting(&data, count);
+        assert_eq!(bytes, Packer::new().push(&data));
+        assert_eq!(counted, 1000, "each thread's count rose by one call's");
+    }
     use std::cell::RefCell;
 
     /// Data that compresses: a pattern, which differs between parts.

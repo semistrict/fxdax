@@ -22,7 +22,7 @@ use crate::state::{
     Uncommitted, Unreferenced, Writable,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
-use crate::timings::{self, Flush, flush};
+use crate::timings::{self, Flush, Waits, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
 use crate::wal::{
@@ -2518,10 +2518,13 @@ impl<D: Dir> Store<D> {
         span.run(|| {
             // fxdax: timed, phase by phase (TASK-165.9).
             let asked = Instant::now();
+            // fxdax: and its waits to run (TASK-336).
+            let waits = Waits::start();
             let mut logs = self.flushing.with(Mutex::lock);
             let mut timed = Flush::default();
             timed.phases.took(flush::WAIT, asked);
             let flushed = self.flush_locked(&mut logs, &mut timed);
+            timed.phases.runnable_us = waits.us();
             timings::flushed(self.branch.id, &timed);
             span.set_count(trace::COMMITS, timed.commits as u64);
             flushed

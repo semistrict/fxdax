@@ -17,7 +17,7 @@ use crate::layout::{
     segment_path, spare_path,
 };
 use crate::store::{Options, Usage};
-use crate::timings::{self, Phases, durable, framing};
+use crate::timings::{self, Timing, durable, framing};
 use crate::wal::{log_header, log_salt, new_salt};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Continued, Footer, epoch_of};
@@ -1198,9 +1198,8 @@ impl<F: File> Unframed<F> {
     /// extents stored on their own its footer names are durable first, so that a framed file a
     /// crash leaves whole names none torn (TASK-165.9).
     pub fn frame<D: Dir<File = F>>(self, dir: &D) -> Result<Arc<Framed<F>>, Error> {
-        // fxdax: timed, phase by phase (TASK-165.9).
-        let mut phases = Phases::default();
-        let started = Instant::now();
+        // fxdax: timed, phase by phase (TASK-165.9), with its waits to run (TASK-336).
+        let mut timing = Timing::since(Instant::now());
         // The extents stored on their own it names, durable before it is, as a flush syncs them,
         // several at once: one at a time, each a journal commit of the host's file system's, they
         // held up for as long the syncs of the flushes of extentd's turns, which wait on the same
@@ -1211,13 +1210,12 @@ impl<F: File> Unframed<F> {
             own.dir(branch_dir(EXTENTS, self.number.branch));
         }
         own.sync(dir)?;
-        let synced = phases.took(framing::OWN, started);
+        timing.took(framing::OWN);
         let footer = self.footer.encode();
         let (path, raw_path) = (framing_path(self.number), open_segment_path(self.number));
         let raw = (raw_path.as_str(), &self.raw);
-        let framed = frame_segment(dir, &path, raw, (self.len, self.quiet), &footer)?;
-        phases.took(framing::WRITE, synced);
-        timings::framed(self.number, phases);
+        let framed = frame_segment(dir, &path, raw, (self.len, self.quiet), &footer, &mut timing)?;
+        timings::framed(self.number, timing.end());
         Ok(framed)
     }
 }
@@ -1246,8 +1244,8 @@ pub(crate) fn make_durable<D: Dir>(
 ) -> Result<(), Error> {
     // Where the segments are framed, written, not yet durable: their framings still running.
     fail::fail_point!("segments::making_durable");
-    let mut phases = Phases::default();
-    let started = phases.took(durable::WAIT, since);
+    let mut timing = Timing::since(since);
+    timing.took(durable::WAIT);
     if entries {
         let mut opened = Syncs::default();
         for kind in [OPEN_SEGMENTS, LOGS] {
@@ -1255,22 +1253,22 @@ pub(crate) fn make_durable<D: Dir>(
         }
         opened.sync_dirs(dir)?;
     }
-    let synced = phases.took(durable::ENTRIES, started);
+    timing.took(durable::ENTRIES);
     let mut syncs = Syncs::default();
     for (_, framed) in framed {
         syncs.file(framed.file.clone());
     }
     syncs.dir(branch_dir(SEGMENTS, branch));
     syncs.sync_files(dir)?;
-    let synced = phases.took(durable::FILES, synced);
+    timing.took(durable::FILES);
     for &(number, _) in framed {
         let (from, to) = (framing_path(number), segment_path(number));
         dir.rename(&from, &to).with_context(|| format!("renaming {from} {to}"))?;
     }
     syncs.sync_dirs(dir)?;
     dir.barrier()?;
-    phases.took(durable::DIRS, synced);
-    timings::made_durable(branch, framed.len(), phases);
+    timing.took(durable::DIRS);
+    timings::made_durable(branch, framed.len(), timing.end());
     Ok(())
 }
 
@@ -1306,23 +1304,26 @@ pub(crate) const WRITTEN_BACK: usize = 1 << 20;
 
 /// fxdax: frames the `len` bytes of a closed segment's data, which its raw file `raw`, at
 /// `raw_path`, holds, with `footer`, into the framed file at `path` in `dir`: counted in
-/// [`segment_closes`]. In place, if `quiet`, no write in progress in it, and compressing its parts
-/// saves less than an eighth of its data ([`IN_PLACE_SAVING`]), each stored raw then, as an object
-/// of such parts holds them as they are, where they are: its raw file, its tail appended, is its
-/// framed file, by another name ([`Dir::link`]), its data written once, as its guest wrote it
-/// (TASK-310). A segment's data was written twice, raw, which the host's disk
-/// wrote back as the guest wrote it, and framed: as much again as its guest wrote, the disk's
-/// other writers waiting behind it, on a disk VMs share. Or else in a file of its own, as before.
+/// [`segment_closes`], and timed in `timing`, reading, compressing and writing (TASK-336). In place,
+/// if `quiet`, no write in progress in it, and compressing its parts saves less than an eighth of
+/// its data ([`IN_PLACE_SAVING`]), each stored raw then, as an object of such parts holds them as
+/// they are, where they are: its raw file, its tail appended, is its framed file, by another name
+/// ([`Dir::link`]), its data written once, as its guest wrote it (TASK-310). A segment's data was
+/// written twice, raw, which the host's disk wrote back as the guest wrote it, and framed: as much
+/// again as its guest wrote, the disk's other writers waiting behind it, on a disk VMs share. Or
+/// else in a file of its own, as before.
 fn frame_segment<D: Dir>(
     dir: &D,
     path: &str,
     (raw_path, raw): (&str, &Arc<D::File>),
     (len, quiet): (u64, bool),
     footer: &[u8],
+    timing: &mut Timing<4>,
 ) -> Result<Arc<Framed<D::File>>, Error> {
     let started = Instant::now();
     let mut data = Aligned::new(len as usize);
     raw.read_cached(data.as_mut_slice(), 0)?;
+    timing.took(framing::READ);
     let mut packer = extent_frame::Packer::new();
     // fxdax: in place at once if a sample of its parts says compressing them saves too little,
     // compressing no more of them: compressing every part to tell was most of what framings took
@@ -1330,7 +1331,13 @@ fn frame_segment<D: Dir>(
     let sampled = quiet && len > 0 && saves_little(data.as_slice());
     let packed = match sampled {
         true => Vec::new(),
-        false => packer.push(data.as_slice()),
+        false => {
+            // On threads of their own, whose waits to run count in this one's stead.
+            let handing = timing.waits.handing();
+            let (packed, waited) = packer.push_counting(data.as_slice(), timings::runnable_ns);
+            timing.waits.handed(handing, waited);
+            packed
+        }
     };
     let in_place = sampled || (quiet && len > 0 && packer.end() > len - len / IN_PLACE_SAVING);
     if (in_place && !packer.raw()) || sampled {
@@ -1341,6 +1348,7 @@ fn frame_segment<D: Dir>(
     let end = packer.end();
     let tail = packer.finish(footer);
     let parts = extent_frame::Parts::of_suffix(&tail)?;
+    timing.took(framing::COMPRESS);
     let framed = match in_place {
         true => frame_in_place(dir, (raw_path, raw), path, end, &tail)?,
         false => None,
@@ -1361,6 +1369,7 @@ fn frame_segment<D: Dir>(
             Framed::new(Arc::new(file), parts)
         }
     };
+    timing.took(framing::WRITE);
     SEGMENT_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = started.elapsed().as_nanos() as u64;
     SEGMENT_CLOSE_NS.fetch_add(nanos, std::sync::atomic::Ordering::Relaxed);

@@ -365,16 +365,47 @@ RUN apk add --no-cache postgresql postgresql-contrib git
             .collect()
     }
 
-    /// The framings of the daemon whose log is `log` past extentd's turn, as it warns of them:
-    /// each's milliseconds.
-    fn slow_framings(log: &str) -> Vec<f64> {
+    /// A framing past extentd's turn, as its daemon's log warns of it: its milliseconds, and its
+    /// phases', by name, as extent_store's timings say them, its threads' waits to run among them,
+    /// `runnable` (TASK-336).
+    #[derive(Debug, PartialEq)]
+    struct SlowFraming {
+        ms: f64,
+        phases: Vec<(String, f64)>,
+    }
+
+    /// The framings of the daemon whose log is `log` past extentd's turn, as it warns of them.
+    fn slow_framings(log: &str) -> Vec<SlowFraming> {
         log.lines()
             .filter_map(|line| {
                 let (_, after) = line.split_once("extent store: framing ")?;
                 let (_, after) = after.split_once(" took ")?;
-                after.split_once(" ms")?.0.parse::<f64>().ok()
+                let (ms, after) = after.split_once(" ms")?;
+                let phases = after.trim_start().strip_prefix('(')?.split(')').next()?;
+                let phases = (phases.split([',', ';']))
+                    .filter_map(|phase| {
+                        let (name, ms) = phase.trim().trim_end_matches(" ms").rsplit_once(' ')?;
+                        Some((name.to_owned(), ms.parse().ok()?))
+                    })
+                    .collect();
+                Some(SlowFraming { ms: ms.parse().ok()?, phases })
             })
             .collect()
+    }
+
+    /// `framings`' phases, each summed over them, as a run's summary says them: where the time of
+    /// a host's slow framings went, to the host's CPUs or its disk (TASK-336).
+    fn phases_summed<'a>(framings: impl IntoIterator<Item = &'a SlowFraming>) -> String {
+        let mut summed: Vec<(&str, f64)> = Vec::new();
+        for (name, ms) in framings.into_iter().flat_map(|framing| &framing.phases) {
+            match summed.iter_mut().find(|(summed, _)| summed == name) {
+                Some((_, sum)) => *sum += ms,
+                None => summed.push((name, *ms)),
+            }
+        }
+        let summed: Vec<String> =
+            summed.iter().map(|(name, ms)| format!("{name} {ms:.1}")).collect();
+        format!("{} ms", summed.join(", "))
     }
 
     /// What a run found of its VMs as they ended: the checks they failed, each role's longest
@@ -610,14 +641,24 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                         .push(format!("let go: {} let VM processes go: {let_go:#?}", host.name));
                 }
                 let slow = slow_framings(&log);
-                let slowest = slow.iter().copied().fold(0.0, f64::max);
-                let over = slow.iter().filter(|&&ms| ms > FRAMING_BUDGET_MS).count();
+                let slowest = slow.iter().map(|framing| framing.ms).fold(0.0, f64::max);
+                let past: Vec<&SlowFraming> =
+                    slow.iter().filter(|framing| framing.ms > FRAMING_BUDGET_MS).collect();
+                let over = past.len();
                 eprintln!(
                     "sandboxes: {}: slow_framings={} slowest_ms={slowest:.1} sum_ms={:.0} over_budget={over}",
                     host.name,
                     slow.len(),
-                    slow.iter().sum::<f64>(),
+                    slow.iter().map(|framing| framing.ms).sum::<f64>(),
                 );
+                // Where their time went: each phase, summed, and that of the slowest and of each
+                // past the budget (TASK-336).
+                eprintln!("sandboxes: {}: slow framings' phases: {}", host.name, phases_summed(&slow));
+                let slowest_one = slow.iter().max_by(|a, b| a.ms.total_cmp(&b.ms));
+                for framing in past.iter().copied().chain(slowest_one.filter(|_| over == 0)) {
+                    let phases = phases_summed([framing]);
+                    eprintln!("sandboxes: {}: a framing of {:.1} ms: {phases}", host.name, framing.ms);
+                }
                 if over > 0 {
                     tally.failed.push(format!(
                         "framings: {} framed {over} segments slower than {FRAMING_BUDGET_MS} ms, the \
@@ -625,7 +666,7 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                         host.name
                     ));
                 }
-                framings.extend(slow);
+                framings.extend(slow.iter().map(|framing| framing.ms));
                 match host_writes(dir, host.name) {
                     Ok((raw, written)) => (guests, stores) = (guests + raw, stores + written),
                     Err(err) => {
@@ -775,8 +816,22 @@ RUN apk add --no-cache postgresql postgresql-contrib git
 WARN extent_store::timings: extent store: framing SegmentId { branch: 3670381491063303249, number: 28 } took 497.0 ms (own 0.0, write 26.6, sync 28.6, dirs 441.8 ms)
 WARN extent_store::timings: extent store: branch 0x32efd08504ff2c51's flush of 10 commits took 407.4 ms (wait 0.0)
 WARN extent_store::timings: extent store: framing SegmentId { branch: 1, number: 2 } took 1291.8 ms (own 0.0, write 110.1, sync 1175.0, dirs 6.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 1, number: 3 } took 1045.0 ms (own 0.0, read 5.0, compress 900.0, write 140.0 ms; runnable 800.5 ms)
 ";
-            assert_eq!(slow_framings(log), [497.0, 1291.8]);
+            let slow = slow_framings(log);
+            let ms: Vec<f64> = slow.iter().map(|framing| framing.ms).collect();
+            assert_eq!(ms, [497.0, 1291.8, 1045.0]);
+            let phases = |named: &[(&str, f64)]| -> Vec<(String, f64)> {
+                named.iter().map(|&(name, ms)| (name.to_owned(), ms)).collect()
+            };
+            let split = [("own", 0.0), ("read", 5.0), ("compress", 900.0), ("write", 140.0)];
+            let split = [&split[..], &[("runnable", 800.5)]].concat();
+            assert_eq!(slow[2].phases, phases(&split));
+            assert_eq!(
+                phases_summed(&slow[1..]),
+                "own 0.0, write 250.1, sync 1175.0, dirs 6.7, read 5.0, compress 900.0, \
+                 runnable 800.5 ms"
+            );
         }
     }
 }

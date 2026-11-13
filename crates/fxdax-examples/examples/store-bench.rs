@@ -36,6 +36,15 @@
 //!   extents (2) in files of their own, in a directory of the host's: how long each commit's flush
 //!   takes, which syncs their files and their directory, as many at once as there are of each,
 //!   up to sixteen; and with N 1, one at a time (TASK-92.42).
+//! - `framing`: N segments (64) of 32 MiB, each written as extents of 1 MiB and closed by a commit,
+//!   by `FXDAX_BENCH_STORES` stores at once (4), each on a thread of its own, in a directory of the
+//!   host's (`FXDAX_BENCH_DIR`, or a temporary one), beside `FXDAX_BENCH_HOGS` threads (0) that
+//!   spin, as busy VMs' vCPUs do, at `FXDAX_BENCH_HOG_NICE` (0), the process on the first
+//!   `FXDAX_BENCH_CPUS` of the CPUs it may run on (all): how long each phase of the framings took,
+//!   on average, the slowest's and the longest of each, and how long their threads waited to run
+//!   (TASK-336). The data is `FXDAX_BENCH_DATA`'s: `text`, of sixteen letters at random, which
+//!   compresses about by half, as a build's files do, slower than a filesystem's structures (the
+//!   default); `noise`, which doesn't compress, framed in place; or `half`, one of each.
 //!
 //! The stores of all but `close-now`, `burst` and `durable` are in memory ([`MemDir`]), so that
 //! what is timed is the store's own work.
@@ -281,6 +290,161 @@ fn durable(files: u64) {
     println!("{} extents in files of their own", own.count());
 }
 
+/// `FXDAX_BENCH_{name}`'s value, or `default`.
+fn env<T: std::str::FromStr>(name: &str, default: T) -> T {
+    match std::env::var(format!("FXDAX_BENCH_{name}")) {
+        Ok(value) => value.parse().unwrap_or_else(|_| panic!("FXDAX_BENCH_{name} is {value:?}")),
+        Err(_) => default,
+    }
+}
+
+/// Bytes that don't compress, differing by `seed`.
+fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut bytes = Vec::with_capacity(len + 8);
+    while bytes.len() < len {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        bytes.extend_from_slice(&state.to_le_bytes());
+    }
+    bytes.truncate(len);
+    bytes
+}
+
+/// Text of sixteen letters at random, differing by `seed`: four bits a byte, which compresses
+/// about by half.
+fn text(seed: u64, len: usize) -> Vec<u8> {
+    noise(seed, len).into_iter().map(|byte| b'a' + (byte & 0x0f)).collect()
+}
+
+/// Has the calling thread, and the threads it starts after, run on the first `cpus` of the CPUs
+/// it may run on now; all of them if `cpus` is 0. Linux's alone.
+fn run_on(cpus: usize) {
+    #[cfg(target_os = "linux")]
+    if cpus > 0 {
+        // SAFETY: reads and narrows the calling thread's CPU affinity.
+        unsafe {
+            let size = std::mem::size_of::<libc::cpu_set_t>();
+            let mut allowed: libc::cpu_set_t = std::mem::zeroed();
+            assert_eq!(libc::sched_getaffinity(0, size, &mut allowed), 0);
+            let mut first: libc::cpu_set_t = std::mem::zeroed();
+            let all = (0..libc::CPU_SETSIZE as usize).filter(|&cpu| libc::CPU_ISSET(cpu, &allowed));
+            for cpu in all.take(cpus) {
+                libc::CPU_SET(cpu, &mut first);
+            }
+            assert_eq!(libc::sched_setaffinity(0, size, &first), 0);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(cpus, 0, "FXDAX_BENCH_CPUS on Linux alone");
+}
+
+/// Sets the calling thread's nice value to `nice`. Linux's alone, whose nice values are each
+/// thread's.
+fn nice(nice: i32) {
+    if nice == 0 {
+        return;
+    }
+    // SAFETY: sets the calling thread's priority; Linux's are a thread's, by its ID.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let tid = libc::syscall(libc::SYS_gettid) as libc::id_t;
+        assert_eq!(libc::setpriority(libc::PRIO_PROCESS, tid, nice), 0, "nice {nice}");
+    }
+    #[cfg(not(target_os = "linux"))]
+    panic!("nice {nice} on Linux alone");
+}
+
+fn framing(segments: u64) {
+    const MIB: usize = 1 << 20;
+    const SEGMENT: u64 = 32;
+    let (stores, hogs, cpus) = (env("STORES", 4u64), env("HOGS", 0usize), env("CPUS", 0usize));
+    let (hog_nice, kind) = (env("HOG_NICE", 0i32), env("DATA", "text".to_owned()));
+    run_on(cpus);
+    let temp = match std::env::var_os("FXDAX_BENCH_DIR") {
+        Some(dir) => tempfile::tempdir_in(dir),
+        None => tempfile::tempdir(),
+    };
+    let temp = temp.unwrap();
+    let done = Arc::new(AtomicBool::new(false));
+    let hogging: Vec<_> = (0..hogs)
+        .map(|_| {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                nice(hog_nice);
+                while !done.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        })
+        .collect();
+    let bytes = move |sequence: u64| match kind.as_str() {
+        "text" => text(sequence, MIB),
+        "noise" => noise(sequence, MIB),
+        "half" if (sequence / SEGMENT).is_multiple_of(2) => text(sequence, MIB),
+        "half" => noise(sequence, MIB),
+        other => panic!("FXDAX_BENCH_DATA is {other:?}"),
+    };
+    let before = extent_store::timings();
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        for store in 0..stores {
+            let (temp, bytes) = (temp.path().join(format!("{store}")), &bytes);
+            scope.spawn(move || {
+                std::fs::create_dir(&temp).unwrap();
+                // Segments close between commits alone, a commit after each 32 MiB.
+                let options = Options { segment_size: 1 << 30, ..Options::default() };
+                let store = create(HostDir::new(&temp, true).unwrap(), options);
+                let mut sequence = 0;
+                for _ in 0..segments / stores {
+                    for _ in 0..SEGMENT {
+                        store.write(extent(sequence), 0, &bytes(sequence)).unwrap();
+                        sequence += 1;
+                    }
+                    store.close_segment().unwrap();
+                    store.commit(None).unwrap();
+                    store.flush().unwrap();
+                    // Its framing written, its timings recorded.
+                    store.closed(usize::MAX).unwrap();
+                }
+            });
+        }
+    });
+    let elapsed = started.elapsed();
+    done.store(true, Ordering::Relaxed);
+    hogging.into_iter().for_each(|hog| hog.join().unwrap());
+    let after = extent_store::timings().framings;
+    let count = after.count - before.framings.count;
+    let ms = |us: u64| us as f64 / 1e3;
+    let named = |phases: extent_store::Phases<4>, per: u64| {
+        let names = extent_store::FRAMING_PHASES.iter().zip(phases.us);
+        let named: Vec<String> =
+            names.map(|(name, us)| format!("{name} {:.1}", ms(us / per))).collect();
+        let total = ms(phases.total_us() / per);
+        format!(
+            "{total:.1} ms ({} ms; runnable {:.1} ms)",
+            named.join(", "),
+            ms(phases.runnable_us / per)
+        )
+    };
+    let mut sum = after.sum;
+    for (phase, before) in before.framings.sum.us.iter().enumerate() {
+        sum.us[phase] -= before;
+    }
+    sum.runnable_us -= before.framings.sum.runnable_us;
+    println!(
+        "{count} framings of {SEGMENT} MiB, {stores} stores at once, {hogs} spinning threads at \
+         nice {hog_nice}, on {} CPUs, in {:.1} s",
+        if cpus == 0 { "all".to_owned() } else { cpus.to_string() },
+        elapsed.as_secs_f64()
+    );
+    println!("  each, on average: {}", named(sum, count.max(1)));
+    println!("  the slowest: {}", named(after.slowest, 1));
+    println!("  each phase's longest: {}", named(after.max, 1));
+    println!("  past 50 ms: {}", after.slow - before.framings.slow);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let n = |default| args.get(2).map_or(default, |n| n.parse().expect("N is a number"));
@@ -290,8 +454,11 @@ fn main() {
         Some("close-now") => close_now(n(32)),
         Some("burst") => burst(n(256)),
         Some("durable") => durable(n(2)),
+        Some("framing") => framing(n(64)),
         _ => {
-            eprintln!("usage: store-bench lagging-view|segments|close-now|burst|durable [N]");
+            eprintln!(
+                "usage: store-bench lagging-view|segments|close-now|burst|durable|framing [N]"
+            );
             std::process::exit(2);
         }
     }
