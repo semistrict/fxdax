@@ -252,10 +252,12 @@ impl World {
         forked
     }
 
-    /// One pass of the collector, deleting what is free at once.
+    /// Sweeps of the collector over every cell, deleting what is free at once, until two in a row
+    /// delete nothing: a dead cell's pass retires the references its parent's cell keeps the fork
+    /// point for, which that cell's next pass reclaims (TASK-395.4).
     fn collect(&self, case: &str) {
         let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
-        let collected = extent_remote::collector::collect(&*self.bucket, rand::random(), &options);
+        let collected = extent_remote::testing::collect_until_quiet(&*self.bucket, &options);
         block_on(collected).unwrap_or_else(|err| panic!("{case}: the collector: {err}"));
     }
 
@@ -291,7 +293,7 @@ impl World {
 
     /// The branches live in the bucket.
     fn live(&self) -> Vec<crate::Branch> {
-        block_on(branch::live(&*self.bucket)).unwrap().into_keys().collect()
+        block_on(extent_remote::testing::live(&*self.bucket)).unwrap().into_keys().collect()
     }
 
     /// The branches live in the bucket that no store holds, of those `named`: what a fork whose
@@ -426,12 +428,25 @@ impl World {
         self.collect(case);
         let keys = block_on(extent_remote::Bucket::list(&*self.bucket, "")).unwrap();
         let kept = |branch| branch == self.other.branch() || taken && branch == self.child;
+        // fxdax: a reference of the fork that another branch took the child's ID after, between
+        // the fork's read of the child's record and its create of it (`branch::referred`): never
+        // retired, the child's record naming no such fork, it keeps the parent's state at the fork
+        // point in the parent's cell, space wasted, as doc-7's References says (TASK-395.10).
+        let stray = taken
+            && keys.iter().any(|meta| {
+                matches!(layout::kind(&meta.key), Kind::Reference { child, .. } if child == self.child)
+            });
+        let pointed = |branch| stray && branch == self.branch;
         let leaked: Vec<_> = (keys.into_iter().map(|meta| meta.key))
             .filter(|key| match layout::kind(key) {
                 Kind::Segment { branch, .. }
                 | Kind::Checkpoint { branch, .. }
-                | Kind::Extent { branch, .. }
-                | Kind::Lease { branch } => !kept(branch),
+                | Kind::Extent { branch, .. } => !kept(branch) && !pointed(branch),
+                Kind::Lease { branch } => !kept(branch),
+                // fxdax: a reference stays only if its child does, or if the fork's child's ID was
+                // another's, whose record names no fork of it: space wasted, never retired, as
+                // doc-7 says (TASK-395.3).
+                Kind::Reference { child, .. } => !kept(child),
                 Kind::Record { branch } => {
                     !kept(branch)
                         && !self
@@ -439,9 +454,10 @@ impl World {
                             .is_some_and(|record| record.deleted && !record.may_drop())
                 }
                 // A cell's object stays, as its records do (TASK-364).
-                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } | Kind::ObjectIds { .. } => {
-                    false
-                }
+                Kind::GcLease { .. }
+                | Kind::Marks { .. }
+                | Kind::Cell { .. }
+                | Kind::ObjectIds { .. } => false,
                 Kind::Moves { .. } | Kind::Unknown => true,
             })
             .collect();
@@ -641,6 +657,7 @@ fn forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted() {
 
     let moved = world.temp.path().join("moved");
     let parent = kept_in(&moved, (1 << 30, Some(world.branch)), &world.bucket, options()).unwrap();
+    let reopen = moved.clone();
     assert!(world.record(world.child).is_some_and(|record| !record.deleted), "no orphan");
     let state = block_on(extent_remote::recover(&*world.bucket, world.branch, None));
     let key = state.unwrap().state.extents[&storage_device::ExtentId::from(large)].key.clone();
@@ -662,7 +679,15 @@ fn forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted() {
     let orphans: Vec<_> = world.live().into_iter().filter(|live| !held.contains(live)).collect();
     assert_eq!(orphans, [world.child]);
     assert_eq!(block_on(branch::delete(&*world.bucket, world.child, 9, u64::MAX)), Ok(()));
+    // TASK-395.4: the fork in a cell of its own, the parent's cell keeps the fork point while the
+    // parent's state names the fork, as the fork may lack its reference yet: until the parent's
+    // writer checkpoints, which drops the fork, its child deleted.
     world.collect("deleted");
+    assert!(stored(), "the fork point went while the parent's state names the fork");
+    let parent = world.open(&reopen).unwrap();
+    crate::test_checkpoints::checkpointed(&parent, &world.bucket);
+    drop(parent);
+    world.collect("checkpointed");
     assert!(!stored(), "what the fork inherited stayed once it was deleted");
 }
 

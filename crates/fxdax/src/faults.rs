@@ -27,9 +27,10 @@ pub(crate) use failpoint;
 
 /// The steps of a fork, in the order it takes them, those that fail: finding its child's ID free
 /// in the bucket, its commit naming the child, then, on the uploader's side, its segment's upload
-/// and acknowledgement, which gives the child its record, and the checkpoint that makes it; then
+/// and acknowledgement, which gives the child its reference under the parent's cell (TASK-395.3)
+/// and its record, and the checkpoint that makes it; then
 /// the child's store made, taking its state from the bucket (TASK-165.7).
-pub const FORK_STEPS: [&str; 19] = [
+pub const FORK_STEPS: [&str; 20] = [
     "fork::durable",
     "remote::child_free",
     "fork::committed",
@@ -41,6 +42,7 @@ pub const FORK_STEPS: [&str; 19] = [
     "writer::acknowledge",
     "writer::acknowledged",
     "branch::record_fork",
+    "branch::referred",
     "branch::recorded_fork",
     "remote::acknowledged",
     "remote::released",
@@ -52,13 +54,15 @@ pub const FORK_STEPS: [&str; 19] = [
 ];
 
 /// The steps of a restore: a fork of a point, in the order it takes them, on any host holding a
-/// copy of it (doc-7, Points): its child's ID found free, its child's record, a read of the
-/// point's, and the record made; then the child's store. No upload, as it commits nothing.
-pub const RESTORE_STEPS: [&str; 9] = [
+/// copy of it (doc-7, Points): its child's ID found free, its reference under the point's origin's
+/// cell (TASK-395.3), its child's record, a read of the point's, and the record made; then the
+/// child's store. No upload, as it commits nothing.
+pub const RESTORE_STEPS: [&str; 10] = [
     "fork::durable",
     "remote::child_free",
     "remote::forked",
     "point::record",
+    "point::referred",
     "point::recorded",
     "point::checked",
     "point::made",

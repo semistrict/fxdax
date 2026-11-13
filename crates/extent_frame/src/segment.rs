@@ -35,6 +35,29 @@ impl Cell {
     }
 }
 
+/// fxdax: a cell as operators read and write it: `TENANT/CELL`, each in hexadecimal, as a branch's
+/// first two parts (`fxdax-gc --cell`, TASK-395.4).
+impl std::fmt::Display for Cell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}/{:x}", self.tenant, self.id)
+    }
+}
+
+impl std::str::FromStr for Cell {
+    type Err = String;
+
+    /// The cell `TENANT/CELL` names, each in hexadecimal, as it is displayed.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let hex = |word: &str| u64::from_str_radix(word, 16).ok();
+        let parsed = match text.split('/').collect::<Vec<_>>()[..] {
+            [tenant, id] => hex(tenant).zip(hex(id)),
+            _ => None,
+        };
+        let parsed = parsed.map(|(tenant, id)| Self { tenant, id });
+        parsed.ok_or_else(|| format!("no cell, TENANT/CELL in hexadecimal: {text}"))
+    }
+}
+
 /// fxdax: where a branch is: its cell, and its ID, which no other branch its extents are inherited
 /// from or by has: an extent's ID names its branch by the ID alone (TASK-364).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

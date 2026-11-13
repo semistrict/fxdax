@@ -351,6 +351,39 @@ pub struct Rules {
     /// than diverging, though no other writer moved the branch on (`Wal::rebase`, TASK-345).
     /// TLA+: `specs/bucket/mutations/NoWalContinues.cfg`.
     pub wal_continues: bool,
+    /// fxdax: a fork of a branch to a child in another cell, a writable fork or a point's clone,
+    /// has a reference under the parent's cell ([`layout::reference`]), for which that cell's passes
+    /// keep the parent's state at the fork point: a pass lists nothing of the child's cell, and,
+    /// the parent deleted, would delete what the child inherits (TASK-395.3).
+    /// TLA+: `specs/bucket/mutations/NoReferences.cfg`.
+    pub references: bool,
+    /// A writable fork's reference is written before its child's record, by whoever writes the
+    /// record: the fork's host, the parent's writers, the parent's deletion, before that marks the
+    /// parent deleted ([`branch::record_fork`]). After it, a pass reading the parent deleted finds
+    /// no reference.
+    /// TLA+: `specs/bucket/mutations/NoReferencesFirst.cfg`.
+    pub references_first: bool,
+    /// A point's clone writes its reference before its record and before it reads the point's
+    /// record, whatever its cell, its origin's own too ([`branch::fork_point`]): one that read the
+    /// point live then wrote it before the point's deletion, which a pass reading the point
+    /// deleted, or finding its reference retired, read after.
+    /// TLA+: `specs/bucket/mutations/NoClonesReferFirst.cfg`.
+    pub clones_refer_first: bool,
+    /// A reference is retired, by a pass over its child's cell, only once that cell holds no live
+    /// branch and no reference of its own: the child's forks inherit what it inherited, kept by its
+    /// reference (TASK-395.4).
+    /// TLA+: `specs/bucket/mutations/NoReferencesHeld.cfg`.
+    pub references_held: bool,
+    /// A pass lists its cell's references after it read the states, as it lists the records
+    /// again, not with its candidates: listed then, it misses a clone's of a point a checkpoint
+    /// of the point's origin dropped since (TASK-395.4).
+    /// TLA+: `specs/bucket/mutations/NoReferencesRelisted.cfg`.
+    pub references_relisted: bool,
+    /// A pass keeps, of the parent's state at a referenced fork point, what recovering it reads,
+    /// not only the objects holding its extents: a child with no checkpoint of its own recovers
+    /// through it (TASK-395.4).
+    /// TLA+: `specs/bucket/mutations/NoForkPointsKept.cfg`.
+    pub fork_points_kept: bool,
 }
 
 impl Rules {
@@ -393,6 +426,12 @@ impl Rules {
         wal_follows: true,
         wal_after_fence: true,
         wal_continues: true,
+        references: true,
+        references_first: true,
+        clones_refer_first: true,
+        references_held: true,
+        references_relisted: true,
+        fork_points_kept: true,
     };
 }
 

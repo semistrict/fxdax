@@ -241,9 +241,12 @@ mod tests {
             Record::decode(test_branch(3), &newer),
             Err(Error::Format { branch: test_branch(3), format: FORMAT + 1 })
         );
-        // Format 1's and 2's records, whose footers and checkpoints this format reads wrong; and
-        // 7's, whose points say nothing of being shared (TASK-395.7).
-        for format in [1u32, 2, 7] {
+        // Format 1's and 2's records, whose footers and checkpoints this format reads wrong; 7's,
+        // whose points say nothing of being shared (TASK-395.7); and 8's, whose collector's lease
+        // and moves are at the bucket's root, its cells' collection under their own prefixes
+        // reading neither (TASK-395.2).
+        assert_eq!(FORMAT, 9);
+        for format in [1u32, 2, 7, 8] {
             let mut older = bytes.clone();
             older[..4].copy_from_slice(&format.to_le_bytes());
             assert_eq!(

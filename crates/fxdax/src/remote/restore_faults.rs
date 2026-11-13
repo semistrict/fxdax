@@ -145,10 +145,12 @@ impl Hosts {
         }
     }
 
-    /// One pass of the collector, deleting what is free at once.
+    /// Sweeps of the collector over every cell, deleting what is free at once, until two in a row
+    /// delete nothing: a dead cell's pass retires the references the point's origin's cell keeps
+    /// the fork point for, which that cell's next pass reclaims (TASK-395.4).
     fn collect(bucket: &Arc<Bucket>, case: &str) {
         let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
-        let collected = extent_remote::collector::collect(&**bucket, rand::random(), &options);
+        let collected = extent_remote::testing::collect_until_quiet(&**bucket, &options);
         block_on(collected).unwrap_or_else(|err| panic!("{case}: the collector: {err}"));
     }
 
@@ -340,7 +342,7 @@ impl Hosts {
         // operator finds among the live branches, and deletes (TASK-165.7).
         let mut named = vec![self.point, self.source.as_ref().unwrap().branch()];
         named.extend(self.children.lock().unwrap().iter().map(|(child, _)| *child));
-        let live = block_on(branch::live(&*self.bucket)).unwrap();
+        let live = block_on(extent_remote::testing::live(&*self.bucket)).unwrap();
         let orphans: Vec<_> = live.into_keys().filter(|live| !named.contains(live)).collect();
         if !orphans.is_empty() {
             assert!(!told, "{case}: a restore made left orphans: {orphans:x?}");
@@ -393,8 +395,21 @@ impl Hosts {
         assert_eq!(gone, Ok(()), "{case}");
         Self::collect(&self.bucket, case);
         let keys = block_on(extent_remote::Bucket::list(&*self.bucket, "")).unwrap();
+        // TASK-395.10: a reference whose child never got a record, its host dying between the
+        // two, is never retired, and keeps its origin's state at the fork point: space, not data.
+        let recorded = |child| block_on(branch::record(&*self.bucket, child)).unwrap().is_some();
+        let unretired: Vec<crate::Branch> = (keys.iter())
+            .filter_map(|meta| match layout::kind(&meta.key) {
+                Kind::Reference { parent, child, .. } if !recorded(child) => Some(parent),
+                _ => None,
+            })
+            .collect();
         let leaked: Vec<_> = (keys.into_iter().map(|meta| meta.key))
             .filter(|key| match layout::kind(key) {
+                Kind::Reference { child, .. } => recorded(child),
+                Kind::Segment { branch, .. }
+                | Kind::Checkpoint { branch, .. }
+                | Kind::Extent { branch, .. } => !unretired.contains(&branch),
                 Kind::Record { branch } => !block_on(branch::record(&*self.bucket, branch))
                     .unwrap()
                     .is_some_and(|record| record.deleted),
@@ -410,7 +425,7 @@ impl Hosts {
                     })
                 }
                 // fxdax: a block of object IDs taken stays for good (TASK-364).
-                Kind::GcLease | Kind::Marks { .. } | Kind::ObjectIds { .. } => false,
+                Kind::GcLease { .. } | Kind::Marks { .. } | Kind::ObjectIds { .. } => false,
                 _ => true,
             })
             .collect();

@@ -309,6 +309,23 @@ pub async fn holds(bucket: &impl Bucket, held: Held) -> Result<bool, Error> {
     }))
 }
 
+/// fxdax: every cell of `bucket` with an object under its prefix, in the order of their keys: found
+/// by delimiter listings of `tenants/` then of each tenant's `cells/`, listing none of their objects
+/// (TASK-395.4, TASK-395.5): what a sweep of the collector over every cell visits. A request a
+/// tenant, and one more for every 1,000 of its cells, as S3 pages them.
+pub async fn listed(bucket: &impl Bucket) -> Vec<Cell> {
+    let mut cells = Vec::new();
+    for tenant in bucket::list_delimited(bucket, layout::TENANTS).await.prefixes {
+        let prefix = format!("{tenant}cells/");
+        for cell in bucket::list_delimited(bucket, &prefix).await.prefixes {
+            if let Some(cell) = layout::cell_of_prefix(&cell) {
+                cells.push(cell);
+            }
+        }
+    }
+    cells
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +360,30 @@ mod tests {
         let never = Cell { tenant: 1, id: 2 };
         assert_eq!(block_on(read(&bucket, never)), Ok(None));
         assert_eq!(block_on(take(&bucket, never, 0x13, 5)), Err(Error::NoCell));
+    }
+
+    /// TASK-395.4: every cell with an object under its prefix is listed, in the order of its key,
+    /// whatever its objects: a cell's object, a record alone, or what the collector keeps there;
+    /// keys of no cell's are not.
+    #[test]
+    fn cells_are_listed_by_their_prefixes() {
+        use crate::bucket::PutMode;
+        let bucket = Direct(SimBucket::new());
+        let cells =
+            [Cell { tenant: 1, id: 2 }, Cell { tenant: 1, id: 0x10 }, Cell { tenant: 3, id: 1 }];
+        let branch = |cell, id| Branch { cell, id };
+        let keys = [
+            layout::cell(cells[2]),
+            layout::record(branch(cells[0], 4)),
+            layout::segment(branch(cells[0], 4), 0),
+            layout::gc_lease(cells[1]),
+            layout::objectid_block(1),
+        ];
+        for key in keys {
+            block_on(bucket.put(&key, vec![1].into(), PutMode::Create)).unwrap();
+        }
+        assert_eq!(block_on(listed(&bucket)), cells);
+        assert_eq!(block_on(listed(&Direct(SimBucket::new()))), []);
     }
 
     /// A cell taken goes to the next epoch, its taker's; a placement of a lower token than the one

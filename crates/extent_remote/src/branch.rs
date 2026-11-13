@@ -12,7 +12,7 @@
 //! what it found to what it writes (TASK-160.14).
 
 use crate::bucket::{self, Bucket, Created, Object, Updated};
-use crate::layout::{self, Branch, Child, Kind as Key, Lease, Origin};
+use crate::layout::{self, Branch, Cell, Child, Kind as Key, Lease, Origin};
 use crate::record::{Kind, Record};
 use crate::recovery::{self, Recovered, State, recover};
 use crate::{Error, rules};
@@ -127,11 +127,12 @@ pub async fn record(bucket: &impl Bucket, branch: Branch) -> Result<Option<Recor
     }
 }
 
-/// The branches in `bucket` whose records say they are live, with their records: an operator's
-/// look, to compare with what hosts hold. A fork whose child has no record yet isn't among them.
-pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<Branch, Record>, Error> {
+/// The branches of `cell` whose records say they are live, with their records: an operator's look,
+/// to compare with what hosts hold. A fork whose child has no record yet isn't among them. fxdax: a
+/// cell's, listing its records alone (`fxdax-gc --branches`, TASK-395.4).
+pub async fn live(bucket: &impl Bucket, cell: Cell) -> Result<BTreeMap<Branch, Record>, Error> {
     let mut live = BTreeMap::new();
-    for meta in bucket::list(bucket, layout::TENANTS).await {
+    for meta in bucket::list(bucket, &layout::records(cell)).await {
         if let Key::Record { branch } = layout::kind(&meta.key)
             && let Some(record) = record(bucket, branch).await?
             && !record.deleted
@@ -142,15 +143,60 @@ pub async fn live(bucket: &impl Bucket) -> Result<BTreeMap<Branch, Record>, Erro
     Ok(live)
 }
 
+/// fxdax: writes the reference of the fork of `origin` to `child`, whose owner is `owner`, under
+/// the parent's cell ([`layout::reference`], TASK-395.3): create-only, its bytes the fork's alone
+/// ([`layout::Reference`]), so that every writer of it, and a write landed though its answer was
+/// lost, writes the same. One there already stands, whatever its bytes: a pass keeps by its key.
+async fn refer(bucket: &impl Bucket, origin: Origin, child: Branch, owner: u64) {
+    let key = layout::reference(origin.parent, origin.at, child);
+    bucket::create(bucket, &key, layout::encode(&layout::Reference::of(owner))).await;
+}
+
+/// fxdax: writes the reference of the writable fork of `origin` to `child`, if the child is of
+/// another cell than its parent's ([`record_fork`], TASK-395.3).
+pub(crate) async fn refer_fork(bucket: &impl Bucket, child: Child, origin: Origin) {
+    if rules().references && origin.parent.cell != child.branch.cell {
+        refer(bucket, origin, child.branch, owner(child.owner)).await;
+    }
+}
+
 /// Gives `child`, a fork's, its record, forked from `origin`, of its owner, a point if it is one,
 /// unless it has one: the same, whoever gives it, as the fork's footer names it. A fork's child
 /// gets it once the fork is acknowledged, from the parent's writer, or the next one, or the
 /// parent's deletion. One of another owner is another branch's ([`Error::IdTaken`]).
+///
+/// fxdax: a child of another cell than its parent's gets its reference first, under the parent's
+/// cell, of the fork's owner (TASK-395.3): the pass over the parent's cell lists nothing of the
+/// child's, and keeps the parent's state at the fork point by the reference, which a pass reading
+/// the parent deleted lists after its deletion marked it, after this. A child of the parent's own
+/// cell needs none: that cell's pass reads its record. Its record is read first, so that a child
+/// deleted, or another's, whose ID the fork's guest named, gets none: nothing inherits through
+/// either, and nothing would retire it, the record naming no such fork (a fork deleted before its
+/// host learned its origin, `Kind::Own`, among them). Read so, a child of another's that lands
+/// between the read and its own record's create leaves the reference: space wasted, never data
+/// lost (doc-7, References). The read costs a request a fork across cells, each of its writers.
+///
+/// Without the rule that it comes first, as a test shows it needed, the record's writers write it
+/// after: the writer once it recorded the fork, the deletion once it marked the parent deleted, as
+/// specs/bucket's NoReferencesFirst has it.
 pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> Result<(), Error> {
     failpoint!("branch::record_fork");
     let kind = if child.point { Kind::Point(origin) } else { Kind::Fork(origin) };
     let record = kind.of(owner(child.owner));
-    let recorded = change(bucket, child.branch, Start::Create, |found| match found {
+    let mut start = Start::Create;
+    if rules().references_first && rules().references && origin.parent.cell != child.branch.cell {
+        let found = bucket::get(bucket, &layout::record(child.branch)).await;
+        match found.as_ref().map(|found| Record::decode(child.branch, &found.bytes)).transpose()? {
+            Some(found) if found.deleted => return Ok(()),
+            Some(found) if !found.is_child_of(record.owner) => {
+                return Err(Error::IdTaken(child.branch));
+            }
+            _ => refer_fork(bucket, child, origin).await,
+        }
+        failpoint!("branch::referred");
+        start = Start::Found(found);
+    }
+    let recorded = change(bucket, child.branch, start, |found| match found {
         None => Ok(Step::Write(record, true)),
         // Deleted before it got its record, perhaps.
         Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),
@@ -176,6 +222,18 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
 /// ([`Error::Deleted`]), and its host deletes `child` ([`delete_fork`]). Forked again, as a store
 /// left by a crash finishes it, it goes on from where it stopped. A child with a record of another
 /// owner than the fork's, `owner`, is another branch's ([`Error::IdTaken`]).
+///
+/// fxdax: before its record, the fork's reference, under the cell of `origin`'s branch, whatever
+/// `child`'s cell, that branch's own too (TASK-395.3): the pass over that cell lists nothing of
+/// `child`'s, and keeps `origin`'s state while the reference stands. Written before the point's
+/// record is read, so that a fork that found the point live wrote it before the point's deletion,
+/// which a pass reading the point deleted, or finding the point's own reference retired, read
+/// after; and listing the references after it read the states, finds it. One in the origin's own
+/// cell too, which no host makes: that cell's pass reads its records before the states and its
+/// references after, and a clone made between them, its point in another cell deleted and the
+/// point's reference retired before the references were listed, would be seen by neither (TLC
+/// found it, specs/bucket's BucketOverlap). A fork that fails leaves it, for its cell's pass to
+/// retire.
 pub async fn fork_point(
     bucket: &impl Bucket,
     child: Branch,
@@ -184,11 +242,16 @@ pub async fn fork_point(
     owner: u64,
 ) -> Result<(), Error> {
     failpoint!("point::record");
+    let owner = self::owner(owner);
+    if rules().references && rules().clones_refer_first {
+        refer(bucket, origin, child, owner).await;
+        failpoint!("point::referred");
+    }
     let kind = match rules().forks_pending {
         true => Kind::Forking { origin, point },
         false => Kind::Fork(origin),
     };
-    let record = kind.of(self::owner(owner));
+    let record = kind.of(owner);
     // Whether the fork is still to be made.
     let making = change(bucket, child, Start::Create, |found| match found {
         None => Ok(Step::Write(record, true)),
@@ -197,11 +260,15 @@ pub async fn fork_point(
         Some(found) => Ok(Step::Stop(found.forking().is_some())),
     })
     .await?;
-    if !making {
-        return Ok(());
+    if making {
+        failpoint!("point::recorded");
+        finish_point_fork(bucket, child, point).await?;
     }
-    failpoint!("point::recorded");
-    finish_point_fork(bucket, child, point).await
+    // Without the rule, as a test shows it needed: once made.
+    if rules().references && !rules().clones_refer_first {
+        refer(bucket, origin, child, owner).await;
+    }
+    Ok(())
 }
 
 /// Makes the fork being made of `point` to `child` ([`fork_point`]), whose record is created: fails
@@ -446,6 +513,17 @@ pub async fn delete(
                 Err(error) => return Err(error),
             }
         }
+        failpoint!("branch::children_recorded");
+        mark_deleted(bucket, branch).await?;
+        // Without the rule that they come first, as a test shows it needed: the references after.
+        if !rules().references_first {
+            for fork in &forks {
+                let origin = Origin { parent: branch, at: fork.at };
+                let child = Child { branch: fork.child, owner: fork.owner, point: fork.point };
+                refer_fork(bucket, child, origin).await;
+            }
+        }
+        return Ok(());
     }
     failpoint!("branch::children_recorded");
     mark_deleted(bucket, branch).await

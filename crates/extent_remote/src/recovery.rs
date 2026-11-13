@@ -419,6 +419,30 @@ pub(crate) async fn recover_layers<B: Bucket>(
     Err(Error::Lost(format!("branch {branch}: what its recovery starts from keeps going")))
 }
 
+/// fxdax: the state of `branch` as of the end of its segment `at`, which is acknowledged: a fork
+/// point's, as a fork made there inherits it; and what reading it read, which the collector keeps
+/// for the forks referring to it (doc-7, A pass over a cell; TASK-395.4). Its newest checkpoint up
+/// to there, or its origin's state, then its segments to there, starting again as [`recover`]
+/// does where it finds one gone that a newer checkpoint covers: [`Error::Lost`] once it keeps
+/// going, or what it needs is gone.
+pub(crate) async fn recover_at<B: Bucket>(
+    checkpoints: &Checkpoints<'_, B>,
+    branch: Branch,
+    at: u64,
+) -> Result<(Arc<State>, BTreeSet<String>), Error> {
+    for _ in 0..RESTARTS {
+        let mut touched = BTreeSet::new();
+        match state_at(checkpoints, branch, at, &mut touched).await {
+            Ok(state) => return Ok((state, touched)),
+            Err(Attempt::Restart) => {}
+            Err(Attempt::Failed(error)) => return Err(error),
+        }
+    }
+    Err(Error::Lost(format!(
+        "branch {branch} at {at:x}: what its recovery starts from keeps going"
+    )))
+}
+
 /// Checkpoints read whole, for recoveries, each read once for those that start from it at once,
 /// and for those after while it is among the last few read: a base's recovery and its forks',
 /// those without checkpoints of their own starting from the base's, share one, as a pass of the

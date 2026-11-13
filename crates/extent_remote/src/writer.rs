@@ -533,6 +533,11 @@ impl<B: Bucket> Writer<B> {
                     Err(Error::IdTaken(child)) => drop(self.inner().refused.insert(child)),
                     Err(error) => return Err(error),
                 }
+                // fxdax: without the rule that the reference comes first, as a test shows it
+                // needed, after (TASK-395.3).
+                if !crate::rules().references_first {
+                    branch::refer_fork(&*self.bucket, child, origin).await;
+                }
                 self.inner().recorded.insert(fork.child);
                 Ok::<_, Error>(())
             })

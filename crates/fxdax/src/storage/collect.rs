@@ -105,11 +105,10 @@ impl State {
 
     /// Takes the collector back from `running`, waiting for it to end, and what it did.
     fn ended(&mut self, running: JoinHandle<(Collector, Report)>, options: Options) {
-        let (collector, Report { deleted, compacted }) =
+        let (collector, report) =
             running.join().unwrap_or_else(|_| (Collector::new(options), Report::default()));
         self.idle = Some(collector);
-        self.collected.deleted += deleted;
-        self.collected.compacted += compacted;
+        self.collected += report;
     }
 }
 
@@ -169,14 +168,23 @@ impl Collecting {
         collected.unwrap().unwrap()
     }
 
-    /// Runs passes as [`Collecting::pass_now`] does until one does nothing, every image of the
-    /// bucket closed, and says what they left that they should have collected
-    /// ([`extent_remote::testing::uncollected`]): the space freed comes back (TASK-390).
+    /// Runs passes as [`Collecting::pass_now`] does until two in a row delete and compact nothing,
+    /// every image of the bucket closed, and says what they left that they should have collected
+    /// ([`extent_remote::testing::uncollected`]): the space freed comes back (TASK-390). Two, as a
+    /// pass over a dead cell retires the references that kept what its parents' cells reclaim at
+    /// their next (TASK-395.4); and a pass retiring them again deletes nothing.
     #[cfg(test)]
     pub(crate) fn collected_alone(&self) -> Vec<String> {
-        const PASSES: usize = 8;
-        let quiet = (0..PASSES).any(|_| self.pass_now() == Report::default());
-        assert!(quiet, "{PASSES} passes alone each did something");
+        const PASSES: usize = 12;
+        let mut quiet = 0;
+        for _ in 0..PASSES {
+            let report = self.pass_now();
+            quiet = if report.deleted == 0 && report.compacted == 0 { quiet + 1 } else { 0 };
+            if quiet == 2 {
+                break;
+            }
+        }
+        assert_eq!(quiet, 2, "{PASSES} passes alone, which kept doing something");
         let left =
             extent_remote::testing::uncollected(&*self.bucket, self.pace.options.compact_below);
         extent_store::upload::block_on(left).unwrap()
@@ -200,9 +208,10 @@ fn pass(collector: &mut Collector, bucket: &Bucket) -> Report {
     fail::fail_point!("collect::pass", |_| Report::default());
     let failed = match extent_store::upload::block_on(collector.collect(bucket, rand::random())) {
         Ok(Ok(report)) => {
-            let Report { deleted, compacted } = report;
+            let Report { deleted, compacted, retired } = report;
             log::info!(
-                "fxdax: an image's bucket collected: deleted {deleted}, compacted {compacted}"
+                "fxdax: an image's bucket collected: deleted {deleted}, compacted {compacted}, \
+                 retired {retired} references"
             );
             return report;
         }

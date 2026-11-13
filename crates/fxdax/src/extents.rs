@@ -2490,7 +2490,10 @@ mod tests {
         let collected = extent_remote::collector::collect(&**store.bucket(), 1, &options);
         let report = futures::executor::block_on(collected).unwrap();
         // All the checkpoint covers but the writer's fence, which the collector keeps (TASK-371).
-        assert_eq!(report, extent_remote::collector::Report { deleted: 64, compacted: 0 });
+        assert_eq!(
+            report,
+            extent_remote::collector::Report { deleted: 64, compacted: 0, retired: 0 }
+        );
         assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::ESTALE));
     }
 

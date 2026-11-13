@@ -18,8 +18,18 @@
              drop(held);
 --- a/crates/extent_remote/src/branch.rs
 +++ b/crates/extent_remote/src/branch.rs
-@@ -149,8 +149,7 @@
-     let recorded = change(bucket, child.branch, Start::Create, |found| match found {
+@@ -188,9 +188,6 @@
+         let found = bucket::get(bucket, &layout::record(child.branch)).await;
+         match found.as_ref().map(|found| Record::decode(child.branch, &found.bytes)).transpose()? {
+             Some(found) if found.deleted => return Ok(()),
+-            Some(found) if !found.is_child_of(record.owner) => {
+-                return Err(Error::IdTaken(child.branch));
+-            }
+             _ => refer_fork(bucket, child, origin).await,
+         }
+         failpoint!("branch::referred");
+@@ -199,8 +196,7 @@
+     let recorded = change(bucket, child.branch, start, |found| match found {
          None => Ok(Step::Write(record, true)),
          // Deleted before it got its record, perhaps.
 -        Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),

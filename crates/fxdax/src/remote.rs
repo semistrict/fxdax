@@ -507,7 +507,7 @@ mod tests {
                 .into_iter()
                 .map(|meta| meta.key)
                 .collect();
-        let moves = format!("moves/{}", extent_remote::layout::segments(branch));
+        let moves = extent_remote::layout::moves(&extent_remote::layout::segments(branch));
         let first = extent_remote::layout::segment(branch, 1);
         assert!(keys.iter().any(|key| key.starts_with(&moves)), "{keys:?}");
         assert!(!keys.contains(&first), "{keys:?}");
@@ -529,7 +529,12 @@ mod tests {
 
     /// TASK-195: so does a fork's store read what it inherited, its parent deleted: it names the
     /// extents where its own writer's checkpoints move them, from the parent's segment, compacted
-    /// into moves, then into moves of moves, the segment and the first moves gone.
+    /// into moves, the segment gone. TASK-395.4: the fork in a cell of its own, as every fork a host
+    /// makes, its parent's cell keeps the parent's state at the fork point whole for as long as the
+    /// fork lives, by its reference, what the fork frees of it since no matter: the moves, which
+    /// hold that state's extents, are compacted no further, as they were when the collector went
+    /// by the fork's state (`extents_compacted_twice_read_where_the_store_names_them` shows a
+    /// branch's own compacted twice).
     #[test]
     fn forks_read_what_they_inherited_compacted_twice() {
         inherited_compacted_twice();
@@ -571,7 +576,9 @@ mod tests {
         }
         parent.commit(None).unwrap();
         let child = dir.path().join("child");
-        parent.fork_to(&child, crate::host_store::fork_child(branch)).unwrap();
+        let forked = crate::host_store::fork_child(branch);
+        assert_ne!(forked.cell, branch.cell, "a fork in a cell of its own");
+        parent.fork_to(&child, forked).unwrap();
         drop(parent);
         crate::host_store::delete(&path, Some(&bucket), crate::host_store::token).unwrap();
         // The fork's store, open all along: the segment compacted, 1 to 3 in its moves.
@@ -581,7 +588,8 @@ mod tests {
         child.free(ExtentId { branch: branch.id, sequence: 2 }).unwrap();
         child.free(ExtentId { branch: branch.id, sequence: 3 }).unwrap();
         checkpointed(&child, &bucket);
-        // The segment goes, no state naming it there; the moves are compacted, then go too.
+        // The segment goes, no state naming it there; the moves stay as they are, the fork point
+        // holding 1 to 3 in them.
         collect(3);
         collect(4);
         let keys: Vec<String> =
@@ -590,17 +598,23 @@ mod tests {
                 .into_iter()
                 .map(|meta| meta.key)
                 .filter(|key| {
-                    key.starts_with("moves/")
-                        || matches!(
-                            extent_remote::layout::kind(key),
-                            extent_remote::layout::Kind::Segment { .. }
-                        )
+                    matches!(
+                        extent_remote::layout::kind(key),
+                        extent_remote::layout::Kind::Moves { .. }
+                            | extent_remote::layout::Kind::Segment { .. }
+                    ) && key.starts_with(&branch.cell.prefix())
                 })
                 .collect();
-        let once = format!("moves/{}", extent_remote::layout::segments(branch));
-        let twice = format!("moves/moves/{}", extent_remote::layout::segments(branch));
-        assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
-        assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
+        let sealed = extent_remote::layout::segments(branch);
+        let once = extent_remote::layout::moves(&sealed);
+        let twice = extent_remote::layout::moves(&once);
+        let compacted: Vec<String> = (keys.iter())
+            .filter(|key| key.starts_with(&once))
+            .filter_map(|key| extent_remote::layout::moved_from(key))
+            .collect();
+        assert_eq!(compacted.len(), 1, "{keys:?}");
+        assert!(!keys.contains(&compacted[0]), "{keys:?}");
+        assert!(!keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         let mut data = vec![0; EXTENT];
         let extent = ExtentId { branch: branch.id, sequence: 1 };
         let read = child.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
@@ -653,15 +667,15 @@ mod tests {
                 .into_iter()
                 .map(|meta| meta.key)
                 .filter(|key| {
-                    key.starts_with("moves/")
-                        || matches!(
-                            extent_remote::layout::kind(key),
-                            extent_remote::layout::Kind::Segment { .. }
-                        )
+                    matches!(
+                        extent_remote::layout::kind(key),
+                        extent_remote::layout::Kind::Moves { .. }
+                            | extent_remote::layout::Kind::Segment { .. }
+                    )
                 })
                 .collect();
-        let twice = format!("moves/moves/{}", extent_remote::layout::segments(branch));
-        let once = format!("moves/{}", extent_remote::layout::segments(branch));
+        let once = extent_remote::layout::moves(&extent_remote::layout::segments(branch));
+        let twice = extent_remote::layout::moves(&once);
         assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
         // The store, open all along, reads it there, and so does its follower.

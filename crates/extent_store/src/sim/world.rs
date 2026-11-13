@@ -102,6 +102,9 @@ pub struct Profile {
     /// it had, as extentd opens its stores at boot: while the creates its writers had in flight
     /// land.
     pub restarts: bool,
+    /// fxdax: the chance that a collector's pass is over one branch's cell alone, not a sweep over
+    /// every cell (TASK-395.4): none draws nothing of the seed's.
+    pub one_cell: f64,
     pub weights: Weights,
     pub options: Options,
 }
@@ -115,6 +118,7 @@ impl Default for Profile {
             fail_after: 0.05,
             hold: 0.0,
             restarts: false,
+            one_cell: 0.5,
             weights: Weights {
                 complete: 60,
                 write: 6,
@@ -1732,6 +1736,9 @@ impl World {
         });
     }
 
+    /// A sweep of the collector over every cell, or, as often as [`Profile::one_cell`] says, a pass
+    /// over one branch's cell alone (TASK-395.4): passes over one cell and another overlap, as over
+    /// one cell.
     fn collect(&mut self) {
         if self.collectors.len() >= 2 {
             return;
@@ -1739,8 +1746,15 @@ impl World {
         let id = self.id();
         let (bucket, events, options) =
             (self.bucket.clone(), self.events.clone(), self.profile.options);
+        let branches: Vec<u64> = self.branches.keys().copied().collect();
+        let one_cell = self.profile.one_cell;
+        let cell = (!branches.is_empty() && one_cell > 0.0 && self.rng.random_bool(one_cell))
+            .then(|| sim_branch(branches[self.rng.random_range(0..branches.len())]).cell);
         let handle = self.spawn(async move {
-            let result = collector::collect(&*bucket, id, &options).await;
+            let result = match cell {
+                Some(cell) => collector::collect_cell(&*bucket, cell, id, &options).await,
+                None => collector::collect(&*bucket, id, &options).await,
+            };
             events.borrow_mut().push(Event::Collected { id, result });
         });
         self.collectors.insert(id, handle);
@@ -1874,8 +1888,10 @@ impl World {
         }
     }
 
-    /// Checks that a pass of the collector that ran alone, the bucket holding `before` as it
+    /// Checks that a sweep of the collector that ran alone, the bucket holding `before` as it
     /// started, reports what it did (TASK-44.1): the objects it deleted, and the moves it wrote.
+    /// fxdax: and no more references gone than it retired, which it sends again for as long as a
+    /// cell is dead, whether or not they are there (TASK-395.4).
     fn check_report(
         &mut self,
         before: &BTreeSet<String>,
@@ -1883,13 +1899,18 @@ impl World {
     ) {
         let after: BTreeSet<String> = self.bucket.keys().into_iter().collect();
         let moves = |key: &&String| matches!(layout::kind(key), layout::Kind::Moves { .. });
-        let expected = collector::Report {
-            deleted: before.difference(&after).count(),
+        let reference = |key: &&String| matches!(layout::kind(key), layout::Kind::Reference { .. });
+        let gone = || before.difference(&after);
+        let retired = gone().filter(reference).count();
+        let expected = |reported: &collector::Report| collector::Report {
+            deleted: gone().filter(|key| !reference(key)).count(),
             compacted: after.difference(before).filter(moves).count(),
+            retired: reported.retired.max(retired),
         };
         match report {
-            Some(Ok(report)) if report == expected => {}
+            Some(Ok(report)) if report == expected(&report) => {}
             Some(Ok(report)) => {
+                let expected = expected(&report);
                 self.violation(format!("collector reported {report:?}, having done {expected:?}"))
             }
             Some(Err(error)) => self.violation(format!("collector: {error}")),
@@ -2289,6 +2310,25 @@ impl World {
 
     // The end.
 
+    /// Runs a sweep of the collector over every cell, alone, past the grace period, and checks what
+    /// it reports it did ([`World::check_report`]): what it reported, if it did.
+    fn sweep_alone(&mut self) -> Option<collector::Report> {
+        self.bucket.advance(self.profile.options.grace + 1);
+        let id = self.id();
+        let (bucket, options) = (self.bucket.clone(), self.profile.options);
+        let reported = Rc::new(RefCell::new(None));
+        let report = reported.clone();
+        let before: BTreeSet<String> = self.bucket.keys().into_iter().collect();
+        self.spawn(async move {
+            *report.borrow_mut() = Some(collector::collect(&*bucket, id, &options).await);
+        });
+        self.settle();
+        let reported = reported.take();
+        let report = reported.clone().and_then(Result::ok);
+        self.check_report(&before, reported);
+        report
+    }
+
     /// Stops the guests, lets every request and task finish, takes every live branch over with a
     /// new writer, then has each commit, upload and checkpoint while collectors run, a few times
     /// over.
@@ -2375,17 +2415,21 @@ impl World {
                 }
             }
             self.settle();
-            self.bucket.advance(self.profile.options.grace + 1);
-            let id = self.id();
-            let (bucket, options) = (self.bucket.clone(), self.profile.options);
-            let reported = Rc::new(RefCell::new(None));
-            let report = reported.clone();
-            let before: BTreeSet<String> = self.bucket.keys().into_iter().collect();
-            self.spawn(async move {
-                *report.borrow_mut() = Some(collector::collect(&*bucket, id, &options).await);
-            });
-            self.settle();
-            self.check_report(&before, reported.take());
+            self.sweep_alone();
+        }
+        // fxdax: then sweeps until two in a row delete and compact nothing: a dead cell's pass
+        // retires the references its parents' cells keep fork points for, which their next passes
+        // reclaim, a sweep a generation of a chain (TASK-395.4).
+        let mut quiet = 0;
+        for _ in 0..16 {
+            let Some(report) = self.sweep_alone() else { break };
+            quiet = if report.deleted == 0 && report.compacted == 0 { quiet + 1 } else { 0 };
+            if quiet == 2 {
+                break;
+            }
+        }
+        if quiet < 2 {
+            self.violation("16 sweeps of the collector alone, which kept doing something".into());
         }
         self.check_woken();
         self.check();

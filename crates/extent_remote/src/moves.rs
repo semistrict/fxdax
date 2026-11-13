@@ -52,11 +52,7 @@ impl MovesMaps {
         let mut moved = BTreeSet::new();
         for prefix in prefixes {
             let listed = bucket::list(bucket, &layout::moves(prefix)).await;
-            moved.extend(
-                listed.into_iter().filter_map(|meta| {
-                    meta.key.strip_prefix(&layout::moves("")).map(str::to_owned)
-                }),
-            );
+            moved.extend(listed.into_iter().filter_map(|meta| layout::moved_from(&meta.key)));
         }
         let (unread, unmoved): (Vec<String>, Vec<String>) =
             unread.into_iter().partition(|key| moved.contains(key));

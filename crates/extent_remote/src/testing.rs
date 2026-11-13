@@ -448,6 +448,43 @@ impl Bucket for Direct {
     }
 }
 
+/// fxdax: the live branches of every cell of `bucket`, as `fxdax-gc --branches` lists them
+/// (TASK-395.4).
+pub async fn live(
+    bucket: &impl Bucket,
+) -> Result<BTreeMap<Branch, crate::record::Record>, crate::Error> {
+    let mut live = BTreeMap::new();
+    for cell in crate::cell::listed(bucket).await {
+        live.extend(crate::branch::live(bucket, cell).await?);
+    }
+    Ok(live)
+}
+
+/// fxdax: sweeps of the collector over every cell of `bucket`, of `options`, each as a holder of
+/// its own, until two in a row delete and compact nothing: their reports, summed. Two, as a pass
+/// over a dead cell retires the references that kept what its parents' cells reclaim at their next,
+/// and a pass retiring them again deletes nothing (TASK-395.4). It fails as a sweep fails, and
+/// panics after [`SWEEPS`]: passes that never settle are a bug.
+pub async fn collect_until_quiet(
+    bucket: &impl Bucket,
+    options: &crate::collector::Options,
+) -> Result<crate::collector::Report, crate::Error> {
+    let mut collector = crate::collector::Collector::new(*options);
+    let (mut total, mut quiet) = (crate::collector::Report::default(), 0);
+    for sweep in 0..SWEEPS {
+        let report = collector.collect(bucket, 1 << 40 | sweep).await?;
+        total += report;
+        quiet = if report.deleted == 0 && report.compacted == 0 { quiet + 1 } else { 0 };
+        if quiet == 2 {
+            return Ok(total);
+        }
+    }
+    panic!("{SWEEPS} sweeps of the collector, which kept doing something: {total:?}");
+}
+
+/// fxdax: how many sweeps [`collect_until_quiet`] runs at most.
+pub const SWEEPS: u64 = 32;
+
 /// fxdax: what the collector should have collected of `bucket` and left (TASK-390), once
 /// passes ran alone, of `compact_below`, past the grace period, the branches' writers all done:
 /// each a line, `garbage left: KEY`, an object no live branch needs, or `left uncompacted: KEY, ...`,
@@ -460,27 +497,62 @@ impl Bucket for Direct {
 /// live fails the tests' reads: the space a pass frees, not only what it keeps, is checked. It
 /// was the simulation's end checks; TASK-293's compressed segments, never compacted, went unseen
 /// by every test outside it.
+///
+/// fxdax: per cell and conservatively, as doc-7 has the collector since TASK-395: each fork point a
+/// reference names, or a live branch's fork to another cell, is needed whole, its state's extents
+/// along their ways from where they were sealed, and what recovering it reads, whatever its
+/// children hold of it; a reference is garbage once its child is deleted, of that origin, in
+/// another cell holding no live branch and no reference; the collector's leases and marks stay.
 pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String> {
     use crate::layout::{Location, Origin};
-    use crate::record::Kind as Made;
+    use crate::record::{Kind as Made, Record};
     use storage_device::ExtentId;
     let keys: BTreeSet<String> =
         crate::bucket::list(bucket, "").await.into_iter().map(|meta| meta.key).collect();
+    let mut records: BTreeMap<Branch, Record> = BTreeMap::new();
+    let mut references = Vec::new();
+    for key in &keys {
+        match layout::kind(key) {
+            Kind::Record { branch } => {
+                if let Ok(Some(record)) = crate::branch::record(bucket, branch).await {
+                    records.insert(branch, record);
+                }
+            }
+            Kind::Reference { parent, at, child } => references.push((key, parent, at, child)),
+            _ => {}
+        }
+    }
+    // A cell no live branch and no reference keeps, whose pass retires its children's references.
+    let dead = |cell: layout::Cell| {
+        records.iter().filter(|(branch, _)| branch.cell == cell).all(|(_, record)| record.deleted)
+            && !references.iter().any(|(_, parent, _, _)| parent.cell == cell)
+    };
     let mut maps = MovesMaps::default();
-    let mut needed = BTreeSet::from([layout::GC_LEASE.to_owned()]);
+    let mut needed = BTreeSet::new();
     let mut touched = BTreeSet::new();
     let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
-    for key in &keys {
-        let Kind::Record { branch } = layout::kind(key) else { continue };
-        let Ok(Some(record)) = crate::branch::record(bucket, branch).await else { continue };
+    let mut points: BTreeSet<Origin> = BTreeSet::new();
+    let mut retirable = BTreeSet::new();
+    for &(key, parent, at, child) in &references {
+        let origin = Origin { parent, at };
+        let retired = records.get(&child).is_some_and(|record| {
+            record.deleted && record.origin() == Some(origin) && child.cell != parent.cell
+        }) && dead(child.cell);
+        match retired {
+            true => drop(retirable.insert(key.clone())),
+            false => drop(points.insert(origin)),
+        }
+    }
+    for (&branch, record) in &records {
+        let key = layout::record(branch);
         // Deleted branches' records stay (TASK-174).
         if record.deleted {
             if !record.may_drop() {
-                needed.insert(key.clone());
+                needed.insert(key);
             }
             continue;
         }
-        needed.insert(key.clone());
+        needed.insert(key);
         needed.insert(layout::lease(branch));
         let (origin, point): (Option<Origin>, bool) = match record.kind {
             Made::Root | Made::Own => (None, false),
@@ -492,6 +564,12 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         let Ok(recovered) = crate::recovery::recover(bucket, branch, origin).await else {
             continue;
         };
+        // Its forks to other cells, whose children may have no references yet.
+        for fork in &recovered.state.forks {
+            if fork.child.cell != branch.cell {
+                points.insert(Origin { parent: branch, at: fork.at });
+            }
+        }
         touched.extend(recovered.touched.iter().cloned());
         needed.extend(recovered.touched);
         // Its writer may name its extents anywhere on their ways from where they were sealed,
@@ -511,11 +589,9 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         for (&extent, location) in &recovered.state.extents {
             needed.insert(location.key.clone());
             named.entry(location.key.clone()).or_default().insert(extent, location.len);
-            let mut key = location.key.as_str();
-            while let Kind::Moves { from } = layout::kind(key)
-                && behind
-            {
-                needed.insert(key.to_owned());
+            let mut key = location.key.clone();
+            while let Some(from) = layout::moved_from(&key).filter(|_| behind) {
+                needed.insert(key);
                 key = from;
             }
             // Its readers follow the moves of what its state names, until a checkpoint records
@@ -533,11 +609,47 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             }
         }
     }
+    // Each fork point kept whole, once (TASK-395.4).
+    let checkpoints = crate::recovery::Checkpoints::new(bucket, 0);
+    for origin in points {
+        let Ok((state, read)) =
+            crate::recovery::recover_at(&checkpoints, origin.parent, origin.at).await
+        else {
+            continue;
+        };
+        touched.extend(read.iter().cloned());
+        needed.extend(read);
+        for (&extent, location) in &state.extents {
+            needed.insert(location.key.clone());
+            named.entry(location.key.clone()).or_default().insert(extent, location.len);
+            let mut key = location.key.clone();
+            while let Some(from) = layout::moved_from(&key) {
+                needed.insert(key);
+                key = from;
+            }
+            let mut at: Location = location.clone();
+            while keys.contains(&layout::moves(&at.key)) {
+                let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
+                needed.insert(layout::moves(&at.key));
+                needed.insert(to.key.clone());
+                named.entry(to.key.clone()).or_default().insert(extent, to.len);
+                at = to;
+            }
+        }
+    }
     let mut left = Vec::new();
     for key in &keys {
         // fxdax: cells' objects stay, as their branches' records do, their epochs fencing their
-        // volumes' leases; and blocks of object IDs taken, for good (TASK-364).
-        let kept = matches!(layout::kind(key), Kind::Cell { .. } | Kind::ObjectIds { .. });
+        // volumes' leases; blocks of object IDs taken, for good (TASK-364); and the collector's
+        // leases and marks, and references not yet retirable (TASK-395).
+        let kept = match layout::kind(key) {
+            Kind::Cell { .. }
+            | Kind::ObjectIds { .. }
+            | Kind::GcLease { .. }
+            | Kind::Marks { .. } => true,
+            Kind::Reference { .. } => !retirable.contains(key),
+            _ => false,
+        };
         if !kept && !needed.contains(key) {
             left.push(format!("garbage left: {key}"));
         }

@@ -237,6 +237,18 @@ pub(crate) async fn list(bucket: &impl Bucket, prefix: &str) -> Vec<Meta> {
     }
 }
 
+/// fxdax: the listing of `prefix` by delimiter ([`Bucket::list_delimited`]), retried while it
+/// fails.
+pub(crate) async fn list_delimited(bucket: &impl Bucket, prefix: &str) -> Listing {
+    let mut failures = 0;
+    loop {
+        match bucket.list_delimited(prefix).await {
+            Ok(listing) => return listing,
+            Err(_) => failed(bucket, &mut failures).await,
+        }
+    }
+}
+
 /// fxdax: deletes the objects at `keys`, in batches of [`DELETE_BATCH`] ([`Bucket::delete_batch`]),
 /// [`BATCHES_AT_ONCE`] at once, in any order, each batch retried whole while it fails: deleting
 /// what is gone is no error (TASK-395.5).

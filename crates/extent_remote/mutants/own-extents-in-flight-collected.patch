@@ -4,7 +4,7 @@
 # Killer: sim::forks_racing_collection
 --- a/crates/extent_remote/src/collector.rs
 +++ b/crates/extent_remote/src/collector.rs
-@@ -626,7 +626,7 @@
+@@ -1287,7 +1287,7 @@
                          && (!named || moved_long_ago(key))
                  }
                  // Once no segment will name it.
@@ -12,4 +12,4 @@
 +                Kind::Extent { .. } => !named,
                  // Moves go once no state's way goes through them, and they are compacted in turn,
                  // or what they are of is gone and they hold no extent a state names.
-                 Kind::Moves { from } => {
+                 Kind::Moves { cell, of } => {

@@ -178,6 +178,12 @@ fn one() {
             "wal_follows" => rules.wal_follows = false,
             "wal_after_fence" => rules.wal_after_fence = false,
             "wal_continues" => rules.wal_continues = false,
+            "references" => rules.references = false,
+            "references_first" => rules.references_first = false,
+            "clones_refer_first" => rules.clones_refer_first = false,
+            "references_held" => rules.references_held = false,
+            "references_relisted" => rules.references_relisted = false,
+            "fork_points_kept" => rules.fork_points_kept = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -194,6 +200,7 @@ fn one() {
         "collectors" => collectors(),
         "taken" => taken(),
         "children" => children(),
+        "fresh_cells" => fresh_cells(),
         "recovering" => recovering(),
         "failed" => failed_forks(),
         "restores" => restores(),
@@ -284,14 +291,18 @@ test_needs!(deletes_need_tokens, delete_tokens, stale_placements());
 /// Branches forking, deleted twice at once, by a placement cut off and the latest one, while their
 /// writers' fork segments are in flight and collectors run (TASK-183).
 fn deleted_forking() -> Profile {
-    weights(|weights| {
+    let mut profile = weights(|weights| {
         weights.fork = 6;
         weights.open = 6;
         weights.takeover = 2;
         weights.stale_delete = 4;
         weights.delete = 3;
         weights.collect = 8;
-    })
+    });
+    // fxdax: sweeps alone (TASK-395.4): the searches of this profile's rules find their cases with
+    // passes over every cell, none in 20,000 seeds with half the passes over one cell.
+    profile.one_cell = 0.0;
+    profile
 }
 
 test_holds!(branches_deleted_twice_while_forking, deleted_forking());
@@ -329,9 +340,31 @@ fn children() -> Profile {
     })
 }
 
+/// fxdax: forks whose children open at once, passes over one branch's cell alone, the child's
+/// among them, which may have no record yet as the pass starts, and requests slow to complete, so
+/// that a pass spans the child's opening and first upload (TASK-395.4).
+fn fresh_cells() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.complete = 15;
+        weights.fork = 8;
+        weights.open = 12;
+        weights.collect = 12;
+        weights.crash = 0;
+        weights.delete = 0;
+        weights.stop_collector = 0;
+    });
+    profile.one_cell = 1.0;
+    profile
+}
+
 test_holds!(forks_with_children_opening, children());
 
-test_needs!(collection_needs_candidates_first, candidates_first, collected());
+// fxdax: a pass over a child's cell begun before the child's record, which lists the child's
+// segments after it read no record (TASK-395.4): every fork is to a cell of its own here, so a
+// pass over the parent's cell finds no such child (upload's Shuttle test finds one within a cell).
+test_holds!(passes_over_cells_being_made, fresh_cells());
+
+test_needs!(collection_needs_candidates_first, candidates_first, fresh_cells());
 
 test_needs!(collection_needs_forks_from_states, forks_from_states, collected());
 
@@ -372,7 +405,7 @@ test_needs!(takeovers_need_void_strays_pinned, pins_void_strays, recreated());
 test_needs!(takeovers_need_late_strays_pinned, pins_late_strays, recreated());
 
 // ...and what the last writer landed after a later writer read the branch, until that one fenced.
-test_needs!(takeovers_need_takings_pinned, pins_takings, late_checkpoints());
+test_needs!(takeovers_need_takings_pinned, pins_takings, recreated());
 
 // A deleted branch's writer, taken over, acknowledging a fork only after a read of its lease: the
 // deletion's fence goes with the branch.
@@ -398,6 +431,9 @@ fn recreated() -> Profile {
         weights.tick = 6;
     });
     profile.hold = 1.0;
+    // fxdax: sweeps alone (TASK-395.4): the searches of this profile's rules find their cases with
+    // passes over every cell, none in 20,000 seeds with half the passes over one cell.
+    profile.one_cell = 0.0;
     profile.options.compact_below = 0.9;
     profile.options.grace = 1;
     profile
@@ -649,6 +685,26 @@ test_holds!(forks_ids_taken_by_roots_deleted, usurped());
 
 test_needs!(collection_needs_records_kept, records_kept, usurped());
 
+// fxdax: the per-cell collector's rules (TASK-395.3, TASK-395.4), every fork of the simulation's
+// to a cell of its own. A base's cell's pass, the base deleted, keeps what its forks inherited only
+// by their references...
+test_needs!(collection_needs_references, references, deleted_bases());
+
+// ...and its state at their fork points whole, what recovering it reads too: a fork with no
+// checkpoint of its own recovers through it...
+test_needs!(collection_needs_fork_points_kept, fork_points_kept, deleted_bases());
+
+// ...and a reference stays while its child's cell holds references of its own, a generation's
+// forks inheriting through it.
+test_needs!(collection_needs_references_held, references_held, forks());
+
+// A deletion's references written before it marks the parent deleted, and a clone's before it
+// reads its point, have no search here: collector::tests' direct ones show them needed
+// (`deletions_referring_before_they_mark_parents_deleted_need_references_first`,
+// `clones_keeping_what_they_inherit_as_their_points_go_need_clones_refer_first`), as do
+// specs/bucket's NoReferencesFirst and NoClonesReferFirst; references listed after the states,
+// NoReferencesRelisted alone.
+
 /// Restores as [`restores`] makes them, but no host dying, no collector stopped and no request
 /// failing once it took effect: a pass that misses a restored branch then reclaims what it inherited,
 /// rather than stopping first. With `restores` itself, the trajectories TASK-175 moved put the first
@@ -661,7 +717,13 @@ fn whole_restores() -> Profile {
     profile
 }
 
-test_needs!(collection_needs_records_listed_after_states, records_relisted, whole_restores());
+// TASK-395.1: a clone's reference, listed after the states, finds what listing the records again
+// finds: with references gone too, as specs/bucket's NoRecordsRelisted has it.
+#[test]
+fn collection_needs_records_listed_after_states() {
+    let rules = Rules { records_relisted: false, references: false, ..Rules::ALL };
+    needed(rules, whole_restores(), 0..20_000);
+}
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.

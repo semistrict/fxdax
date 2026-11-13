@@ -559,12 +559,18 @@ impl<D: Dir> Remote<D> {
     /// fork's owner: one of another's, which took the child's ID, is left as it is (TASK-79.82). As
     /// the fork's segment gave the child its origin, if the uploader took it; or of no parent, if
     /// it never did. It is deleted as the host's placement (`Options::token`).
+    ///
+    /// fxdax: a fork of a point, this store a copy of it, as a fork of the point, naming the point's
+    /// origin: its record deleted then names it, so that its cell's pass of the collector retires
+    /// the reference the fork wrote under the origin's cell (TASK-395.3). As a branch of its own,
+    /// naming none, the reference would stay for ever.
     pub fn unfork(&self, child: Child) -> Result<(), Failure> {
         let origin = self.shared.fork_origin(child.branch);
-        let forked = match (origin, child.point) {
-            (None, _) => Kind::Own,
-            (Some(origin), true) => Kind::Point(origin),
-            (Some(origin), false) => Kind::Fork(origin),
+        let forked = match (self.shared.point.get(), origin, child.point) {
+            (Some(point), ..) => Kind::Forking { origin: point.origin, point: point.branch },
+            (None, None, _) => Kind::Own,
+            (None, Some(origin), true) => Kind::Point(origin),
+            (None, Some(origin), false) => Kind::Fork(origin),
         };
         let (holder, token) = (self.shared.holder(), self.shared.options.token);
         let deleting =
@@ -1472,7 +1478,8 @@ mod shuttle_tests {
         }
     }
 
-    /// Holds up a listing of the whole bucket, once armed, until opened.
+    /// Holds up a listing of a whole cell, a pass's of its candidates (TASK-395.4), once armed,
+    /// until opened.
     #[derive(Default)]
     struct Gate {
         armed: shuttle::sync::atomic::AtomicBool,
@@ -1496,7 +1503,8 @@ mod shuttle_tests {
 
         /// A listing of `prefix` goes through the gate.
         fn pass(&self, prefix: &str) {
-            if prefix.is_empty() && self.armed.swap(false, SeqCst) {
+            let whole = extent_remote::layout::cell_of_prefix(prefix).is_some();
+            if whole && self.armed.swap(false, SeqCst) {
                 self.reached.store(true, SeqCst);
                 until(|| self.open.load(SeqCst));
             }

@@ -29,15 +29,24 @@ pub use extent_frame::segment::{
 /// fences lack them. 7: a checkpoint names the branch's strays apart from its fences, each void or
 /// late ([`Stray`](crate::recovery::Stray), TASK-388); nothing reads 6's. 8: a point's record says
 /// whether other tenants may fork it ([`Record::shared`](crate::record::Record::shared),
-/// TASK-395.7); nothing reads 7's.
-pub const FORMAT: u32 = 8;
+/// TASK-395.7); nothing reads 7's. 9: everything a cell's collection reads is under the cell's
+/// prefix: its objects' moves ([`moves`]), its collector's lease and marks ([`gc_lease`],
+/// [`marks`]), and the references of forks of its branches ([`reference`]), so that a pass of the
+/// collector lists the cell alone (TASK-395.2); nothing reads 8's, whose moves and collector's lease
+/// were at the bucket's root.
+pub const FORMAT: u32 = 9;
 
 /// fxdax: the prefix of every tenant's cells' objects: all the bucket's branches (TASK-364).
 pub const TENANTS: &str = "tenants/";
-pub const GC_LEASE: &str = "gc/lease";
-/// fxdax: where the collector's mark-only passes write what they would delete ([`marks`]).
-pub const GC_MARKS: &str = "gc/marks/";
+/// fxdax: under a cell's prefix, the collector's own: its lease, its marks, and what else its
+/// passes over the cell keep there; never a pass's candidate (TASK-395.2).
+const GC: &str = "gc/";
+const GC_LEASE: &str = "gc/lease";
+const GC_MARKS: &str = "gc/marks/";
+/// Under a cell's prefix, the moves of its objects, and the moves of those, `moves/moves/...`.
 const MOVES: &str = "moves/";
+/// fxdax: under a cell's prefix, the references of forks of its branches ([`reference`]).
+const REFS: &str = "refs/";
 /// fxdax: the prefix of the blocks of object IDs taken ([`objectid_block`]).
 const OBJECTIDS: &str = "objectid/";
 
@@ -94,25 +103,116 @@ pub fn cell(cell: Cell) -> String {
     format!("{}cell", cell.prefix())
 }
 
-/// What the collector made of the object at `key` when it compacted it: the extents of it that were
-/// live, and where in it each is. Being one object, written whole, it is never there without them.
-pub fn moves(key: &str) -> String {
-    format!("{MOVES}{key}")
+/// fxdax: the cell whose prefix `key` is under, and the rest of it: none for a key of no cell's.
+fn in_cell(key: &str) -> Option<(Cell, &str)> {
+    let (tenant, rest) = key.strip_prefix(TENANTS)?.split_once('/')?;
+    let (id, rest) = rest.strip_prefix("cells/")?.split_once('/')?;
+    Some((Cell { tenant: hex(tenant)?, id: hex(id)? }, rest))
 }
 
-/// fxdax: what the mark-only pass of the collector that took its lease at `epoch` found no live
-/// branch needs, and would have deleted ([`Marks`]; doc-7, Garbage collection; TASK-264): keyed by
-/// the epoch, so that the newest lists last.
-pub fn marks(epoch: u64) -> String {
-    format!("{GC_MARKS}{epoch:016x}")
+/// fxdax: the cell whose prefix `key` is under, a key or a prefix: none for one of no cell's.
+pub fn cell_of(key: &str) -> Option<Cell> {
+    in_cell(key).map(|(cell, _)| cell)
+}
+
+/// fxdax: the cell whose whole prefix `prefix` is, as a listing of every object of the cell's
+/// names it: none for any other prefix.
+pub fn cell_of_prefix(prefix: &str) -> Option<Cell> {
+    in_cell(prefix).filter(|(_, rest)| rest.is_empty()).map(|(cell, _)| cell)
+}
+
+/// What the collector made of the object at `key` when it compacted it: the extents of it that were
+/// live, and where in it each is. Being one object, written whole, it is never there without them.
+/// fxdax: under the cell of the object, `<C>moves/<rest>` for the object `<C><rest>`, and so
+/// `<C>moves/moves/<rest>` for its moves' moves, so that the cell's pass of the collector lists
+/// them with the cell (TASK-395.2). Only a cell's objects are compacted, nor do readers follow any
+/// other's moves: a location names a cell's object, one the bucket's branches wrote.
+pub fn moves(key: &str) -> String {
+    let (cell, rest) = in_cell(key)
+        .unwrap_or_else(|| panic!("the moves of {key}, of no cell's: only a cell's objects move"));
+    format!("{}{MOVES}{rest}", cell.prefix())
+}
+
+/// fxdax: the key of the object the moves at `key` are of, if they are moves: the inverse of
+/// [`moves`].
+pub fn moved_from(key: &str) -> Option<String> {
+    match kind(key) {
+        Kind::Moves { cell, of } => Some(format!("{}{of}", cell.prefix())),
+        _ => None,
+    }
+}
+
+/// fxdax: the collector's lease over `cell`, which its passes over the cell take (doc-7, Garbage
+/// collection; TASK-395.2): passes over other cells run beside them, unfenced.
+pub fn gc_lease(cell: Cell) -> String {
+    format!("{}{GC_LEASE}", cell.prefix())
+}
+
+/// fxdax: the prefix of the marks of the mark-only passes over `cell` ([`marks`]).
+pub fn marks_of(cell: Cell) -> String {
+    format!("{}{GC_MARKS}", cell.prefix())
+}
+
+/// fxdax: what the mark-only pass over `cell` of the collector that took the cell's lease at
+/// `epoch` found no live branch needs, and would have deleted ([`Marks`]; doc-7, Garbage collection;
+/// TASK-264): keyed by the epoch, so that the newest lists last.
+pub fn marks(cell: Cell, epoch: u64) -> String {
+    format!("{}{epoch:016x}", marks_of(cell))
+}
+
+/// fxdax: the prefix of the references of forks of `cell`'s branches ([`reference`]): listed by
+/// delimiter, the branches of the cell with forks referring to them.
+pub fn references(cell: Cell) -> String {
+    format!("{}{REFS}", cell.prefix())
+}
+
+/// fxdax: the prefix of the references of forks of `parent`: listed by delimiter, its distinct fork
+/// points, which a pass over its cell keeps the states of ([`fork_point`]).
+pub fn references_of(parent: Branch) -> String {
+    format!("{}{:016x}/", references(parent.cell), parent.id)
+}
+
+/// fxdax: the prefix of the references of the forks of `parent` at the end of its segment `at`:
+/// listed, their children.
+pub fn fork_point(parent: Branch, at: u64) -> String {
+    format!("{}{at:016x}/", references_of(parent))
+}
+
+/// fxdax: the reference of the fork of `parent` at the end of its segment `at` to `child`, under
+/// the parent's cell, the cell holding what the child inherits, whatever the child's (doc-7,
+/// References; TASK-395.2): while it stands, the parent's cell's passes keep the parent's whole
+/// state at the fork point. Its bytes are a [`Reference`], unique to the fork, so that every writer
+/// of it writes the same; the child's cell's passes retire it, computing it from the child's
+/// record's origin, never listing it.
+pub fn reference(parent: Branch, at: u64, child: Branch) -> String {
+    let Branch { cell: Cell { tenant, id: cell }, id } = child;
+    format!("{}{tenant:016x}.{cell:016x}.{id:016x}", fork_point(parent, at))
+}
+
+/// fxdax: the parent a prefix of `cell`'s references names, `<C>refs/<parent>/`, as a delimiter
+/// listing of [`references`] gives it.
+pub fn referenced_parent(cell: Cell, prefix: &str) -> Option<Branch> {
+    let rest = prefix.strip_prefix(&references(cell))?.strip_suffix('/')?;
+    Some(Branch { cell, id: hex(rest)? })
+}
+
+/// fxdax: the fork point a prefix of `parent`'s references names, `<C>refs/<parent>/<at>/`, as a
+/// delimiter listing of [`references_of`] gives it.
+pub fn referenced_at(parent: Branch, prefix: &str) -> Option<u64> {
+    hex(prefix.strip_prefix(&references_of(parent))?.strip_suffix('/')?)
 }
 
 /// Whether the object at `later` is further along the way of an extent from the object at `key`:
 /// the moves of it, or of moves of it.
 pub fn further(key: &str, later: &str) -> bool {
-    let mut at = later;
+    let (Some((cell, of)), Some((at_cell, mut at))) = (in_cell(key), in_cell(later)) else {
+        return false;
+    };
+    if cell != at_cell {
+        return false;
+    }
     while let Some(from) = at.strip_prefix(MOVES) {
-        if from == key {
+        if from == of {
             return true;
         }
         at = from;
@@ -153,13 +253,28 @@ pub enum Kind<'a> {
     ObjectIds {
         block: u64,
     },
-    GcLease,
-    /// fxdax: a mark-only pass's marks ([`marks`]): the collector's own, never a candidate.
+    /// fxdax: the collector's lease over a cell ([`gc_lease`]).
+    GcLease {
+        cell: Cell,
+    },
+    /// fxdax: a mark-only pass's marks over a cell ([`marks`]): the collector's own, never a
+    /// candidate.
     Marks {
+        cell: Cell,
         epoch: u64,
     },
+    /// The moves of the object `of`, the rest of its key under the cell's prefix ([`moves`],
+    /// [`moved_from`]).
     Moves {
-        from: &'a str,
+        cell: Cell,
+        of: &'a str,
+    },
+    /// fxdax: the reference of the fork of `parent`, of the cell it is under, at the end of its
+    /// segment `at`, to `child` ([`reference`]): never a candidate.
+    Reference {
+        parent: Branch,
+        at: u64,
+        child: Branch,
     },
     Unknown,
 }
@@ -175,26 +290,29 @@ impl Kind<'_> {
             Self::Lease { .. } => "lease",
             Self::Cell { .. } => "cell",
             Self::ObjectIds { .. } => "objectid",
-            Self::GcLease => "gc-lease",
+            Self::GcLease { .. } => "gc-lease",
             Self::Marks { .. } => "marks",
             Self::Moves { .. } => "moves",
+            Self::Reference { .. } => "reference",
             Self::Unknown => "unknown",
         }
     }
 }
 
-/// fxdax: the cell whose object `key` is, if a cell's: one under its prefix, or the moves of one,
-/// or of its moves, which hold what the collector kept of it (`fxdax-gc --usage`, TASK-394).
+/// fxdax: the cell whose object `key` is, if a cell's: every kind under its prefix, the moves of its
+/// objects and of their moves, its collector's lease and marks, and the references of forks of its
+/// branches, under the parent's cell (`fxdax-gc --usage`, TASK-394, TASK-395.2).
 pub fn owner(key: &str) -> Option<Cell> {
     match kind(key) {
         Kind::Segment { branch, .. }
         | Kind::Extent { branch, .. }
         | Kind::Checkpoint { branch, .. }
         | Kind::Record { branch }
-        | Kind::Lease { branch } => Some(branch.cell),
-        Kind::Cell { cell } => Some(cell),
-        Kind::Moves { from } => owner(from),
-        Kind::ObjectIds { .. } | Kind::GcLease | Kind::Marks { .. } | Kind::Unknown => None,
+        | Kind::Lease { branch }
+        | Kind::Reference { parent: branch, .. } => Some(branch.cell),
+        Kind::Cell { cell } | Kind::GcLease { cell } | Kind::Marks { cell, .. } => Some(cell),
+        Kind::Moves { cell, .. } => Some(cell),
+        Kind::ObjectIds { .. } | Kind::Unknown => None,
     }
 }
 
@@ -204,24 +322,36 @@ fn hex(text: &str) -> Option<u64> {
 
 pub fn kind(key: &str) -> Kind<'_> {
     let parsed = || -> Option<Kind<'_>> {
-        if key == GC_LEASE {
-            return Some(Kind::GcLease);
-        }
-        if let Some(rest) = key.strip_prefix(GC_MARKS) {
-            return Some(Kind::Marks { epoch: hex(rest)? });
-        }
-        if let Some(from) = key.strip_prefix(MOVES) {
-            return Some(Kind::Moves { from });
-        }
         if let Some(block) = key.strip_prefix(OBJECTIDS) {
             return Some(Kind::ObjectIds { block: hex(block)? });
         }
-        let (tenant, rest) = key.strip_prefix(TENANTS)?.split_once('/')?;
-        let (id, rest) = rest.strip_prefix("cells/")?.split_once('/')?;
-        let cell = Cell { tenant: hex(tenant)?, id: hex(id)? };
+        let (cell, rest) = in_cell(key)?;
         let branch = |id| Some(Branch { cell, id: hex(id)? });
         if rest == "cell" {
             return Some(Kind::Cell { cell });
+        }
+        if let Some(of) = rest.strip_prefix(MOVES) {
+            return (!of.is_empty()).then_some(Kind::Moves { cell, of });
+        }
+        if let Some(rest) = rest.strip_prefix(GC) {
+            if rest == GC_LEASE.strip_prefix(GC)? {
+                return Some(Kind::GcLease { cell });
+            }
+            let epoch = rest.strip_prefix(GC_MARKS.strip_prefix(GC)?)?;
+            return Some(Kind::Marks { cell, epoch: hex(epoch)? });
+        }
+        if let Some(rest) = rest.strip_prefix(REFS) {
+            let [parent, at, child] = rest.split('/').collect::<Vec<_>>()[..] else {
+                return None;
+            };
+            let [tenant, child_cell, child] = child.split('.').collect::<Vec<_>>()[..] else {
+                return None;
+            };
+            let child = Branch {
+                cell: Cell { tenant: hex(tenant)?, id: hex(child_cell)? },
+                id: hex(child)?,
+            };
+            return Some(Kind::Reference { parent: branch(parent)?, at: hex(at)?, child });
         }
         if let Some(rest) = rest.strip_prefix("branches/") {
             return Some(Kind::Record { branch: branch(rest)? });
@@ -337,6 +467,24 @@ pub struct Marks {
     pub marked: Vec<Marked>,
 }
 
+/// fxdax: a reference's bytes ([`reference`]): the format of the bucket's objects, first, as a
+/// record's, and the fork's owner, its child's ([`Child::owner`], a clone's its restore's): unique
+/// to the fork, so that every writer of it writes the same, a writable fork's host, its parent's
+/// writers and its parent's deletion alike, and a create landed though its answer was lost is taken
+/// for its own (TASK-395.3). What the collector keeps by is the key alone; nothing reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reference {
+    pub format: u32,
+    pub owner: u64,
+}
+
+impl Reference {
+    /// The reference of the fork whose child's owner is `owner`.
+    pub fn of(owner: u64) -> Self {
+        Self { format: FORMAT, owner }
+    }
+}
+
 /// An object a mark-only pass found doomed, as the listing it went by found it: an object at its
 /// key of another version is another object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,11 +583,14 @@ mod tests {
     }
 
     /// fxdax: every object of a branch, and its cell's own, is under the cell's prefix, by tenant
-    /// then cell (TASK-364).
+    /// then cell (TASK-364); and since format 9 everything the cell's collection reads: its objects'
+    /// moves and their moves, its collector's lease and marks, and the references of forks of its
+    /// branches, whatever the children's cells (TASK-395.2).
     #[test]
     fn a_cells_objects_are_under_its_tenants_prefix() {
         let cell = Cell { tenant: 0xa, id: 0xc };
         let branch = Branch { cell, id: 3 };
+        let elsewhere = Branch { cell: Cell { tenant: 0xb, id: 0xd }, id: 4 };
         let prefix = "tenants/000000000000000a/cells/000000000000000c/";
         assert_eq!(cell.prefix(), prefix);
         for key in [
@@ -449,11 +600,76 @@ mod tests {
             record(branch),
             lease(branch),
             self::cell(cell),
+            moves(&segment(branch, 7)),
+            moves(&moves(&segment(branch, 7))),
+            gc_lease(cell),
+            marks(cell, 2),
+            reference(branch, 7, elsewhere),
         ] {
             assert!(key.starts_with(prefix) && key.starts_with(TENANTS), "{key}");
         }
         assert_eq!(record(branch), format!("{prefix}branches/0000000000000003"));
         assert!(record(branch).starts_with(&records(cell)));
+        assert_eq!(
+            moves(&segment(branch, 7)),
+            format!("{prefix}moves/segments/0000000000000003/0000000000000007")
+        );
+        assert_eq!(
+            moves(&moves(&segment(branch, 7))),
+            format!("{prefix}moves/moves/segments/0000000000000003/0000000000000007")
+        );
+        assert_eq!(gc_lease(cell), format!("{prefix}gc/lease"));
+        assert_eq!(marks(cell, 0x2a), format!("{prefix}gc/marks/000000000000002a"));
+        assert_eq!(
+            reference(branch, 7, elsewhere),
+            format!(
+                "{prefix}refs/0000000000000003/0000000000000007/\
+                 000000000000000b.000000000000000d.0000000000000004"
+            )
+        );
+    }
+
+    /// TASK-395.2: a delimiter listing of a cell's references gives the parents with forks, and one
+    /// of a parent's, its distinct fork points: each prefix read back as what it names, and no
+    /// other.
+    #[test]
+    fn references_list_by_parent_then_fork_point() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let (parent, child) =
+            (Branch { cell, id: 3 }, Branch { cell: Cell { tenant: 1, id: 2 }, id: 5 });
+        let key = reference(parent, 7, child);
+        assert!(key.starts_with(&fork_point(parent, 7)));
+        assert!(fork_point(parent, 7).starts_with(&references_of(parent)));
+        assert!(references_of(parent).starts_with(&references(cell)));
+        assert_eq!(referenced_parent(cell, &references_of(parent)), Some(parent));
+        assert_eq!(referenced_at(parent, &fork_point(parent, 7)), Some(7));
+        assert_eq!(referenced_parent(cell, &fork_point(parent, 7)), None);
+        assert_eq!(referenced_at(parent, &references_of(parent)), None);
+        let other = Cell { tenant: 0xa, id: 0xd };
+        assert_eq!(referenced_parent(other, &references_of(parent)), None);
+    }
+
+    /// TASK-395.2: the moves of a moves are of what it is of, along the way, in its cell alone.
+    #[test]
+    fn moves_are_further_along_the_way_in_their_cell() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let sealed = segment(Branch { cell, id: 3 }, 7);
+        let (once, twice) = (moves(&sealed), moves(&moves(&sealed)));
+        assert!(further(&sealed, &once) && further(&sealed, &twice) && further(&once, &twice));
+        assert!(!further(&once, &sealed) && !further(&twice, &once) && !further(&sealed, &sealed));
+        let other = segment(Branch { cell: Cell { tenant: 0xa, id: 0xd }, id: 3 }, 7);
+        assert!(!further(&other, &once) && !further(&sealed, &moves(&other)));
+        assert_eq!(moved_from(&once), Some(sealed.clone()));
+        assert_eq!(moved_from(&twice), Some(once.clone()));
+        assert_eq!(moved_from(&sealed), None);
+    }
+
+    /// The moves of an object of no cell's, which nothing writes: refused, not put at the bucket's
+    /// root as before format 9.
+    #[test]
+    #[should_panic(expected = "the moves of probe/0000000000000001, of no cell's")]
+    fn objects_of_no_cell_have_no_moves() {
+        moves("probe/0000000000000001");
     }
 
     #[test]
@@ -475,28 +691,48 @@ mod tests {
         assert_eq!(objectid_block(0x2a), "objectid/000000000000002a");
         assert_eq!(kind(&objectid_block(0x2a)), Kind::ObjectIds { block: 0x2a });
         assert_eq!(kind("objectid/2a"), Kind::Unknown);
-        assert_eq!(kind(GC_LEASE), Kind::GcLease);
-        assert_eq!(kind(&marks(0x2a)), Kind::Marks { epoch: 0x2a });
-        assert_eq!(marks(0x2a), "gc/marks/000000000000002a");
-        assert_eq!(kind("gc/marks/2a"), Kind::Unknown);
+        assert_eq!(kind(&gc_lease(cell)), Kind::GcLease { cell });
+        assert_eq!(kind(&marks(cell, 0x2a)), Kind::Marks { cell, epoch: 0x2a });
+        assert_eq!(kind(&format!("{}gc/marks/2a", cell.prefix())), Kind::Unknown);
+        assert_eq!(kind(&format!("{}gc/other", cell.prefix())), Kind::Unknown);
         let from = segment(branch, 7);
-        assert_eq!(kind(&moves(&from)), Kind::Moves { from: &from });
+        let of = "segments/0000000000000003/0000000000000007";
+        assert_eq!(kind(&moves(&from)), Kind::Moves { cell, of });
+        let moved = format!("moves/{of}");
+        assert_eq!(kind(&moves(&moves(&from))), Kind::Moves { cell, of: &moved });
+        assert_eq!(kind(&format!("{}moves/", cell.prefix())), Kind::Unknown);
+        let child = Branch { cell: Cell { tenant: 1, id: 2 }, id: 5 };
+        assert_eq!(
+            kind(&reference(branch, 7, child)),
+            Kind::Reference { parent: branch, at: 7, child }
+        );
+        assert_eq!(kind(&format!("{}2", fork_point(branch, 7))), Kind::Unknown);
+        assert_eq!(kind(&fork_point(branch, 7)), Kind::Unknown);
         // The layout before cells, and keys of cells' prefixes malformed, are no objects of a
-        // branch.
+        // branch; nor the collector's lease, marks and moves at the bucket's root, as format 8 had
+        // them (TASK-395.2).
         assert_eq!(kind("segments/0000000000000003/0000000000000007"), Kind::Unknown);
         assert_eq!(kind("branches/0000000000000003"), Kind::Unknown);
         assert_eq!(kind("tenants/a/cells/000000000000000c/cell"), Kind::Unknown);
         assert_eq!(kind("tenants/000000000000000a/cell/000000000000000c/cell"), Kind::Unknown);
         let short = format!("{}segments/0000000000000003/7", cell.prefix());
         assert_eq!(kind(&short), Kind::Unknown);
+        assert_eq!(kind("gc/lease"), Kind::Unknown);
+        assert_eq!(kind("gc/marks/000000000000002a"), Kind::Unknown);
+        assert_eq!(kind(&format!("moves/{from}")), Kind::Unknown);
+        assert_eq!(cell_of_prefix(&cell.prefix()), Some(cell));
+        assert_eq!(cell_of_prefix(&records(cell)), None);
+        assert_eq!(cell_of_prefix(""), None);
     }
 
-    /// TASK-394: every kind of a cell's objects is the cell's, and its moves, however many times
-    /// moved; the collector's, object-ID blocks and keys of no kind are no cell's.
+    /// TASK-394, TASK-395.2: every kind of a cell's objects is the cell's, its moves however many
+    /// times moved, its collector's lease and marks, and the references under it, of forks of its
+    /// branches to other cells; object-ID blocks and keys of no kind are no cell's.
     #[test]
     fn owners() {
         let cell = Cell { tenant: 0xa, id: 0xc };
         let branch = Branch { cell, id: 3 };
+        let child = Branch { cell: Cell { tenant: 1, id: 2 }, id: 5 };
         let keys = [
             segment(branch, 7),
             extent(cell, 2, 4, ExtentId::new(3, 9)),
@@ -506,16 +742,19 @@ mod tests {
             self::cell(cell),
             moves(&segment(branch, 7)),
             moves(&moves(&extent(cell, 2, 4, ExtentId::new(3, 9)))),
+            gc_lease(cell),
+            marks(cell, 1),
+            reference(branch, 7, child),
         ];
         for key in keys {
             assert_eq!(owner(&key), Some(cell), "{key}");
         }
         let keys = [
-            GC_LEASE.to_owned(),
-            marks(1),
+            "gc/lease".to_owned(),
+            "gc/marks/0000000000000001".to_owned(),
             objectid_block(1),
             "probe/0000000000000001".to_owned(),
-            moves("probe/0000000000000001"),
+            "moves/probe/0000000000000001".to_owned(),
             format!("{}leases/3", cell.prefix()),
         ];
         for key in keys {
