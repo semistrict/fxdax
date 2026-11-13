@@ -4,12 +4,12 @@
 # Killer: sim::forks_racing_collection
 --- a/crates/extent_remote/src/collector.rs
 +++ b/crates/extent_remote/src/collector.rs
-@@ -1287,7 +1287,7 @@
-                         && (!named || moved_long_ago(key))
+@@ -1486,7 +1486,7 @@
+                     }
                  }
                  // Once no segment will name it.
--                Kind::Extent { .. } => !named && !self.may_land(bucket, kind).await?,
-+                Kind::Extent { .. } => !named,
+-                Kind::Extent { .. } => goes(!named && !self.may_land(bucket, kind).await?),
++                Kind::Extent { .. } => goes(!named),
                  // Moves go once no state's way goes through them, and they are compacted in turn,
                  // or what they are of is gone and they hold no extent a state names.
                  Kind::Moves { cell, of } => {

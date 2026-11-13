@@ -63,6 +63,7 @@ pub mod marks;
 mod moves;
 pub mod object;
 pub mod objectid;
+pub mod passed;
 pub mod record;
 pub mod recovery;
 #[cfg(test)]

@@ -315,15 +315,24 @@ pub async fn holds(bucket: &impl Bucket, held: Held) -> Result<bool, Error> {
 /// tenant, and one more for every 1,000 of its cells, as S3 pages them.
 pub async fn listed(bucket: &impl Bucket) -> Vec<Cell> {
     let mut cells = Vec::new();
-    for tenant in bucket::list_delimited(bucket, layout::TENANTS).await.prefixes {
-        let prefix = format!("{tenant}cells/");
-        for cell in bucket::list_delimited(bucket, &prefix).await.prefixes {
-            if let Some(cell) = layout::cell_of_prefix(&cell) {
-                cells.push(cell);
-            }
-        }
+    for tenant in tenants(bucket).await {
+        cells.extend(of_tenant(bucket, tenant).await);
     }
     cells
+}
+
+/// fxdax: every tenant of `bucket` with a cell, in order: by a delimiter listing of `tenants/`,
+/// listing none of their cells' objects.
+pub async fn tenants(bucket: &impl Bucket) -> Vec<u64> {
+    let listed = bucket::list_delimited(bucket, layout::TENANTS).await.prefixes;
+    listed.iter().filter_map(|prefix| layout::tenant_of_prefix(prefix)).collect()
+}
+
+/// fxdax: every cell of `tenant` with an object under its prefix, in order: by a delimiter listing
+/// of the tenant's `cells/`, listing none of their objects (`fxdax-gc --usage`, TASK-395.8).
+pub async fn of_tenant(bucket: &impl Bucket, tenant: u64) -> Vec<Cell> {
+    let listed = bucket::list_delimited(bucket, &layout::cells_of(tenant)).await.prefixes;
+    listed.iter().filter_map(|prefix| layout::cell_of_prefix(prefix)).collect()
 }
 
 #[cfg(test)]

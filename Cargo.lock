@@ -902,6 +902,8 @@ dependencies = [
  "rand 0.10.3",
  "reqwest",
  "serde",
+ "serde_json",
+ "sha2",
  "storage_device",
  "tempfile",
  "thiserror",

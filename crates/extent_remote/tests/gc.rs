@@ -227,55 +227,149 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// TASK-394: `--usage` over a bucket on the host's filesystem sums what each tenant and each cell
-/// takes, as the bucket lists it, and writes nothing, the probe of conditional writes neither.
+/// TASK-394, TASK-395.8: `--usage` over a bucket on the host's filesystem says what each cell
+/// takes, by kind, as the last pass over it found it, which matches a listing of the cell after it:
+/// what the branches wrote, less what the pass deleted; when the pass listed it; nothing of a cell
+/// no pass went over; and each tenant's sum after its cells. `--tenant` says one tenant's. It
+/// writes nothing, the probe of conditional writes neither.
 #[test]
-fn usage_sums_a_file_buckets_tenants_and_cells() {
+fn usage_says_what_each_files_cell_and_tenant_takes_as_passes_found() {
     use extent_remote::Bucket as _;
-    use extent_remote::branch;
-    use extent_remote::bucket::PutMode;
-    use extent_remote::layout::{Branch, Cell};
+    use extent_remote::batch::{Batch, Commit};
+    use extent_remote::layout::{self, Branch, Cell};
     use extent_remote::store::Store;
+    use extent_remote::{Writer, branch};
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use storage_device::ExtentId;
 
     let dir = tempfile::tempdir().unwrap();
     let url = url::Url::from_directory_path(dir.path()).unwrap().to_string();
-    let bucket = Store::from_url(&url).unwrap();
+    let bucket = Arc::new(Store::from_url(&url).unwrap());
     let cells =
         [Cell { tenant: 1, id: 1 }, Cell { tenant: 1, id: 0x2f }, Cell { tenant: 0xb, id: 1 }];
-    let listed = futures::executor::block_on(async {
+    let unpassed = Cell { tenant: 1, id: 0x30 };
+    futures::executor::block_on(async {
         for (id, cell) in cells.into_iter().enumerate() {
-            branch::create(&bucket, Branch { cell, id: id as u64 + 1 }, 0).await.unwrap();
+            branch::create(&*bucket, Branch { cell, id: id as u64 + 1 }, 0).await.unwrap();
         }
-        let segment = extent_remote::layout::segment(Branch { cell: cells[1], id: 2 }, 0);
-        let moved = extent_remote::layout::moves(&segment).unwrap();
-        bucket.put(&moved, vec![9; 1000].into(), PutMode::Create).await.unwrap();
-        bucket.put("objectid/0000000000000000", vec![1; 10].into(), PutMode::Create).await.unwrap();
-        bucket.list("").await.unwrap()
+        // In the first cell, a segment written and one freeing it: what the pass deletes.
+        let writer = Writer::open(bucket.clone(), Branch { cell: cells[0], id: 1 }, 10, 1);
+        let writer = writer.await.unwrap();
+        let extent = ExtentId::new(1, writer.chain().next_sequence());
+        let written =
+            Commit { tag: 1, extents: vec![(extent, vec![7; 4096])], ..Commit::default() };
+        let freed = Commit { tag: 2, frees: vec![extent], ..Commit::default() };
+        for commit in [written, freed] {
+            let segment = Batch::from(commit).close(&mut writer.chain()).frame();
+            let seq = writer.add_segment(segment).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+        }
+        writer.checkpoint().await.unwrap();
     });
-    let sum = |prefix: &str| {
-        let of = listed.iter().filter(|meta| meta.key.contains(prefix));
-        let (objects, bytes) =
-            of.fold((0, 0), |(objects, bytes), meta| (objects + 1, bytes + meta.size));
-        format!("{objects} {bytes}")
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let before = now().as_millis() as u64;
+    let out = gc(&[&url, "--grace", "0"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 3 cells, 0 failed\n"
+    );
+    let after = now().as_millis() as u64;
+    // A cell made after the pass, which no pass went over.
+    futures::executor::block_on(branch::create(&*bucket, Branch { cell: unpassed, id: 4 }, 0))
+        .unwrap();
+    let listed = futures::executor::block_on(bucket.list("")).unwrap();
+
+    // Each cell's objects and bytes by kind, as the bucket lists them now.
+    let sums = |cell: Cell| {
+        let mut kinds: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        for meta in listed.iter().filter(|meta| meta.key.starts_with(&cell.prefix())) {
+            let sum = kinds.entry(layout::kind(&meta.key).name()).or_default();
+            *sum = (sum.0 + 1, sum.1 + meta.size);
+        }
+        kinds
     };
-    let expected = format!(
-        "tenant 1 {}\ncell 1/1 {}\ncell 1/2f {}\ntenant b {}\ncell b/1 {}\nunowned - {}\ntotal - {}\n",
-        sum("tenants/0000000000000001/"),
-        sum(&cells[0].prefix()),
-        sum(&cells[1].prefix()),
-        sum("tenants/000000000000000b/"),
-        sum(&cells[2].prefix()),
-        sum("objectid/"),
-        sum(""),
-    );
-    assert!(
-        expected.contains("cell 1/2f 2 "),
-        "its record and the moves of its segment: {expected}"
-    );
-    let out = gc(&[&url, "--usage"]);
-    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
-    assert!(out.status.success());
+    let kinds_json = |kinds: &BTreeMap<&str, (u64, u64)>| -> Value {
+        let kind = |&(objects, bytes): &(u64, u64)| json!({ "objects": objects, "bytes": bytes });
+        kinds.iter().map(|(name, sum)| (name.to_string(), kind(sum))).collect()
+    };
+    let total = |kinds: &BTreeMap<&str, (u64, u64)>| {
+        kinds.values().fold((0, 0), |(objects, bytes), sum| (objects + sum.0, bytes + sum.1))
+    };
+    let lines = |out: &std::process::Output| -> Vec<Value> {
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout.lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    };
+    let out = lines(&gc(&[&url, "--usage"]));
+    // What each line says when it was measured: the pass's listing's start, which it went over.
+    let measured: Vec<Value> = out.iter().map(|line| line["measured_unix_ms"].clone()).collect();
+    for when in [&measured[0], &measured[1], &measured[4]] {
+        let when = when.as_u64().unwrap();
+        assert!(before <= when && when <= after, "{before} {when} {after}");
+    }
+    let cell_line = |cell: Cell, when: &Value| {
+        let kinds = sums(cell);
+        let (objects, bytes) = total(&kinds);
+        json!({
+            "scope": "cell",
+            "tenant": format!("{:x}", cell.tenant),
+            "cell": cell.to_string(),
+            "measured_unix_ms": when,
+            "objects": objects,
+            "bytes": bytes,
+            "kinds": kinds_json(&kinds),
+        })
+    };
+    let tenant_line = |tenant: u64, of: &[Cell], when: &[&Value], unmeasured: u64| {
+        let mut kinds: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
+        for cell in of {
+            for (name, sum) in sums(*cell) {
+                let summed = kinds.entry(name).or_default();
+                *summed = (summed.0 + sum.0, summed.1 + sum.1);
+            }
+        }
+        let (objects, bytes) = total(&kinds);
+        let when: Vec<u64> = when.iter().map(|when| when.as_u64().unwrap()).collect();
+        json!({
+            "scope": "tenant",
+            "tenant": format!("{tenant:x}"),
+            "cells": of.len() as u64 + unmeasured,
+            "measured_cells": of.len(),
+            "oldest_measured_unix_ms": when.iter().min(),
+            "newest_measured_unix_ms": when.iter().max(),
+            "objects": objects,
+            "bytes": bytes,
+            "kinds": kinds_json(&kinds),
+        })
+    };
+    let nothing = json!({
+        "scope": "cell",
+        "tenant": "1",
+        "cell": "1/30",
+        "measured_unix_ms": null,
+        "objects": null,
+        "bytes": null,
+        "kinds": null,
+    });
+    let tenant_b =
+        [cell_line(cells[2], &measured[4]), tenant_line(0xb, &cells[2..], &[&measured[4]], 0)];
+    let expected = [
+        cell_line(cells[0], &measured[0]),
+        cell_line(cells[1], &measured[1]),
+        nothing,
+        tenant_line(1, &cells[..2], &[&measured[0], &measured[1]], 1),
+        tenant_b[0].clone(),
+        tenant_b[1].clone(),
+    ];
+    assert_eq!(out, expected);
+    // What the pass deleted is gone from it: the first cell's segments the checkpoint covers.
+    assert_eq!(out[0]["kinds"]["segment"]["objects"], 1, "{}", out[0]);
+    assert_eq!(out[0]["kinds"]["gc-lease"]["objects"], 1, "{}", out[0]);
+    assert_eq!(lines(&gc(&[&url, "--usage", "--tenant", "b"])), tenant_b);
     let after = futures::executor::block_on(bucket.list("")).unwrap();
     assert_eq!(after, listed);
 }
@@ -287,7 +381,8 @@ fn without_a_bucket_prints_its_usage() {
                  [--grace SECONDS] [--compact-below FRACTION] | fxdax-gc URL [--cell TENANT/CELL] \
                  --dry-run [--grace SECONDS] [--compact-below FRACTION] | fxdax-gc URL --branches \
                  [--cell TENANT/CELL] [--held FILE] | fxdax-gc URL --delete-branch \
-                 TENANT/CELL/ID | fxdax-gc URL --usage (every cell, or the one --cell names; \
+                 TENANT/CELL/ID | fxdax-gc URL --usage [--tenant TENANT] (every cell, or the one \
+                 --cell names; \
                  --mark-only deletes nothing, writing each cell's gc/marks/EPOCH: the bucket \
                  grows; --dry-run writes nothing, and finds less than a pass deletes)";
     assert_eq!(String::from_utf8_lossy(&out.stderr), format!("Error: {usage:?}\n"));

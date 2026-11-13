@@ -12,7 +12,7 @@
 //! fxdax-gc URL [--cell TENANT/CELL] --dry-run [--grace SECONDS] [--compact-below FRACTION]
 //! fxdax-gc URL --branches [--cell TENANT/CELL] [--held FILE]
 //! fxdax-gc URL --delete-branch TENANT/CELL/ID
-//! fxdax-gc URL --usage
+//! fxdax-gc URL --usage [--tenant TENANT]
 //! ```
 //!
 //! URL names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`),
@@ -52,21 +52,33 @@
 //! deletes one, whichever host took it last, which stops writing if there is one, and the next pass
 //! frees what only it held (TASK-79.85).
 //!
-//! `--usage` sums the bucket's objects by who they are of (TASK-394), as one listing finds them,
-//! writing nothing: a line `tenant TENANT OBJECTS BYTES` for each tenant, then
-//! `cell TENANT/CELL OBJECTS BYTES` for each of its cells, IDs in hexadecimal; then
-//! `unowned - OBJECTS BYTES`, what is no cell's (object-ID blocks, probes, keys of no kind), and
-//! `total - OBJECTS BYTES`. A cell's objects are those under its prefix: its branches', what the
-//! collector compacted of them, its collector's lease and marks, and the references of forks of
-//! its branches: what the cell takes, the garbage of it the collector has yet to reclaim among it.
+//! `--usage` says what each cell takes, and each tenant, every cell's or `--tenant`'s alone, as
+//! the collector's last pass over each cell to end found it, writing nothing (TASK-394,
+//! TASK-395.8): it reads each cell's collector lease, where that pass recorded it, listing none of
+//! the cells' objects, so that what it holds at once is one tenant's cells' IDs, however many
+//! objects they hold. It streams a JSON object a line: one for each cell of a tenant, then one for
+//! the tenant, IDs in hexadecimal. A cell's: `{"scope":"cell","tenant":"1","cell":"1/2f",
+//! "measured_unix_ms":...,"objects":...,"bytes":...,"kinds":{"segment":{"objects":...,
+//! "bytes":...},...}}`, `measured_unix_ms` when the listing it is of began, by the bucket's clock,
+//! and all four null for a cell no pass ran over to its end yet. A tenant's: `{"scope":"tenant",
+//! "tenant":"1","cells":...,"measured_cells":...,"oldest_measured_unix_ms":...,
+//! "newest_measured_unix_ms":...,"objects":...,"bytes":...,"kinds":{...}}`, the sum of its cells
+//! measured. A cell's objects are those under its prefix, of each kind: its branches', what the
+//! collector compacted of them, its collector's lease and marks, and the references of forks of its
+//! branches; the garbage the collector has yet to reclaim among them; bytes as stored. A pass that
+//! skips a cell unchanged since the last measures it not again: its usage is as of the last pass
+//! that went over it in full, which nothing under its prefix changed since.
 
-use extent_remote::bucket::{Bucket, Meta};
+use extent_remote::bucket::Meta;
 use extent_remote::collector::{Collector, DryRun, Marking, Options, Report};
 use extent_remote::layout;
 use extent_remote::layout::Cell;
+use extent_remote::passed::{self, Sum, Usage};
 use extent_remote::record::Record;
 use extent_remote::store::{Store, probe};
 use extent_remote::{branch, cell};
+use futures::StreamExt as _;
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -76,7 +88,7 @@ fn usage() -> String {
      [--compact-below FRACTION] | fxdax-gc URL [--cell TENANT/CELL] --dry-run [--grace SECONDS] \
      [--compact-below FRACTION] | \
      fxdax-gc URL --branches [--cell TENANT/CELL] [--held FILE] | \
-     fxdax-gc URL --delete-branch TENANT/CELL/ID | fxdax-gc URL --usage \
+     fxdax-gc URL --delete-branch TENANT/CELL/ID | fxdax-gc URL --usage [--tenant TENANT] \
      (every cell, or the one --cell names; --mark-only deletes nothing, writing each cell's \
      gc/marks/EPOCH: the bucket grows; --dry-run writes nothing, and finds less than a pass deletes)"
         .into()
@@ -98,8 +110,9 @@ enum Command {
     Branches { held: Option<PathBuf>, cell: Option<Cell> },
     /// Deletes a branch.
     DeleteBranch(layout::Branch),
-    /// Sums the objects of each tenant and each cell (TASK-394).
-    Usage,
+    /// Says what each cell takes, and each tenant, every tenant's or one's, as recorded (TASK-394,
+    /// TASK-395.8).
+    Usage { tenant: Option<u64> },
 }
 
 /// What a pass does with what no live branch needs (TASK-264).
@@ -120,7 +133,10 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = match args.as_slice() {
         ["--branches", rest @ ..] => parse_branches(rest)?,
         ["--delete-branch", branch] => Command::DeleteBranch(branch.parse().map_err(|_| usage())?),
-        ["--usage"] => Command::Usage,
+        ["--usage"] => Command::Usage { tenant: None },
+        ["--usage", "--tenant", tenant] => {
+            Command::Usage { tenant: Some(tenant_id(tenant).ok_or_else(usage)?) }
+        }
         flags => parse_collect(flags)?,
     };
     Ok(Args { url, command })
@@ -192,47 +208,107 @@ fn listed(live: &BTreeMap<layout::Branch, Record>, held: &BTreeSet<layout::Branc
         .collect()
 }
 
-/// Objects, and their bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Sum {
-    objects: u64,
-    bytes: u64,
+/// The tenant `text` names, in hexadecimal, as a cell's first part.
+fn tenant_id(text: &str) -> Option<u64> {
+    let digits =
+        !text.is_empty() && text.len() <= 16 && text.bytes().all(|b| b.is_ascii_hexdigit());
+    digits.then(|| u64::from_str_radix(text, 16).ok()).flatten()
 }
 
-impl Sum {
-    fn add(&mut self, size: u64) {
-        self.objects += 1;
-        self.bytes += size;
+/// How many cells' leases `--usage` reads at once.
+const USAGES_AT_ONCE: usize = 32;
+
+/// `kinds`, as `--usage` says them: each kind's objects and bytes, by its name.
+fn kinds_json(kinds: &BTreeMap<String, Sum>) -> Value {
+    let kind = |sum: &Sum| json!({ "objects": sum.objects, "bytes": sum.bytes });
+    Value::Object(kinds.iter().map(|(name, sum)| (name.clone(), kind(sum))).collect())
+}
+
+/// What `--usage` says of `cell`, of `usage`, as its last pass to end recorded it, if one did.
+fn cell_line(cell: Cell, usage: Option<&Usage>) -> String {
+    let total = usage.map(Usage::total);
+    json!({
+        "scope": "cell",
+        "tenant": format!("{:x}", cell.tenant),
+        "cell": cell.to_string(),
+        "measured_unix_ms": usage.map(|usage| usage.measured),
+        "objects": total.map(|total| total.objects),
+        "bytes": total.map(|total| total.bytes),
+        "kinds": usage.map(|usage| kinds_json(&usage.kinds)),
+    })
+    .to_string()
+}
+
+/// What a tenant's cells take, as `--usage` reads them one after another.
+#[derive(Default)]
+struct Tenant {
+    cells: u64,
+    measured: u64,
+    /// The oldest and newest of its cells' measurements.
+    when: Option<(u64, u64)>,
+    kinds: BTreeMap<String, Sum>,
+}
+
+impl Tenant {
+    /// Adds one of its cells, of `usage`, if a pass recorded it.
+    fn add(&mut self, usage: Option<&Usage>) {
+        self.cells += 1;
+        let Some(usage) = usage else { return };
+        self.measured += 1;
+        let at = usage.measured;
+        self.when = Some(self.when.map_or((at, at), |(old, new)| (old.min(at), new.max(at))));
+        for (name, sum) in &usage.kinds {
+            *self.kinds.entry(name.clone()).or_default() += *sum;
+        }
+    }
+
+    /// What `--usage` says of it, `tenant`.
+    fn line(&self, tenant: u64) -> String {
+        let mut total = Sum::default();
+        self.kinds.values().for_each(|sum| total += *sum);
+        json!({
+            "scope": "tenant",
+            "tenant": format!("{tenant:x}"),
+            "cells": self.cells,
+            "measured_cells": self.measured,
+            "oldest_measured_unix_ms": self.when.map(|(oldest, _)| oldest),
+            "newest_measured_unix_ms": self.when.map(|(_, newest)| newest),
+            "objects": total.objects,
+            "bytes": total.bytes,
+            "kinds": kinds_json(&self.kinds),
+        })
+        .to_string()
     }
 }
 
-/// What `--usage` prints of the objects `listed`: each tenant's sum, then each of its cells', then
-/// what is no cell's, and the total.
-fn usage_of(listed: &[Meta]) -> String {
-    let mut tenants: BTreeMap<u64, (Sum, BTreeMap<u64, Sum>)> = BTreeMap::new();
-    let (mut unowned, mut total) = (Sum::default(), Sum::default());
-    for meta in listed {
-        total.add(meta.size);
-        match layout::owner(&meta.key) {
-            Some(cell) => {
-                let (tenant, cells) = tenants.entry(cell.tenant).or_default();
-                tenant.add(meta.size);
-                cells.entry(cell.id).or_default().add(meta.size);
-            }
-            None => unowned.add(meta.size),
+/// Writes to `out` what each cell of `bucket` takes, and each tenant, every tenant's or `named`'s, a
+/// line each as it reads them (`--usage`): reading each cell's collector lease, a few at once,
+/// holding one tenant's cells' IDs at a time.
+async fn say_usage(
+    bucket: &Store,
+    named: Option<u64>,
+    out: &mut impl std::io::Write,
+) -> Result<(), String> {
+    let tenants = match named {
+        Some(tenant) => vec![tenant],
+        None => cell::tenants(bucket).await,
+    };
+    for tenant in tenants {
+        let cells = cell::of_tenant(bucket, tenant).await;
+        let reads = futures::stream::iter(cells)
+            .map(|cell| async move { (cell, passed::read(bucket, cell).await) })
+            .buffered(USAGES_AT_ONCE);
+        let mut reads = std::pin::pin!(reads);
+        let mut sum = Tenant::default();
+        while let Some((cell, read)) = reads.next().await {
+            let lease = read.map_err(|err| format!("cell {cell}: {err}"))?;
+            let usage = lease.and_then(|lease| lease.passed).map(|passed| passed.usage);
+            writeln!(out, "{}", cell_line(cell, usage.as_ref())).map_err(|err| err.to_string())?;
+            sum.add(usage.as_ref());
         }
+        writeln!(out, "{}", sum.line(tenant)).map_err(|err| err.to_string())?;
     }
-    let line =
-        |scope: &str, id: &str, sum: Sum| format!("{scope} {id} {} {}\n", sum.objects, sum.bytes);
-    let mut printed = String::new();
-    for (tenant, (sum, cells)) in &tenants {
-        printed += &line("tenant", &format!("{tenant:x}"), *sum);
-        for (cell, sum) in cells {
-            printed += &line("cell", &format!("{tenant:x}/{cell:x}"), *sum);
-        }
-    }
-    printed += &line("unowned", "-", unowned);
-    printed + &line("total", "-", total)
+    Ok(())
 }
 
 /// The cells a command goes over: the one named, or every cell of `bucket`, found by delimiter
@@ -404,7 +480,7 @@ fn main() -> Result<(), String> {
         .map_err(|err| format!("a runtime: {err}"))?;
     runtime.block_on(async {
         // A dry run and a sum write nothing, and rely on no condition of a write's.
-        if !matches!(command, Command::Collect { mode: Mode::DryRun, .. } | Command::Usage) {
+        if !matches!(command, Command::Collect { mode: Mode::DryRun, .. } | Command::Usage { .. }) {
             probe(&bucket, rand::random()).await?;
         }
         match command {
@@ -430,10 +506,8 @@ fn main() -> Result<(), String> {
             Command::DeleteBranch(id) => branch::delete(&bucket, id, rand::random(), u64::MAX)
                 .await
                 .map_err(|err| err.to_string()),
-            Command::Usage => {
-                let listed = bucket.list("").await.map_err(|err| err.to_string())?;
-                print!("{}", usage_of(&listed));
-                Ok(())
+            Command::Usage { tenant } => {
+                say_usage(&bucket, tenant, &mut std::io::stdout().lock()).await
             }
         }
     })
@@ -586,41 +660,53 @@ mod tests {
         assert_eq!(held_branches("1/2/c x"), Err(refused));
     }
 
-    /// TASK-394: `--usage` takes no other flag, and sums each tenant's objects, then each of its
-    /// cells', a cell's compacted objects with it, then what is no cell's, and all of them.
+    /// TASK-394, TASK-395.8: `--usage` takes no other flag but `--tenant`, in hexadecimal.
     #[test]
-    fn usage_sums_each_tenant_and_cell() {
+    fn usage_goes_over_every_tenant_or_one() {
+        let usage = |tenant| Ok(Args { url: "u".into(), command: Command::Usage { tenant } });
+        assert_eq!(parsed(&["u", "--usage"]), usage(None));
+        assert_eq!(parsed(&["u", "--usage", "--tenant", "2f"]), usage(Some(0x2f)));
         assert_eq!(
-            parsed(&["u", "--usage"]),
-            Ok(Args { url: "u".into(), command: Command::Usage })
+            parsed(&["u", "--usage", "--tenant", "ffffffffffffffff"]),
+            usage(Some(u64::MAX))
         );
-        let meta = |key: String, size| Meta { key, version: Version::default(), size, modified: 0 };
-        let other = layout::Branch { cell: layout::Cell { tenant: 1, id: 0x1f }, id: 1 };
-        let tenant_a = layout::Branch { cell: layout::Cell { tenant: 0xa, id: 2 }, id: 3 };
-        let listed = [
-            meta(layout::gc_lease(branch(1).cell), 1),
-            meta(layout::reference(branch(1), 3, other), 9),
-            meta(layout::moves(&layout::moves(&layout::segment(other, 0)).unwrap()).unwrap(), 20),
-            meta(layout::moves(&layout::segment(branch(1), 0)).unwrap(), 300),
-            meta(layout::objectid_block(0), 2),
-            meta(layout::checkpoint(branch(1), 4), 4000),
-            meta(layout::cell(branch(1).cell), 50_000),
-            meta(layout::segment(branch(7), 4), 600_000),
-            meta(layout::segment(other, 0), 7_000_000),
-            meta(layout::record(tenant_a), 80_000_000),
-            meta("probe/0000000000000001".into(), 4),
-        ];
+    }
+
+    /// TASK-395.8: `--usage` says a cell's objects and bytes, of each kind and in all, and when they
+    /// were measured, a JSON object a line, IDs in hexadecimal; nulls for a cell not measured. A
+    /// tenant's line sums its cells measured, and says how many there are, and the oldest and
+    /// newest measurement.
+    #[test]
+    fn usage_says_each_cell_and_tenant_as_measured() {
+        let cell = layout::Cell { tenant: 0xa, id: 0x2f };
+        let mut usage = Usage { measured: 1_700_000_000_000, ..Usage::default() };
+        let usage = {
+            usage.kinds.insert("segment".into(), Sum { objects: 2, bytes: 300 });
+            usage.kinds.insert("record".into(), Sum { objects: 1, bytes: 40 });
+            usage
+        };
         assert_eq!(
-            usage_of(&listed),
-            "tenant 1 8 7654330\n\
-             cell 1/2 6 654310\n\
-             cell 1/1f 2 7000020\n\
-             tenant a 1 80000000\n\
-             cell a/2 1 80000000\n\
-             unowned - 2 6\n\
-             total - 11 87654336\n"
+            cell_line(cell, Some(&usage)),
+            r#"{"bytes":340,"cell":"a/2f","kinds":{"record":{"bytes":40,"objects":1},"segment":{"bytes":300,"objects":2}},"measured_unix_ms":1700000000000,"objects":3,"scope":"cell","tenant":"a"}"#
         );
-        assert_eq!(usage_of(&[]), "unowned - 0 0\ntotal - 0 0\n");
+        assert_eq!(
+            cell_line(cell, None),
+            r#"{"bytes":null,"cell":"a/2f","kinds":null,"measured_unix_ms":null,"objects":null,"scope":"cell","tenant":"a"}"#
+        );
+        let mut later = Usage { measured: 1_700_000_000_500, ..Usage::default() };
+        later.kinds.insert("segment".into(), Sum { objects: 1, bytes: 7 });
+        let mut tenant = Tenant::default();
+        tenant.add(Some(&later));
+        tenant.add(None);
+        tenant.add(Some(&usage));
+        assert_eq!(
+            tenant.line(0xa),
+            r#"{"bytes":347,"cells":3,"kinds":{"record":{"bytes":40,"objects":1},"segment":{"bytes":307,"objects":3}},"measured_cells":2,"newest_measured_unix_ms":1700000000500,"objects":4,"oldest_measured_unix_ms":1700000000000,"scope":"tenant","tenant":"a"}"#
+        );
+        assert_eq!(
+            Tenant::default().line(1),
+            r#"{"bytes":0,"cells":0,"kinds":{},"measured_cells":0,"newest_measured_unix_ms":null,"objects":0,"oldest_measured_unix_ms":null,"scope":"tenant","tenant":"1"}"#
+        );
     }
 
     /// TASK-395.4: a pass of any mode, and a list of the live branches, go over every cell, or the
@@ -659,7 +745,7 @@ mod tests {
 
     #[test]
     fn other_command_lines_get_the_usage() {
-        let lines: [&[&str]; 21] = [
+        let lines: [&[&str]; 26] = [
             &[],
             &["u", "--every"],
             &["u", "--every", "soon"],
@@ -681,6 +767,11 @@ mod tests {
             &["u", "--branches", "--cell", "x/2"],
             &["u", "--branches", "--cell", "1/2", "--cell", "1/2"],
             &["u", "--usage", "--cell", "1/2"],
+            &["u", "--usage", "--tenant"],
+            &["u", "--usage", "--tenant", "x"],
+            &["u", "--usage", "--tenant", "1/2"],
+            &["u", "--usage", "--tenant", "10000000000000000"],
+            &["u", "--tenant", "1", "--usage"],
         ];
         for args in lines {
             assert_eq!(parsed(args), Err(usage()), "{args:?}");

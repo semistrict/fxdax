@@ -102,6 +102,17 @@ pub fn objectid_block(block: u64) -> String {
     format!("{OBJECTIDS}{block:016x}")
 }
 
+/// fxdax: the prefix of `tenant`'s cells: listed by delimiter, its cells' prefixes
+/// ([`crate::cell::of_tenant`]).
+pub fn cells_of(tenant: u64) -> String {
+    format!("{TENANTS}{tenant:016x}/cells/")
+}
+
+/// fxdax: the tenant a prefix of a delimiter listing of [`TENANTS`] names, `tenants/<tenant>/`.
+pub fn tenant_of_prefix(prefix: &str) -> Option<u64> {
+    hex(prefix.strip_prefix(TENANTS)?.strip_suffix('/')?)
+}
+
 /// fxdax: the object of `cell` itself: who holds it, and its volumes ([`crate::cell`]).
 pub fn cell(cell: Cell) -> String {
     format!("{}cell", cell.prefix())
@@ -152,6 +163,13 @@ pub fn moved_from(key: &str) -> Option<String> {
 /// collection; TASK-395.2): passes over other cells run beside them, unfenced.
 pub fn gc_lease(cell: Cell) -> String {
     format!("{}{GC_LEASE}", cell.prefix())
+}
+
+/// fxdax: the prefix of the collector's own objects under `cell`: its lease, which holds what its
+/// passes record ([`crate::passed`]), and its marks; never a pass's candidate, nor what a pass
+/// decides by but its lease.
+pub fn collectors(cell: Cell) -> String {
+    format!("{}{GC}", cell.prefix())
 }
 
 /// fxdax: the prefix of the marks of the mark-only passes over `cell` ([`marks`]).
