@@ -17,7 +17,7 @@ use extent_remote::collector::{self, Options};
 use extent_remote::fetch::{Budget, Limits};
 use extent_remote::layout::{self, Child, Origin, epoch_of, writer_of};
 use extent_remote::record::Kind;
-use extent_remote::testing::{Direct, Fault, Moved, MovesMaps, SimBucket};
+use extent_remote::testing::{Direct, Fault, SimBucket};
 use extent_remote::{Error, Recovered, Writer, branch, recovery, rules};
 use futures::channel::oneshot;
 use futures::executor::{LocalPool, LocalSpawner, block_on};
