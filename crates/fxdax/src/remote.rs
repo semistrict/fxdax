@@ -67,7 +67,9 @@ impl Host {
 /// writer moved on from this host's write-ahead log, which the store opens no more until
 /// `fxdaxctl take` drops it, `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID
 /// taken, `EEXIST`; a branch of a newer format, `ENOTSUP`. fxdax: a cell, or a volume of one,
-/// gone, `ENOENT`; a volume's name taken, `EEXIST`, or no volume's, `EINVAL` (TASK-364). None for
+/// gone, `ENOENT`; a volume's name taken, `EEXIST`, or no volume's, `EINVAL` (TASK-364); a fork of
+/// another tenant's point not shared, `EACCES`, and sharing what is no point, `EINVAL`
+/// (TASK-395.7). None for
 /// what the store failed to read or write, here or in object storage, which is the caller's `EIO`,
 /// logged.
 pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
@@ -81,7 +83,8 @@ pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
         Failure::Remote(Error::NoBranch | Error::NoCell | Error::NoVolume(_))
         | Failure::PointDeleted => Some(Errno::ENOENT),
         Failure::Remote(Error::IdTaken(_) | Error::VolumeExists(_)) => Some(Errno::EEXIST),
-        Failure::Remote(Error::VolumeName(_)) => Some(Errno::EINVAL),
+        Failure::Remote(Error::VolumeName(_) | Error::NotPoint(_)) => Some(Errno::EINVAL),
+        Failure::Remote(Error::NotShared(_)) => Some(Errno::EACCES),
         // A branch of a newer format than this host reads, until it is upgraded (doc-11).
         Failure::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
         Failure::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_))
@@ -2239,6 +2242,69 @@ mod tests {
             .fork_to(dir.path().join("fork"), crate::host_store::fork_child(point.branch()))
             .unwrap();
         point.make_public().unwrap();
+    }
+
+    /// TASK-395.7: a point forks into a cell of another tenant's only while shared: refused with
+    /// `EACCES` before, leaving nothing at the fork's path; shared, the fork is made; unshared, new
+    /// forks are refused again. Forks into its own tenant's cells need no sharing. The point deleted
+    /// once its branch freed what it held, and the collector run, the other tenant's fork, the one
+    /// left, still reads all it inherited.
+    #[test]
+    fn points_fork_into_other_tenants_cells_while_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let of = |tenant| crate::Branch {
+            cell: crate::host_store::new_cell(tenant),
+            id: rand::random::<u64>().max(1),
+        };
+        let source = dir.path().join("source");
+        let source = kept_in(&source, (1 << 30, Some(of(1))), &bucket, idle()).unwrap();
+        let extent = write(&source, 1, &pattern(1, BLOCK));
+        source.commit(Some(b"base")).unwrap();
+        let path = dir.path().join("point");
+        source.point_to(&path, crate::host_store::fork_child(source.branch())).unwrap();
+        source.free(extent).unwrap();
+        source.commit(Some(b"later")).unwrap();
+        // Another fork, gone: a checkpoint past the point's, so that only the point, and its
+        // forks, keep what it names.
+        // Deleted as this process, no host, deletes them, of the first placement.
+        let delete = |path: &std::path::Path| {
+            crate::host_store::delete(path, Some(&bucket), crate::host_store::token).unwrap()
+        };
+        let later = dir.path().join("later");
+        source.fork_to(&later, crate::host_store::fork_child(source.branch())).unwrap();
+        delete(&later);
+        let point = reopened(&path, idle()).unwrap();
+        let fork = |name: &str, tenant| {
+            let to = dir.path().join(name);
+            let forked = point.fork_to(&to, of(tenant)).map_err(|err| err.errno());
+            (forked, to.exists())
+        };
+
+        assert_eq!(fork("refused", 2), (Err(Some(crate::Errno::EACCES)), false));
+        assert_eq!(fork("ours", 1), (Ok(()), true));
+        ExtentStore::share(&path, true).unwrap();
+        assert_eq!(fork("theirs", 2), (Ok(()), true));
+        ExtentStore::share(&path, false).unwrap();
+        assert_eq!(fork("unshared", 2), (Err(Some(crate::Errno::EACCES)), false));
+        let refused = ExtentStore::share(dir.path().join("theirs"), true);
+        assert_eq!(refused.map_err(|err| err.errno()), Err(Some(crate::Errno::EINVAL)));
+
+        drop(point);
+        delete(&dir.path().join("ours"));
+        delete(&path);
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        for holder in 1..=2 {
+            let pass = extent_remote::collector::collect(&*bucket, holder, &options);
+            futures::executor::block_on(pass).unwrap();
+        }
+        // What this process cached of the extents goes: the fork reads them from the bucket.
+        crate::cache::evict_least_used(None, |_| false);
+        let theirs = reopened(dir.path().join("theirs"), idle()).unwrap();
+        assert_eq!(theirs.root().unwrap(), b"base");
+        let mut data = vec![0; BLOCK];
+        theirs.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert!(data == pattern(1, BLOCK), "the fork reads other bytes");
     }
 
     #[test]

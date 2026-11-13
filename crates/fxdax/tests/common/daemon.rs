@@ -77,21 +77,23 @@ impl Daemon {
     }
 
     pub fn fork(&mut self, from: &Path, to: &Path) -> Result<fxdax::Branch, tonic::Status> {
-        self.fork_store(from, to, false)
+        self.fork_store(from, to, (false, false))
     }
 
     /// Makes a point of the store at `from`, at `to` (ForkStore's `point`).
     pub fn point(&mut self, from: &Path, to: &Path) -> Result<fxdax::Branch, tonic::Status> {
-        self.fork_store(from, to, true)
+        self.fork_store(from, to, (true, false))
     }
 
-    fn fork_store(
+    /// Forks the store at `from` to `to` (ForkStore): a point if `point`, shared if `shared`
+    /// (TASK-395.7).
+    pub fn fork_store(
         &mut self,
         from: &Path,
         to: &Path,
-        point: bool,
+        (point, shared): (bool, bool),
     ) -> Result<fxdax::Branch, tonic::Status> {
-        let request = ForkStoreRequest { from: name(from), to: name(to), point };
+        let request = ForkStoreRequest { from: name(from), to: name(to), point, shared };
         let response = self.runtime.block_on(self.client.fork_store(request))?.into_inner();
         let cell = fxdax::Cell { tenant: response.tenant, id: response.cell };
         Ok(fxdax::Branch { cell, id: response.branch })
@@ -105,6 +107,12 @@ impl Daemon {
     pub fn place(&mut self, path: &Path, token: u64) -> Result<(), tonic::Status> {
         let request = PlaceStoreRequest { path: name(path), token };
         self.runtime.block_on(self.client.place_store(request)).map(drop)
+    }
+
+    /// Shares the point the store at `path` is of, or no longer (SharePoint, TASK-395.7).
+    pub fn share(&mut self, path: &Path, shared: bool) -> Result<(), tonic::Status> {
+        let request = SharePointRequest { path: name(path), shared };
+        self.runtime.block_on(self.client.share_point(request)).map(drop)
     }
 
     pub fn make_public(&mut self, path: &Path) -> Result<(), tonic::Status> {

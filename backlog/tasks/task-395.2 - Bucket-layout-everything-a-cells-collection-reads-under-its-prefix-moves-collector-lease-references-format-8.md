@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-13T08:53:00Z'
+updated_date: '2026-11-13 09:43'
 labels:
   - bucket
   - collector
@@ -36,3 +37,9 @@ Moves objects live at `moves/<key>` (and `moves/moves/...`), so a cell's compact
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Format 8 is taken by TASK-395.7 (a point's record says whether it is shared): this task's layout change is format 9.
+<!-- SECTION:NOTES:END -->

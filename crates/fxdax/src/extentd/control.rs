@@ -358,10 +358,10 @@ impl Extentd for Control {
         &self,
         request: Request<ForkStoreRequest>,
     ) -> Result<Response<ForkStoreResponse>, Status> {
-        let ForkStoreRequest { from, to, point } = request.into_inner();
+        let ForkStoreRequest { from, to, point, shared } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
         let tenant = self.grants.tenant_at(&to);
-        let forked = stores::fork(from, to, tenant, point).await;
+        let forked = stores::fork(from, to, tenant, (point, shared)).await;
         reply(forked.map(|forked| ForkStoreResponse {
             branch: forked.id,
             tenant: forked.cell.tenant,
@@ -410,6 +410,15 @@ impl Extentd for Control {
         let MakePublicRequest { path: store, generation } = request.into_inner();
         let store = path(store)?;
         reply(stores::make_public(store, generation).await.map(|()| MakePublicResponse {}))
+    }
+
+    async fn share_point(
+        &self,
+        request: Request<SharePointRequest>,
+    ) -> Result<Response<SharePointResponse>, Status> {
+        let SharePointRequest { path: store, shared } = request.into_inner();
+        let store = path(store)?;
+        reply(stores::share(store, shared).await.map(|()| SharePointResponse {}))
     }
 
     async fn attach_base(
@@ -707,22 +716,28 @@ impl Client {
 
     /// Forks the store at `from` to a new branch at `to`, and returns the branch (`ForkStore`).
     pub fn fork_store(&self, from: &Path, to: &Path) -> Result<crate::Branch, crate::Error> {
-        self.fork_or_point(from, to, false)
+        self.fork_or_point(from, to, (false, false))
     }
 
     /// Makes a point of the store at `from`, at `to`, and returns its branch (`ForkStore` with
-    /// `point`): which any number of hosts fork at once, from copies of it (TASK-158).
-    pub fn point_store(&self, from: &Path, to: &Path) -> Result<crate::Branch, crate::Error> {
-        self.fork_or_point(from, to, true)
+    /// `point`): which any number of hosts fork at once, from copies of it (TASK-158); shared, if
+    /// `shared`, as [`Client::share_point`] shares it (TASK-395.7).
+    pub fn point_store(
+        &self,
+        from: &Path,
+        to: &Path,
+        shared: bool,
+    ) -> Result<crate::Branch, crate::Error> {
+        self.fork_or_point(from, to, (true, shared))
     }
 
     fn fork_or_point(
         &self,
         from: &Path,
         to: &Path,
-        point: bool,
+        (point, shared): (bool, bool),
     ) -> Result<crate::Branch, crate::Error> {
-        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, point };
+        let request = ForkStoreRequest { from: name(from)?, to: name(to)?, point, shared };
         let what = format!("forking the store at {} to {}", from.display(), to.display());
         let response = self.call(what, |mut c| async move { c.fork_store(request).await })?;
         Ok(branched(response.tenant, response.cell, response.branch))
@@ -769,6 +784,17 @@ impl Client {
         let request = MakePublicRequest { path: name(path)?, generation: true };
         let what = format!("making the generation at {} public", path.display());
         self.call(what, |mut c| async move { c.make_public(request).await }).map(drop)
+    }
+
+    /// Shares the point the store at `path` is of, if `shared`, or no longer (`SharePoint`,
+    /// TASK-395.7): other tenants' forks of it are made while it is shared.
+    pub fn share_point(&self, path: &Path, shared: bool) -> Result<(), crate::Error> {
+        let request = SharePointRequest { path: name(path)?, shared };
+        let what = match shared {
+            true => format!("sharing the point at {}", path.display()),
+            false => format!("unsharing the point at {}", path.display()),
+        };
+        self.call(what, |mut c| async move { c.share_point(request).await }).map(drop)
     }
 
     /// Attaches the fork at `base` to the store at `path` (`AttachBase`).

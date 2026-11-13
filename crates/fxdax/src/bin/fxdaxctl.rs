@@ -13,7 +13,9 @@
 //! fxdaxctl sync DIR
 //! fxdaxctl import DIR CAPACITY IMAGE [REF]
 //! fxdaxctl fork SRC DST
-//! fxdaxctl point SRC DST
+//! fxdaxctl point SRC DST [--shared]
+//! fxdaxctl share DIR
+//! fxdaxctl unshare DIR
 //! fxdaxctl delete DIR
 //! fxdaxctl drop DIR
 //! fxdaxctl resize DIR CAPACITY
@@ -60,7 +62,11 @@
 //! uploaded, holding its extents without uploading them again; DST is a store of its own, which
 //! reads them there (TASK-165.7). `point` forks so, once nothing is open, to a point (TASK-158): a name of SRC's
 //! state as it is, written by none, which any number of hosts fork at once, each from a copy `take`
-//! makes of its branch, as a snapshot's restores do; for a base forked on several hosts. `delete`
+//! makes of its branch, as a snapshot's restores do; for a base forked on several hosts; with
+//! `--shared`, shared once made, as `share` shares it. `share` shares the point the store at DIR
+//! is of (TASK-395.7): it forks into cells of other tenants' than its own, as a base image or a
+//! snapshot many tenants clone, which a point not shared refuses (`EACCES`); `unshare` stops such
+//! forks, those made living on. The point's record in its bucket says it, for every host. `delete`
 //! deletes a store, a fork or not: its branch in its bucket, its forks' living on, and its
 //! directory (TASK-39.4). `drop` deletes the store at DIR as `delete` does, this
 //! host's copy of it, its branch staying in the bucket (TASK-154): what `take` made, once this host
@@ -106,7 +112,8 @@ fn usage() -> anyhow::Error {
         "usage: fxdaxctl take DIR CAPACITY BRANCH [TOKEN] | fxdaxctl create DIR CAPACITY | \
          fxdaxctl place DIR TOKEN | \
          fxdaxctl sync DIR | fxdaxctl import DIR CAPACITY IMAGE [REF] | fxdaxctl fork SRC DST | \
-         fxdaxctl point SRC DST | fxdaxctl delete DIR | fxdaxctl drop DIR | \
+         fxdaxctl point SRC DST [--shared] | fxdaxctl share DIR | fxdaxctl unshare DIR | \
+         fxdaxctl delete DIR | fxdaxctl drop DIR | \
          fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
          fxdaxctl stats [--json] | fxdaxctl grant TENANT ID DIR [UID [GID]] | \
@@ -140,11 +147,17 @@ enum Command {
         image: PathBuf,
         reference: Option<String>,
     },
-    /// A fork, a point if `point`.
+    /// A fork, a point if `point`, shared if `shared` (TASK-395.7).
     Fork {
         src: PathBuf,
         dst: PathBuf,
         point: bool,
+        shared: bool,
+    },
+    /// fxdax: a point shared, or no longer (TASK-395.7).
+    Share {
+        dir: PathBuf,
+        shared: bool,
     },
     Delete {
         dir: PathBuf,
@@ -214,8 +227,17 @@ impl Command {
                 image: image.into(),
                 reference: rest.first().map(|reference| reference.to_string()),
             },
-            ["fork", src, dst] => Self::Fork { src: src.into(), dst: dst.into(), point: false },
-            ["point", src, dst] => Self::Fork { src: src.into(), dst: dst.into(), point: true },
+            ["fork", src, dst] => {
+                Self::Fork { src: src.into(), dst: dst.into(), point: false, shared: false }
+            }
+            ["point", src, dst] => {
+                Self::Fork { src: src.into(), dst: dst.into(), point: true, shared: false }
+            }
+            ["point", src, dst, "--shared"] => {
+                Self::Fork { src: src.into(), dst: dst.into(), point: true, shared: true }
+            }
+            ["share", dir] => Self::Share { dir: dir.into(), shared: true },
+            ["unshare", dir] => Self::Share { dir: dir.into(), shared: false },
             ["delete", dir] => Self::Delete { dir: dir.into() },
             ["drop", dir] => Self::Drop { dir: dir.into() },
             ["resize", dir, size] => Self::Resize { dir: dir.into(), capacity: capacity(size)? },
@@ -254,12 +276,13 @@ impl Command {
             Self::Import { dir, capacity, image, reference } => {
                 daemon.import_image(&dir, capacity, &image, reference.as_deref())?;
             }
-            Self::Fork { src, dst, point: false } => {
+            Self::Fork { src, dst, point: false, .. } => {
                 println!("{}", daemon.fork_store(&src, &dst)?);
             }
-            Self::Fork { src, dst, point: true } => {
-                println!("{}", daemon.point_store(&src, &dst)?);
+            Self::Fork { src, dst, point: true, shared } => {
+                println!("{}", daemon.point_store(&src, &dst, shared)?);
             }
+            Self::Share { dir, shared } => daemon.share_point(&dir, shared)?,
             Self::Delete { dir } => daemon.delete_store(&dir)?,
             Self::Drop { dir } => daemon.drop_store(&dir)?,
             Self::Resize { dir, capacity } => daemon.resize_store(&dir, capacity)?,
@@ -344,7 +367,7 @@ impl Command {
                 futures::executor::block_on(made)
                     .with_context(|| format!("importing {}", image.display()))?;
             }
-            Self::Fork { src, dst, point } => {
+            Self::Fork { src, dst, point, shared } => {
                 let store = ExtentStore::open(&src)?;
                 // The one volume of a new cell of the store's tenant's (TASK-364).
                 let cell = fxdax::new_cell(store.branch().cell.tenant);
@@ -352,8 +375,12 @@ impl Command {
                     true => store.point(&dst, cell)?,
                     false => store.fork(&dst, cell)?,
                 };
+                if shared {
+                    ExtentStore::share(&dst, true)?;
+                }
                 println!("{branch}");
             }
+            Self::Share { dir, shared } => ExtentStore::share(&dir, shared)?,
             Self::Delete { dir } => {
                 let bucket = ExtentStore::bucket_at(&dir)?;
                 ExtentStore::delete(&dir, bucket.as_deref())?

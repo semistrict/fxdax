@@ -2,6 +2,13 @@
 
 # Decisions
 
+## Shared points: what is checked, and how a point is shared at its making (TASK-395.7, 2026-11-13)
+
+Decided without you:
+- **Only forks of points are checked.** A fork of a point into another tenant's cell is refused (EACCES) unless the point's record says shared, at the read of that record every point fork already makes. A ForkStore of a store with a writer into another tenant's directory still makes a cell of that tenant's, unchecked: today's tenant-0 public bases reach tenants that way, and Linux tests rely on it. *Instead:* refuse those too, public bases going through a shared point; filed as TASK-395.9. *Undoing:* nothing to undo; TASK-395.9 is the rest.
+- **"Shared at its making" is two steps:** ForkStore's `shared` (and `fxdaxctl point --shared`) makes the point, then shares its record. If the second fails, the point stands, not shared, and the call fails. *Instead:* a `shared` bit in the fork's footer (`Child`), so the record is shared from its first write; it changes `Child`'s every literal, the collector's tests among them. *Undoing:* that footer bit later, a format change.
+- **Format 8** for the record's flag: format 7's records are refused (`Error::Format`), as any other. TASK-395.2's layout change becomes format 9.
+
 ## Listings by delimiter and batch deletes in `Bucket`; a pass's moves, compactions and deletes at once (TASK-395.5, 2026-11-13)
 Decided without you:
 - **Every bucket lists by delimiter** (`Bucket::list_delimited`): a required method, with no default that lists every object under the prefix and folds them, as that would be a costlier path taken silently. S3, GCS, Azure, files and memory go through `object_store`'s `list_with_delimiter`; the simulation has an op of its own. *Undo:* drop the method; nothing but tests calls it until the sweep (AC #2) does.

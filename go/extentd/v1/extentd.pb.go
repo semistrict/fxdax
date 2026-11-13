@@ -44,6 +44,13 @@
 // A branch so granted is the tenant's to read and restore: a VM process opening a point to write
 // it fails with EROFS. Grant one only to the tenant whose snapshot it is.
 //
+// Shared points (TASK-395.7): a point forks only into cells of its own tenant's, unless it is
+// shared (SharePoint, or ForkStore's `shared`): a base image or a snapshot that many tenants clone.
+// A restore, or a ForkStore, of a point of another tenant's that isn't shared fails with
+// PERMISSION_DENIED (EACCES), making nothing; each fork reads whether the point is shared, in the
+// bucket, as it is made, so that unsharing it stops new forks on every host, and those made live
+// on.
+//
 // A fork of anything but a point is a commit of its branch, which takes its branch's writer: a
 // store forks on one host at a time. A base, or any store, forked on several hosts is made a point
 // first, by ForkStore's `point`, and forked as a snapshot's is, from a copy on each host.
@@ -165,7 +172,8 @@ type CreateStoreRequest struct {
 	// The tenant whose cell the branch is a volume of. Of a new cell in a granted tenant's
 	// directory, that tenant's ID (Grant's `id`), or 0 for it; another is refused
 	// (PERMISSION_DENIED, EPERM). A point of another tenant's there is the VM manager's to give: the
-	// tenant's VM processes restore from it, each restore a cell of their tenant's.
+	// tenant's VM processes restore from it, each restore a cell of their tenant's, if the point is
+	// shared (SharePoint); otherwise each restore fails (PERMISSION_DENIED, EACCES).
 	Tenant uint64 `protobuf:"varint,5,opt,name=tenant,proto3" json:"tenant,omitempty"`
 	// The cell, or 0 for a new one: the store is a new volume of it, named as `path`'s last name
 	// is, unless it takes a branch it has.
@@ -486,7 +494,11 @@ type ForkStoreRequest struct {
 	// CreateStore of its branch there, then ForkStore from that copy, as many and on as many hosts
 	// at once as wanted. `from` must have nothing open (FAILED_PRECONDITION, EBUSY), as a fork of a
 	// store a VM has open does, and be no point itself (INVALID_ARGUMENT): fork that instead.
-	Point         bool `protobuf:"varint,4,opt,name=point,proto3" json:"point,omitempty"`
+	Point bool `protobuf:"varint,4,opt,name=point,proto3" json:"point,omitempty"`
+	// Whether the point is shared once made, as SharePoint shares it (TASK-395.7): only with
+	// `point` (INVALID_ARGUMENT otherwise). If sharing it fails, the point stands, not shared, and
+	// the call fails: SharePoint shares it then.
+	Shared        bool `protobuf:"varint,5,opt,name=shared,proto3" json:"shared,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -538,6 +550,13 @@ func (x *ForkStoreRequest) GetTo() string {
 func (x *ForkStoreRequest) GetPoint() bool {
 	if x != nil {
 		return x.Point
+	}
+	return false
+}
+
+func (x *ForkStoreRequest) GetShared() bool {
+	if x != nil {
+		return x.Shared
 	}
 	return false
 }
@@ -956,6 +975,98 @@ func (*PlaceStoreResponse) Descriptor() ([]byte, []int) {
 	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{13}
 }
 
+// Shares a point, or no longer.
+type SharePointRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// A store of the point: the one ForkStore made, or a copy CreateStore made, on this host.
+	Path string `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	// Whether other tenants' forks of it are made from now on.
+	Shared        bool `protobuf:"varint,2,opt,name=shared,proto3" json:"shared,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SharePointRequest) Reset() {
+	*x = SharePointRequest{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SharePointRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SharePointRequest) ProtoMessage() {}
+
+func (x *SharePointRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SharePointRequest.ProtoReflect.Descriptor instead.
+func (*SharePointRequest) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SharePointRequest) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *SharePointRequest) GetShared() bool {
+	if x != nil {
+		return x.Shared
+	}
+	return false
+}
+
+// The point shared, or no longer.
+type SharePointResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SharePointResponse) Reset() {
+	*x = SharePointResponse{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SharePointResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SharePointResponse) ProtoMessage() {}
+
+func (x *SharePointResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SharePointResponse.ProtoReflect.Descriptor instead.
+func (*SharePointResponse) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{15}
+}
+
 // Makes a store a public base.
 type MakePublicRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -970,7 +1081,7 @@ type MakePublicRequest struct {
 
 func (x *MakePublicRequest) Reset() {
 	*x = MakePublicRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[14]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -982,7 +1093,7 @@ func (x *MakePublicRequest) String() string {
 func (*MakePublicRequest) ProtoMessage() {}
 
 func (x *MakePublicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[14]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -995,7 +1106,7 @@ func (x *MakePublicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MakePublicRequest.ProtoReflect.Descriptor instead.
 func (*MakePublicRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{14}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MakePublicRequest) GetPath() string {
@@ -1021,7 +1132,7 @@ type MakePublicResponse struct {
 
 func (x *MakePublicResponse) Reset() {
 	*x = MakePublicResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[15]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1033,7 +1144,7 @@ func (x *MakePublicResponse) String() string {
 func (*MakePublicResponse) ProtoMessage() {}
 
 func (x *MakePublicResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[15]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1046,7 +1157,7 @@ func (x *MakePublicResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MakePublicResponse.ProtoReflect.Descriptor instead.
 func (*MakePublicResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{15}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{17}
 }
 
 // Attaches a fork to a store.
@@ -1062,7 +1173,7 @@ type AttachBaseRequest struct {
 
 func (x *AttachBaseRequest) Reset() {
 	*x = AttachBaseRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[16]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1074,7 +1185,7 @@ func (x *AttachBaseRequest) String() string {
 func (*AttachBaseRequest) ProtoMessage() {}
 
 func (x *AttachBaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[16]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1087,7 +1198,7 @@ func (x *AttachBaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachBaseRequest.ProtoReflect.Descriptor instead.
 func (*AttachBaseRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{16}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AttachBaseRequest) GetStore() string {
@@ -1113,7 +1224,7 @@ type AttachBaseResponse struct {
 
 func (x *AttachBaseResponse) Reset() {
 	*x = AttachBaseResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[17]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1236,7 @@ func (x *AttachBaseResponse) String() string {
 func (*AttachBaseResponse) ProtoMessage() {}
 
 func (x *AttachBaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[17]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1249,7 @@ func (x *AttachBaseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachBaseResponse.ProtoReflect.Descriptor instead.
 func (*AttachBaseResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{17}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{19}
 }
 
 // Waits for a store's commits to be in object storage.
@@ -1152,7 +1263,7 @@ type SyncStoreRequest struct {
 
 func (x *SyncStoreRequest) Reset() {
 	*x = SyncStoreRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[18]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1164,7 +1275,7 @@ func (x *SyncStoreRequest) String() string {
 func (*SyncStoreRequest) ProtoMessage() {}
 
 func (x *SyncStoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[18]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1177,7 +1288,7 @@ func (x *SyncStoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncStoreRequest.ProtoReflect.Descriptor instead.
 func (*SyncStoreRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{18}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *SyncStoreRequest) GetPath() string {
@@ -1196,7 +1307,7 @@ type SyncStoreResponse struct {
 
 func (x *SyncStoreResponse) Reset() {
 	*x = SyncStoreResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[19]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1319,7 @@ func (x *SyncStoreResponse) String() string {
 func (*SyncStoreResponse) ProtoMessage() {}
 
 func (x *SyncStoreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[19]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1332,7 @@ func (x *SyncStoreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyncStoreResponse.ProtoReflect.Descriptor instead.
 func (*SyncStoreResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{19}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{21}
 }
 
 // Asks what a store is, and holds.
@@ -1235,7 +1346,7 @@ type StatStoreRequest struct {
 
 func (x *StatStoreRequest) Reset() {
 	*x = StatStoreRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[20]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1247,7 +1358,7 @@ func (x *StatStoreRequest) String() string {
 func (*StatStoreRequest) ProtoMessage() {}
 
 func (x *StatStoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[20]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1260,7 +1371,7 @@ func (x *StatStoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatStoreRequest.ProtoReflect.Descriptor instead.
 func (*StatStoreRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{20}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *StatStoreRequest) GetPath() string {
@@ -1319,7 +1430,7 @@ type StatStoreResponse struct {
 
 func (x *StatStoreResponse) Reset() {
 	*x = StatStoreResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[21]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1331,7 +1442,7 @@ func (x *StatStoreResponse) String() string {
 func (*StatStoreResponse) ProtoMessage() {}
 
 func (x *StatStoreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[21]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1344,7 +1455,7 @@ func (x *StatStoreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatStoreResponse.ProtoReflect.Descriptor instead.
 func (*StatStoreResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{21}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *StatStoreResponse) GetBranch() uint64 {
@@ -1482,7 +1593,7 @@ type ListStoresRequest struct {
 
 func (x *ListStoresRequest) Reset() {
 	*x = ListStoresRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[22]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1494,7 +1605,7 @@ func (x *ListStoresRequest) String() string {
 func (*ListStoresRequest) ProtoMessage() {}
 
 func (x *ListStoresRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[22]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1507,7 +1618,7 @@ func (x *ListStoresRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStoresRequest.ProtoReflect.Descriptor instead.
 func (*ListStoresRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{22}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{24}
 }
 
 // The stores the daemon serves, in no order.
@@ -1521,7 +1632,7 @@ type ListStoresResponse struct {
 
 func (x *ListStoresResponse) Reset() {
 	*x = ListStoresResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[23]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1533,7 +1644,7 @@ func (x *ListStoresResponse) String() string {
 func (*ListStoresResponse) ProtoMessage() {}
 
 func (x *ListStoresResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[23]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1546,7 +1657,7 @@ func (x *ListStoresResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListStoresResponse.ProtoReflect.Descriptor instead.
 func (*ListStoresResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{23}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListStoresResponse) GetStores() []*ListedStore {
@@ -1569,7 +1680,7 @@ type ListedStore struct {
 
 func (x *ListedStore) Reset() {
 	*x = ListedStore{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[24]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1581,7 +1692,7 @@ func (x *ListedStore) String() string {
 func (*ListedStore) ProtoMessage() {}
 
 func (x *ListedStore) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[24]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1594,7 +1705,7 @@ func (x *ListedStore) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListedStore.ProtoReflect.Descriptor instead.
 func (*ListedStore) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{24}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListedStore) GetPath() string {
@@ -1620,7 +1731,7 @@ type GetStatsRequest struct {
 
 func (x *GetStatsRequest) Reset() {
 	*x = GetStatsRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[25]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1632,7 +1743,7 @@ func (x *GetStatsRequest) String() string {
 func (*GetStatsRequest) ProtoMessage() {}
 
 func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[25]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1645,7 +1756,7 @@ func (x *GetStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetStatsRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{25}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{27}
 }
 
 // What the daemon did since it started: counters, which only grow, so that a measurement is the
@@ -1698,7 +1809,7 @@ type GetStatsResponse struct {
 
 func (x *GetStatsResponse) Reset() {
 	*x = GetStatsResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[26]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1710,7 +1821,7 @@ func (x *GetStatsResponse) String() string {
 func (*GetStatsResponse) ProtoMessage() {}
 
 func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[26]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1723,7 +1834,7 @@ func (x *GetStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetStatsResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{26}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetStatsResponse) GetMaps() uint64 {
@@ -1870,7 +1981,7 @@ type GetSnapshotRequest struct {
 
 func (x *GetSnapshotRequest) Reset() {
 	*x = GetSnapshotRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[27]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1882,7 +1993,7 @@ func (x *GetSnapshotRequest) String() string {
 func (*GetSnapshotRequest) ProtoMessage() {}
 
 func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[27]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1895,7 +2006,7 @@ func (x *GetSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*GetSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{27}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetSnapshotRequest) GetWaitMs() uint32 {
@@ -1927,7 +2038,7 @@ type GetSnapshotResponse struct {
 
 func (x *GetSnapshotResponse) Reset() {
 	*x = GetSnapshotResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[28]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1939,7 +2050,7 @@ func (x *GetSnapshotResponse) String() string {
 func (*GetSnapshotResponse) ProtoMessage() {}
 
 func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[28]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1952,7 +2063,7 @@ func (x *GetSnapshotResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSnapshotResponse.ProtoReflect.Descriptor instead.
 func (*GetSnapshotResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{28}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetSnapshotResponse) GetTakenUnixNs() uint64 {
@@ -2026,7 +2137,7 @@ type VmSnapshot struct {
 
 func (x *VmSnapshot) Reset() {
 	*x = VmSnapshot{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[29]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2038,7 +2149,7 @@ func (x *VmSnapshot) String() string {
 func (*VmSnapshot) ProtoMessage() {}
 
 func (x *VmSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[29]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2051,7 +2162,7 @@ func (x *VmSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VmSnapshot.ProtoReflect.Descriptor instead.
 func (*VmSnapshot) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{29}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *VmSnapshot) GetConnection() uint64 {
@@ -2146,7 +2257,7 @@ type GuestSnapshot struct {
 
 func (x *GuestSnapshot) Reset() {
 	*x = GuestSnapshot{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[30]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2158,7 +2269,7 @@ func (x *GuestSnapshot) String() string {
 func (*GuestSnapshot) ProtoMessage() {}
 
 func (x *GuestSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[30]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2171,7 +2282,7 @@ func (x *GuestSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GuestSnapshot.ProtoReflect.Descriptor instead.
 func (*GuestSnapshot) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{30}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GuestSnapshot) GetBuild() string {
@@ -2206,7 +2317,7 @@ type Histogram struct {
 
 func (x *Histogram) Reset() {
 	*x = Histogram{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[31]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2218,7 +2329,7 @@ func (x *Histogram) String() string {
 func (*Histogram) ProtoMessage() {}
 
 func (x *Histogram) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[31]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2231,7 +2342,7 @@ func (x *Histogram) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Histogram.ProtoReflect.Descriptor instead.
 func (*Histogram) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{31}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *Histogram) GetBuckets() []uint64 {
@@ -2261,7 +2372,7 @@ type ObjectStorageStats struct {
 
 func (x *ObjectStorageStats) Reset() {
 	*x = ObjectStorageStats{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[32]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2273,7 +2384,7 @@ func (x *ObjectStorageStats) String() string {
 func (*ObjectStorageStats) ProtoMessage() {}
 
 func (x *ObjectStorageStats) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[32]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2286,7 +2397,7 @@ func (x *ObjectStorageStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectStorageStats.ProtoReflect.Descriptor instead.
 func (*ObjectStorageStats) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{32}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ObjectStorageStats) GetRequests() map[string]uint64 {
@@ -2340,7 +2451,7 @@ type GrantRequest struct {
 
 func (x *GrantRequest) Reset() {
 	*x = GrantRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[33]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2352,7 +2463,7 @@ func (x *GrantRequest) String() string {
 func (*GrantRequest) ProtoMessage() {}
 
 func (x *GrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[33]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2365,7 +2476,7 @@ func (x *GrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantRequest.ProtoReflect.Descriptor instead.
 func (*GrantRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{33}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *GrantRequest) GetTenant() string {
@@ -2414,7 +2525,7 @@ type GrantResponse struct {
 
 func (x *GrantResponse) Reset() {
 	*x = GrantResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[34]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2426,7 +2537,7 @@ func (x *GrantResponse) String() string {
 func (*GrantResponse) ProtoMessage() {}
 
 func (x *GrantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[34]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2439,7 +2550,7 @@ func (x *GrantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GrantResponse.ProtoReflect.Descriptor instead.
 func (*GrantResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{34}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *GrantResponse) GetSocket() string {
@@ -2460,7 +2571,7 @@ type RevokeRequest struct {
 
 func (x *RevokeRequest) Reset() {
 	*x = RevokeRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[35]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2472,7 +2583,7 @@ func (x *RevokeRequest) String() string {
 func (*RevokeRequest) ProtoMessage() {}
 
 func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[35]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2485,7 +2596,7 @@ func (x *RevokeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeRequest.ProtoReflect.Descriptor instead.
 func (*RevokeRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{35}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RevokeRequest) GetTenant() string {
@@ -2504,7 +2615,7 @@ type RevokeResponse struct {
 
 func (x *RevokeResponse) Reset() {
 	*x = RevokeResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[36]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2516,7 +2627,7 @@ func (x *RevokeResponse) String() string {
 func (*RevokeResponse) ProtoMessage() {}
 
 func (x *RevokeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[36]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2529,7 +2640,7 @@ func (x *RevokeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeResponse.ProtoReflect.Descriptor instead.
 func (*RevokeResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{36}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{38}
 }
 
 // Limits the memory of a tenant, or of every tenant.
@@ -2548,7 +2659,7 @@ type SetMemoryLimitRequest struct {
 
 func (x *SetMemoryLimitRequest) Reset() {
 	*x = SetMemoryLimitRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[37]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2560,7 +2671,7 @@ func (x *SetMemoryLimitRequest) String() string {
 func (*SetMemoryLimitRequest) ProtoMessage() {}
 
 func (x *SetMemoryLimitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[37]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2573,7 +2684,7 @@ func (x *SetMemoryLimitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryLimitRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryLimitRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{37}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SetMemoryLimitRequest) GetTenant() string {
@@ -2599,7 +2710,7 @@ type SetMemoryLimitResponse struct {
 
 func (x *SetMemoryLimitResponse) Reset() {
 	*x = SetMemoryLimitResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[38]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2611,7 +2722,7 @@ func (x *SetMemoryLimitResponse) String() string {
 func (*SetMemoryLimitResponse) ProtoMessage() {}
 
 func (x *SetMemoryLimitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[38]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2624,7 +2735,7 @@ func (x *SetMemoryLimitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryLimitResponse.ProtoReflect.Descriptor instead.
 func (*SetMemoryLimitResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{38}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{40}
 }
 
 // Weighs a tenant's memory.
@@ -2641,7 +2752,7 @@ type SetMemoryWeightRequest struct {
 
 func (x *SetMemoryWeightRequest) Reset() {
 	*x = SetMemoryWeightRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[39]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2653,7 +2764,7 @@ func (x *SetMemoryWeightRequest) String() string {
 func (*SetMemoryWeightRequest) ProtoMessage() {}
 
 func (x *SetMemoryWeightRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[39]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2666,7 +2777,7 @@ func (x *SetMemoryWeightRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryWeightRequest.ProtoReflect.Descriptor instead.
 func (*SetMemoryWeightRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{39}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SetMemoryWeightRequest) GetTenant() string {
@@ -2692,7 +2803,7 @@ type SetMemoryWeightResponse struct {
 
 func (x *SetMemoryWeightResponse) Reset() {
 	*x = SetMemoryWeightResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[40]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2704,7 +2815,7 @@ func (x *SetMemoryWeightResponse) String() string {
 func (*SetMemoryWeightResponse) ProtoMessage() {}
 
 func (x *SetMemoryWeightResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[40]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2717,7 +2828,7 @@ func (x *SetMemoryWeightResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetMemoryWeightResponse.ProtoReflect.Descriptor instead.
 func (*SetMemoryWeightResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{40}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{42}
 }
 
 // Sets the room of a tenant's connections.
@@ -2735,7 +2846,7 @@ type SetTenantRoomRequest struct {
 
 func (x *SetTenantRoomRequest) Reset() {
 	*x = SetTenantRoomRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[41]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2747,7 +2858,7 @@ func (x *SetTenantRoomRequest) String() string {
 func (*SetTenantRoomRequest) ProtoMessage() {}
 
 func (x *SetTenantRoomRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[41]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2760,7 +2871,7 @@ func (x *SetTenantRoomRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTenantRoomRequest.ProtoReflect.Descriptor instead.
 func (*SetTenantRoomRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{41}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SetTenantRoomRequest) GetTenant() string {
@@ -2786,7 +2897,7 @@ type SetTenantRoomResponse struct {
 
 func (x *SetTenantRoomResponse) Reset() {
 	*x = SetTenantRoomResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[42]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2798,7 +2909,7 @@ func (x *SetTenantRoomResponse) String() string {
 func (*SetTenantRoomResponse) ProtoMessage() {}
 
 func (x *SetTenantRoomResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[42]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2811,7 +2922,7 @@ func (x *SetTenantRoomResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetTenantRoomResponse.ProtoReflect.Descriptor instead.
 func (*SetTenantRoomResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{42}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{44}
 }
 
 // Evicts pages toward a target.
@@ -2827,7 +2938,7 @@ type ShrinkMemoryRequest struct {
 
 func (x *ShrinkMemoryRequest) Reset() {
 	*x = ShrinkMemoryRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2839,7 +2950,7 @@ func (x *ShrinkMemoryRequest) String() string {
 func (*ShrinkMemoryRequest) ProtoMessage() {}
 
 func (x *ShrinkMemoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2852,7 +2963,7 @@ func (x *ShrinkMemoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShrinkMemoryRequest.ProtoReflect.Descriptor instead.
 func (*ShrinkMemoryRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{43}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ShrinkMemoryRequest) GetTenant() string {
@@ -2880,7 +2991,7 @@ type ShrinkMemoryResponse struct {
 
 func (x *ShrinkMemoryResponse) Reset() {
 	*x = ShrinkMemoryResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2892,7 +3003,7 @@ func (x *ShrinkMemoryResponse) String() string {
 func (*ShrinkMemoryResponse) ProtoMessage() {}
 
 func (x *ShrinkMemoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2905,7 +3016,7 @@ func (x *ShrinkMemoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShrinkMemoryResponse.ProtoReflect.Descriptor instead.
 func (*ShrinkMemoryResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{44}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ShrinkMemoryResponse) GetBytes() uint64 {
@@ -2930,7 +3041,7 @@ type SetDiskLimitRequest struct {
 
 func (x *SetDiskLimitRequest) Reset() {
 	*x = SetDiskLimitRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2942,7 +3053,7 @@ func (x *SetDiskLimitRequest) String() string {
 func (*SetDiskLimitRequest) ProtoMessage() {}
 
 func (x *SetDiskLimitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2955,7 +3066,7 @@ func (x *SetDiskLimitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDiskLimitRequest.ProtoReflect.Descriptor instead.
 func (*SetDiskLimitRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{45}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SetDiskLimitRequest) GetTenant() string {
@@ -2981,7 +3092,7 @@ type SetDiskLimitResponse struct {
 
 func (x *SetDiskLimitResponse) Reset() {
 	*x = SetDiskLimitResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2993,7 +3104,7 @@ func (x *SetDiskLimitResponse) String() string {
 func (*SetDiskLimitResponse) ProtoMessage() {}
 
 func (x *SetDiskLimitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3006,7 +3117,7 @@ func (x *SetDiskLimitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetDiskLimitResponse.ProtoReflect.Descriptor instead.
 func (*SetDiskLimitResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{46}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{48}
 }
 
 // Asks what a tenant's disk takes.
@@ -3020,7 +3131,7 @@ type GetTenantDiskRequest struct {
 
 func (x *GetTenantDiskRequest) Reset() {
 	*x = GetTenantDiskRequest{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[47]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3032,7 +3143,7 @@ func (x *GetTenantDiskRequest) String() string {
 func (*GetTenantDiskRequest) ProtoMessage() {}
 
 func (x *GetTenantDiskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[47]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3045,7 +3156,7 @@ func (x *GetTenantDiskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTenantDiskRequest.ProtoReflect.Descriptor instead.
 func (*GetTenantDiskRequest) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{47}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetTenantDiskRequest) GetTenant() string {
@@ -3069,7 +3180,7 @@ type GetTenantDiskResponse struct {
 
 func (x *GetTenantDiskResponse) Reset() {
 	*x = GetTenantDiskResponse{}
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[48]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3081,7 +3192,7 @@ func (x *GetTenantDiskResponse) String() string {
 func (*GetTenantDiskResponse) ProtoMessage() {}
 
 func (x *GetTenantDiskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[48]
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3094,7 +3205,7 @@ func (x *GetTenantDiskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTenantDiskResponse.ProtoReflect.Descriptor instead.
 func (*GetTenantDiskResponse) Descriptor() ([]byte, []int) {
-	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{48}
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetTenantDiskResponse) GetBytes() uint64 {
@@ -3138,11 +3249,12 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"\x13ImportImageResponse\x12\x16\n" +
 	"\x06branch\x18\x01 \x01(\x04R\x06branch\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\x04R\x06tenant\x12\x12\n" +
-	"\x04cell\x18\x03 \x01(\x04R\x04cell\"R\n" +
+	"\x04cell\x18\x03 \x01(\x04R\x04cell\"j\n" +
 	"\x10ForkStoreRequest\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\tR\x04from\x12\x0e\n" +
 	"\x02to\x18\x02 \x01(\tR\x02to\x12\x14\n" +
-	"\x05point\x18\x04 \x01(\bR\x05pointJ\x04\b\x03\x10\x04\"W\n" +
+	"\x05point\x18\x04 \x01(\bR\x05point\x12\x16\n" +
+	"\x06shared\x18\x05 \x01(\bR\x06sharedJ\x04\b\x03\x10\x04\"W\n" +
 	"\x11ForkStoreResponse\x12\x16\n" +
 	"\x06branch\x18\x01 \x01(\x04R\x06branch\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\x04R\x06tenant\x12\x12\n" +
@@ -3160,7 +3272,11 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"\x11PlaceStoreRequest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\x04R\x05token\"\x14\n" +
-	"\x12PlaceStoreResponse\"G\n" +
+	"\x12PlaceStoreResponse\"?\n" +
+	"\x11SharePointRequest\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x16\n" +
+	"\x06shared\x18\x02 \x01(\bR\x06shared\"\x14\n" +
+	"\x12SharePointResponse\"G\n" +
 	"\x11MakePublicRequest\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x1e\n" +
 	"\n" +
@@ -3345,7 +3461,7 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"\n" +
 	"VolumeKind\x12\x14\n" +
 	"\x10VOLUME_KIND_FXFS\x10\x00\x12\x16\n" +
-	"\x12VOLUME_KIND_SQLITE\x10\x012\xca\x0f\n" +
+	"\x12VOLUME_KIND_SQLITE\x10\x012\xa3\x10\n" +
 	"\aExtentd\x12Z\n" +
 	"\vCreateStore\x12$.fxdax.extentd.v1.CreateStoreRequest\x1a%.fxdax.extentd.v1.CreateStoreResponse\x12Z\n" +
 	"\vImportImage\x12$.fxdax.extentd.v1.ImportImageRequest\x1a%.fxdax.extentd.v1.ImportImageResponse\x12T\n" +
@@ -3357,6 +3473,8 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"PlaceStore\x12#.fxdax.extentd.v1.PlaceStoreRequest\x1a$.fxdax.extentd.v1.PlaceStoreResponse\x12W\n" +
 	"\n" +
 	"MakePublic\x12#.fxdax.extentd.v1.MakePublicRequest\x1a$.fxdax.extentd.v1.MakePublicResponse\x12W\n" +
+	"\n" +
+	"SharePoint\x12#.fxdax.extentd.v1.SharePointRequest\x1a$.fxdax.extentd.v1.SharePointResponse\x12W\n" +
 	"\n" +
 	"AttachBase\x12#.fxdax.extentd.v1.AttachBaseRequest\x1a$.fxdax.extentd.v1.AttachBaseResponse\x12T\n" +
 	"\tSyncStore\x12\".fxdax.extentd.v1.SyncStoreRequest\x1a#.fxdax.extentd.v1.SyncStoreResponse\x12T\n" +
@@ -3387,7 +3505,7 @@ func file_fxdax_extentd_v1_extentd_proto_rawDescGZIP() []byte {
 }
 
 var file_fxdax_extentd_v1_extentd_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_fxdax_extentd_v1_extentd_proto_msgTypes = make([]protoimpl.MessageInfo, 59)
+var file_fxdax_extentd_v1_extentd_proto_msgTypes = make([]protoimpl.MessageInfo, 61)
 var file_fxdax_extentd_v1_extentd_proto_goTypes = []any{
 	(VolumeKind)(0),                 // 0: fxdax.extentd.v1.VolumeKind
 	(*CreateStoreRequest)(nil),      // 1: fxdax.extentd.v1.CreateStoreRequest
@@ -3404,70 +3522,72 @@ var file_fxdax_extentd_v1_extentd_proto_goTypes = []any{
 	(*ResizeStoreResponse)(nil),     // 12: fxdax.extentd.v1.ResizeStoreResponse
 	(*PlaceStoreRequest)(nil),       // 13: fxdax.extentd.v1.PlaceStoreRequest
 	(*PlaceStoreResponse)(nil),      // 14: fxdax.extentd.v1.PlaceStoreResponse
-	(*MakePublicRequest)(nil),       // 15: fxdax.extentd.v1.MakePublicRequest
-	(*MakePublicResponse)(nil),      // 16: fxdax.extentd.v1.MakePublicResponse
-	(*AttachBaseRequest)(nil),       // 17: fxdax.extentd.v1.AttachBaseRequest
-	(*AttachBaseResponse)(nil),      // 18: fxdax.extentd.v1.AttachBaseResponse
-	(*SyncStoreRequest)(nil),        // 19: fxdax.extentd.v1.SyncStoreRequest
-	(*SyncStoreResponse)(nil),       // 20: fxdax.extentd.v1.SyncStoreResponse
-	(*StatStoreRequest)(nil),        // 21: fxdax.extentd.v1.StatStoreRequest
-	(*StatStoreResponse)(nil),       // 22: fxdax.extentd.v1.StatStoreResponse
-	(*ListStoresRequest)(nil),       // 23: fxdax.extentd.v1.ListStoresRequest
-	(*ListStoresResponse)(nil),      // 24: fxdax.extentd.v1.ListStoresResponse
-	(*ListedStore)(nil),             // 25: fxdax.extentd.v1.ListedStore
-	(*GetStatsRequest)(nil),         // 26: fxdax.extentd.v1.GetStatsRequest
-	(*GetStatsResponse)(nil),        // 27: fxdax.extentd.v1.GetStatsResponse
-	(*GetSnapshotRequest)(nil),      // 28: fxdax.extentd.v1.GetSnapshotRequest
-	(*GetSnapshotResponse)(nil),     // 29: fxdax.extentd.v1.GetSnapshotResponse
-	(*VmSnapshot)(nil),              // 30: fxdax.extentd.v1.VmSnapshot
-	(*GuestSnapshot)(nil),           // 31: fxdax.extentd.v1.GuestSnapshot
-	(*Histogram)(nil),               // 32: fxdax.extentd.v1.Histogram
-	(*ObjectStorageStats)(nil),      // 33: fxdax.extentd.v1.ObjectStorageStats
-	(*GrantRequest)(nil),            // 34: fxdax.extentd.v1.GrantRequest
-	(*GrantResponse)(nil),           // 35: fxdax.extentd.v1.GrantResponse
-	(*RevokeRequest)(nil),           // 36: fxdax.extentd.v1.RevokeRequest
-	(*RevokeResponse)(nil),          // 37: fxdax.extentd.v1.RevokeResponse
-	(*SetMemoryLimitRequest)(nil),   // 38: fxdax.extentd.v1.SetMemoryLimitRequest
-	(*SetMemoryLimitResponse)(nil),  // 39: fxdax.extentd.v1.SetMemoryLimitResponse
-	(*SetMemoryWeightRequest)(nil),  // 40: fxdax.extentd.v1.SetMemoryWeightRequest
-	(*SetMemoryWeightResponse)(nil), // 41: fxdax.extentd.v1.SetMemoryWeightResponse
-	(*SetTenantRoomRequest)(nil),    // 42: fxdax.extentd.v1.SetTenantRoomRequest
-	(*SetTenantRoomResponse)(nil),   // 43: fxdax.extentd.v1.SetTenantRoomResponse
-	(*ShrinkMemoryRequest)(nil),     // 44: fxdax.extentd.v1.ShrinkMemoryRequest
-	(*ShrinkMemoryResponse)(nil),    // 45: fxdax.extentd.v1.ShrinkMemoryResponse
-	(*SetDiskLimitRequest)(nil),     // 46: fxdax.extentd.v1.SetDiskLimitRequest
-	(*SetDiskLimitResponse)(nil),    // 47: fxdax.extentd.v1.SetDiskLimitResponse
-	(*GetTenantDiskRequest)(nil),    // 48: fxdax.extentd.v1.GetTenantDiskRequest
-	(*GetTenantDiskResponse)(nil),   // 49: fxdax.extentd.v1.GetTenantDiskResponse
-	nil,                             // 50: fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
-	nil,                             // 51: fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
-	nil,                             // 52: fxdax.extentd.v1.VmSnapshot.CountersEntry
-	nil,                             // 53: fxdax.extentd.v1.VmSnapshot.GaugesEntry
-	nil,                             // 54: fxdax.extentd.v1.VmSnapshot.WindowEntry
-	nil,                             // 55: fxdax.extentd.v1.GuestSnapshot.CountersEntry
-	nil,                             // 56: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
-	nil,                             // 57: fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
-	nil,                             // 58: fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
-	nil,                             // 59: fxdax.extentd.v1.ObjectStorageStats.FailuresEntry
+	(*SharePointRequest)(nil),       // 15: fxdax.extentd.v1.SharePointRequest
+	(*SharePointResponse)(nil),      // 16: fxdax.extentd.v1.SharePointResponse
+	(*MakePublicRequest)(nil),       // 17: fxdax.extentd.v1.MakePublicRequest
+	(*MakePublicResponse)(nil),      // 18: fxdax.extentd.v1.MakePublicResponse
+	(*AttachBaseRequest)(nil),       // 19: fxdax.extentd.v1.AttachBaseRequest
+	(*AttachBaseResponse)(nil),      // 20: fxdax.extentd.v1.AttachBaseResponse
+	(*SyncStoreRequest)(nil),        // 21: fxdax.extentd.v1.SyncStoreRequest
+	(*SyncStoreResponse)(nil),       // 22: fxdax.extentd.v1.SyncStoreResponse
+	(*StatStoreRequest)(nil),        // 23: fxdax.extentd.v1.StatStoreRequest
+	(*StatStoreResponse)(nil),       // 24: fxdax.extentd.v1.StatStoreResponse
+	(*ListStoresRequest)(nil),       // 25: fxdax.extentd.v1.ListStoresRequest
+	(*ListStoresResponse)(nil),      // 26: fxdax.extentd.v1.ListStoresResponse
+	(*ListedStore)(nil),             // 27: fxdax.extentd.v1.ListedStore
+	(*GetStatsRequest)(nil),         // 28: fxdax.extentd.v1.GetStatsRequest
+	(*GetStatsResponse)(nil),        // 29: fxdax.extentd.v1.GetStatsResponse
+	(*GetSnapshotRequest)(nil),      // 30: fxdax.extentd.v1.GetSnapshotRequest
+	(*GetSnapshotResponse)(nil),     // 31: fxdax.extentd.v1.GetSnapshotResponse
+	(*VmSnapshot)(nil),              // 32: fxdax.extentd.v1.VmSnapshot
+	(*GuestSnapshot)(nil),           // 33: fxdax.extentd.v1.GuestSnapshot
+	(*Histogram)(nil),               // 34: fxdax.extentd.v1.Histogram
+	(*ObjectStorageStats)(nil),      // 35: fxdax.extentd.v1.ObjectStorageStats
+	(*GrantRequest)(nil),            // 36: fxdax.extentd.v1.GrantRequest
+	(*GrantResponse)(nil),           // 37: fxdax.extentd.v1.GrantResponse
+	(*RevokeRequest)(nil),           // 38: fxdax.extentd.v1.RevokeRequest
+	(*RevokeResponse)(nil),          // 39: fxdax.extentd.v1.RevokeResponse
+	(*SetMemoryLimitRequest)(nil),   // 40: fxdax.extentd.v1.SetMemoryLimitRequest
+	(*SetMemoryLimitResponse)(nil),  // 41: fxdax.extentd.v1.SetMemoryLimitResponse
+	(*SetMemoryWeightRequest)(nil),  // 42: fxdax.extentd.v1.SetMemoryWeightRequest
+	(*SetMemoryWeightResponse)(nil), // 43: fxdax.extentd.v1.SetMemoryWeightResponse
+	(*SetTenantRoomRequest)(nil),    // 44: fxdax.extentd.v1.SetTenantRoomRequest
+	(*SetTenantRoomResponse)(nil),   // 45: fxdax.extentd.v1.SetTenantRoomResponse
+	(*ShrinkMemoryRequest)(nil),     // 46: fxdax.extentd.v1.ShrinkMemoryRequest
+	(*ShrinkMemoryResponse)(nil),    // 47: fxdax.extentd.v1.ShrinkMemoryResponse
+	(*SetDiskLimitRequest)(nil),     // 48: fxdax.extentd.v1.SetDiskLimitRequest
+	(*SetDiskLimitResponse)(nil),    // 49: fxdax.extentd.v1.SetDiskLimitResponse
+	(*GetTenantDiskRequest)(nil),    // 50: fxdax.extentd.v1.GetTenantDiskRequest
+	(*GetTenantDiskResponse)(nil),   // 51: fxdax.extentd.v1.GetTenantDiskResponse
+	nil,                             // 52: fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
+	nil,                             // 53: fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
+	nil,                             // 54: fxdax.extentd.v1.VmSnapshot.CountersEntry
+	nil,                             // 55: fxdax.extentd.v1.VmSnapshot.GaugesEntry
+	nil,                             // 56: fxdax.extentd.v1.VmSnapshot.WindowEntry
+	nil,                             // 57: fxdax.extentd.v1.GuestSnapshot.CountersEntry
+	nil,                             // 58: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
+	nil,                             // 59: fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
+	nil,                             // 60: fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
+	nil,                             // 61: fxdax.extentd.v1.ObjectStorageStats.FailuresEntry
 }
 var file_fxdax_extentd_v1_extentd_proto_depIdxs = []int32{
 	0,  // 0: fxdax.extentd.v1.CreateStoreRequest.kind:type_name -> fxdax.extentd.v1.VolumeKind
-	25, // 1: fxdax.extentd.v1.ListStoresResponse.stores:type_name -> fxdax.extentd.v1.ListedStore
-	22, // 2: fxdax.extentd.v1.ListedStore.stat:type_name -> fxdax.extentd.v1.StatStoreResponse
-	33, // 3: fxdax.extentd.v1.GetStatsResponse.object_storage:type_name -> fxdax.extentd.v1.ObjectStorageStats
-	50, // 4: fxdax.extentd.v1.GetSnapshotResponse.counters:type_name -> fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
-	51, // 5: fxdax.extentd.v1.GetSnapshotResponse.gauges:type_name -> fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
-	30, // 6: fxdax.extentd.v1.GetSnapshotResponse.vms:type_name -> fxdax.extentd.v1.VmSnapshot
-	52, // 7: fxdax.extentd.v1.VmSnapshot.counters:type_name -> fxdax.extentd.v1.VmSnapshot.CountersEntry
-	53, // 8: fxdax.extentd.v1.VmSnapshot.gauges:type_name -> fxdax.extentd.v1.VmSnapshot.GaugesEntry
-	54, // 9: fxdax.extentd.v1.VmSnapshot.window:type_name -> fxdax.extentd.v1.VmSnapshot.WindowEntry
-	31, // 10: fxdax.extentd.v1.VmSnapshot.guest:type_name -> fxdax.extentd.v1.GuestSnapshot
-	55, // 11: fxdax.extentd.v1.GuestSnapshot.counters:type_name -> fxdax.extentd.v1.GuestSnapshot.CountersEntry
-	56, // 12: fxdax.extentd.v1.GuestSnapshot.histograms:type_name -> fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
-	57, // 13: fxdax.extentd.v1.ObjectStorageStats.requests:type_name -> fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
-	58, // 14: fxdax.extentd.v1.ObjectStorageStats.uploaded_bytes:type_name -> fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
-	59, // 15: fxdax.extentd.v1.ObjectStorageStats.failures:type_name -> fxdax.extentd.v1.ObjectStorageStats.FailuresEntry
-	32, // 16: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry.value:type_name -> fxdax.extentd.v1.Histogram
+	27, // 1: fxdax.extentd.v1.ListStoresResponse.stores:type_name -> fxdax.extentd.v1.ListedStore
+	24, // 2: fxdax.extentd.v1.ListedStore.stat:type_name -> fxdax.extentd.v1.StatStoreResponse
+	35, // 3: fxdax.extentd.v1.GetStatsResponse.object_storage:type_name -> fxdax.extentd.v1.ObjectStorageStats
+	52, // 4: fxdax.extentd.v1.GetSnapshotResponse.counters:type_name -> fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
+	53, // 5: fxdax.extentd.v1.GetSnapshotResponse.gauges:type_name -> fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
+	32, // 6: fxdax.extentd.v1.GetSnapshotResponse.vms:type_name -> fxdax.extentd.v1.VmSnapshot
+	54, // 7: fxdax.extentd.v1.VmSnapshot.counters:type_name -> fxdax.extentd.v1.VmSnapshot.CountersEntry
+	55, // 8: fxdax.extentd.v1.VmSnapshot.gauges:type_name -> fxdax.extentd.v1.VmSnapshot.GaugesEntry
+	56, // 9: fxdax.extentd.v1.VmSnapshot.window:type_name -> fxdax.extentd.v1.VmSnapshot.WindowEntry
+	33, // 10: fxdax.extentd.v1.VmSnapshot.guest:type_name -> fxdax.extentd.v1.GuestSnapshot
+	57, // 11: fxdax.extentd.v1.GuestSnapshot.counters:type_name -> fxdax.extentd.v1.GuestSnapshot.CountersEntry
+	58, // 12: fxdax.extentd.v1.GuestSnapshot.histograms:type_name -> fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
+	59, // 13: fxdax.extentd.v1.ObjectStorageStats.requests:type_name -> fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
+	60, // 14: fxdax.extentd.v1.ObjectStorageStats.uploaded_bytes:type_name -> fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
+	61, // 15: fxdax.extentd.v1.ObjectStorageStats.failures:type_name -> fxdax.extentd.v1.ObjectStorageStats.FailuresEntry
+	34, // 16: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry.value:type_name -> fxdax.extentd.v1.Histogram
 	1,  // 17: fxdax.extentd.v1.Extentd.CreateStore:input_type -> fxdax.extentd.v1.CreateStoreRequest
 	3,  // 18: fxdax.extentd.v1.Extentd.ImportImage:input_type -> fxdax.extentd.v1.ImportImageRequest
 	5,  // 19: fxdax.extentd.v1.Extentd.ForkStore:input_type -> fxdax.extentd.v1.ForkStoreRequest
@@ -3475,45 +3595,47 @@ var file_fxdax_extentd_v1_extentd_proto_depIdxs = []int32{
 	9,  // 21: fxdax.extentd.v1.Extentd.DropStore:input_type -> fxdax.extentd.v1.DropStoreRequest
 	11, // 22: fxdax.extentd.v1.Extentd.ResizeStore:input_type -> fxdax.extentd.v1.ResizeStoreRequest
 	13, // 23: fxdax.extentd.v1.Extentd.PlaceStore:input_type -> fxdax.extentd.v1.PlaceStoreRequest
-	15, // 24: fxdax.extentd.v1.Extentd.MakePublic:input_type -> fxdax.extentd.v1.MakePublicRequest
-	17, // 25: fxdax.extentd.v1.Extentd.AttachBase:input_type -> fxdax.extentd.v1.AttachBaseRequest
-	19, // 26: fxdax.extentd.v1.Extentd.SyncStore:input_type -> fxdax.extentd.v1.SyncStoreRequest
-	21, // 27: fxdax.extentd.v1.Extentd.StatStore:input_type -> fxdax.extentd.v1.StatStoreRequest
-	23, // 28: fxdax.extentd.v1.Extentd.ListStores:input_type -> fxdax.extentd.v1.ListStoresRequest
-	26, // 29: fxdax.extentd.v1.Extentd.GetStats:input_type -> fxdax.extentd.v1.GetStatsRequest
-	28, // 30: fxdax.extentd.v1.Extentd.GetSnapshot:input_type -> fxdax.extentd.v1.GetSnapshotRequest
-	34, // 31: fxdax.extentd.v1.Extentd.Grant:input_type -> fxdax.extentd.v1.GrantRequest
-	36, // 32: fxdax.extentd.v1.Extentd.Revoke:input_type -> fxdax.extentd.v1.RevokeRequest
-	38, // 33: fxdax.extentd.v1.Extentd.SetMemoryLimit:input_type -> fxdax.extentd.v1.SetMemoryLimitRequest
-	40, // 34: fxdax.extentd.v1.Extentd.SetMemoryWeight:input_type -> fxdax.extentd.v1.SetMemoryWeightRequest
-	42, // 35: fxdax.extentd.v1.Extentd.SetTenantRoom:input_type -> fxdax.extentd.v1.SetTenantRoomRequest
-	44, // 36: fxdax.extentd.v1.Extentd.ShrinkMemory:input_type -> fxdax.extentd.v1.ShrinkMemoryRequest
-	46, // 37: fxdax.extentd.v1.Extentd.SetDiskLimit:input_type -> fxdax.extentd.v1.SetDiskLimitRequest
-	48, // 38: fxdax.extentd.v1.Extentd.GetTenantDisk:input_type -> fxdax.extentd.v1.GetTenantDiskRequest
-	2,  // 39: fxdax.extentd.v1.Extentd.CreateStore:output_type -> fxdax.extentd.v1.CreateStoreResponse
-	4,  // 40: fxdax.extentd.v1.Extentd.ImportImage:output_type -> fxdax.extentd.v1.ImportImageResponse
-	6,  // 41: fxdax.extentd.v1.Extentd.ForkStore:output_type -> fxdax.extentd.v1.ForkStoreResponse
-	8,  // 42: fxdax.extentd.v1.Extentd.DeleteStore:output_type -> fxdax.extentd.v1.DeleteStoreResponse
-	10, // 43: fxdax.extentd.v1.Extentd.DropStore:output_type -> fxdax.extentd.v1.DropStoreResponse
-	12, // 44: fxdax.extentd.v1.Extentd.ResizeStore:output_type -> fxdax.extentd.v1.ResizeStoreResponse
-	14, // 45: fxdax.extentd.v1.Extentd.PlaceStore:output_type -> fxdax.extentd.v1.PlaceStoreResponse
-	16, // 46: fxdax.extentd.v1.Extentd.MakePublic:output_type -> fxdax.extentd.v1.MakePublicResponse
-	18, // 47: fxdax.extentd.v1.Extentd.AttachBase:output_type -> fxdax.extentd.v1.AttachBaseResponse
-	20, // 48: fxdax.extentd.v1.Extentd.SyncStore:output_type -> fxdax.extentd.v1.SyncStoreResponse
-	22, // 49: fxdax.extentd.v1.Extentd.StatStore:output_type -> fxdax.extentd.v1.StatStoreResponse
-	24, // 50: fxdax.extentd.v1.Extentd.ListStores:output_type -> fxdax.extentd.v1.ListStoresResponse
-	27, // 51: fxdax.extentd.v1.Extentd.GetStats:output_type -> fxdax.extentd.v1.GetStatsResponse
-	29, // 52: fxdax.extentd.v1.Extentd.GetSnapshot:output_type -> fxdax.extentd.v1.GetSnapshotResponse
-	35, // 53: fxdax.extentd.v1.Extentd.Grant:output_type -> fxdax.extentd.v1.GrantResponse
-	37, // 54: fxdax.extentd.v1.Extentd.Revoke:output_type -> fxdax.extentd.v1.RevokeResponse
-	39, // 55: fxdax.extentd.v1.Extentd.SetMemoryLimit:output_type -> fxdax.extentd.v1.SetMemoryLimitResponse
-	41, // 56: fxdax.extentd.v1.Extentd.SetMemoryWeight:output_type -> fxdax.extentd.v1.SetMemoryWeightResponse
-	43, // 57: fxdax.extentd.v1.Extentd.SetTenantRoom:output_type -> fxdax.extentd.v1.SetTenantRoomResponse
-	45, // 58: fxdax.extentd.v1.Extentd.ShrinkMemory:output_type -> fxdax.extentd.v1.ShrinkMemoryResponse
-	47, // 59: fxdax.extentd.v1.Extentd.SetDiskLimit:output_type -> fxdax.extentd.v1.SetDiskLimitResponse
-	49, // 60: fxdax.extentd.v1.Extentd.GetTenantDisk:output_type -> fxdax.extentd.v1.GetTenantDiskResponse
-	39, // [39:61] is the sub-list for method output_type
-	17, // [17:39] is the sub-list for method input_type
+	17, // 24: fxdax.extentd.v1.Extentd.MakePublic:input_type -> fxdax.extentd.v1.MakePublicRequest
+	15, // 25: fxdax.extentd.v1.Extentd.SharePoint:input_type -> fxdax.extentd.v1.SharePointRequest
+	19, // 26: fxdax.extentd.v1.Extentd.AttachBase:input_type -> fxdax.extentd.v1.AttachBaseRequest
+	21, // 27: fxdax.extentd.v1.Extentd.SyncStore:input_type -> fxdax.extentd.v1.SyncStoreRequest
+	23, // 28: fxdax.extentd.v1.Extentd.StatStore:input_type -> fxdax.extentd.v1.StatStoreRequest
+	25, // 29: fxdax.extentd.v1.Extentd.ListStores:input_type -> fxdax.extentd.v1.ListStoresRequest
+	28, // 30: fxdax.extentd.v1.Extentd.GetStats:input_type -> fxdax.extentd.v1.GetStatsRequest
+	30, // 31: fxdax.extentd.v1.Extentd.GetSnapshot:input_type -> fxdax.extentd.v1.GetSnapshotRequest
+	36, // 32: fxdax.extentd.v1.Extentd.Grant:input_type -> fxdax.extentd.v1.GrantRequest
+	38, // 33: fxdax.extentd.v1.Extentd.Revoke:input_type -> fxdax.extentd.v1.RevokeRequest
+	40, // 34: fxdax.extentd.v1.Extentd.SetMemoryLimit:input_type -> fxdax.extentd.v1.SetMemoryLimitRequest
+	42, // 35: fxdax.extentd.v1.Extentd.SetMemoryWeight:input_type -> fxdax.extentd.v1.SetMemoryWeightRequest
+	44, // 36: fxdax.extentd.v1.Extentd.SetTenantRoom:input_type -> fxdax.extentd.v1.SetTenantRoomRequest
+	46, // 37: fxdax.extentd.v1.Extentd.ShrinkMemory:input_type -> fxdax.extentd.v1.ShrinkMemoryRequest
+	48, // 38: fxdax.extentd.v1.Extentd.SetDiskLimit:input_type -> fxdax.extentd.v1.SetDiskLimitRequest
+	50, // 39: fxdax.extentd.v1.Extentd.GetTenantDisk:input_type -> fxdax.extentd.v1.GetTenantDiskRequest
+	2,  // 40: fxdax.extentd.v1.Extentd.CreateStore:output_type -> fxdax.extentd.v1.CreateStoreResponse
+	4,  // 41: fxdax.extentd.v1.Extentd.ImportImage:output_type -> fxdax.extentd.v1.ImportImageResponse
+	6,  // 42: fxdax.extentd.v1.Extentd.ForkStore:output_type -> fxdax.extentd.v1.ForkStoreResponse
+	8,  // 43: fxdax.extentd.v1.Extentd.DeleteStore:output_type -> fxdax.extentd.v1.DeleteStoreResponse
+	10, // 44: fxdax.extentd.v1.Extentd.DropStore:output_type -> fxdax.extentd.v1.DropStoreResponse
+	12, // 45: fxdax.extentd.v1.Extentd.ResizeStore:output_type -> fxdax.extentd.v1.ResizeStoreResponse
+	14, // 46: fxdax.extentd.v1.Extentd.PlaceStore:output_type -> fxdax.extentd.v1.PlaceStoreResponse
+	18, // 47: fxdax.extentd.v1.Extentd.MakePublic:output_type -> fxdax.extentd.v1.MakePublicResponse
+	16, // 48: fxdax.extentd.v1.Extentd.SharePoint:output_type -> fxdax.extentd.v1.SharePointResponse
+	20, // 49: fxdax.extentd.v1.Extentd.AttachBase:output_type -> fxdax.extentd.v1.AttachBaseResponse
+	22, // 50: fxdax.extentd.v1.Extentd.SyncStore:output_type -> fxdax.extentd.v1.SyncStoreResponse
+	24, // 51: fxdax.extentd.v1.Extentd.StatStore:output_type -> fxdax.extentd.v1.StatStoreResponse
+	26, // 52: fxdax.extentd.v1.Extentd.ListStores:output_type -> fxdax.extentd.v1.ListStoresResponse
+	29, // 53: fxdax.extentd.v1.Extentd.GetStats:output_type -> fxdax.extentd.v1.GetStatsResponse
+	31, // 54: fxdax.extentd.v1.Extentd.GetSnapshot:output_type -> fxdax.extentd.v1.GetSnapshotResponse
+	37, // 55: fxdax.extentd.v1.Extentd.Grant:output_type -> fxdax.extentd.v1.GrantResponse
+	39, // 56: fxdax.extentd.v1.Extentd.Revoke:output_type -> fxdax.extentd.v1.RevokeResponse
+	41, // 57: fxdax.extentd.v1.Extentd.SetMemoryLimit:output_type -> fxdax.extentd.v1.SetMemoryLimitResponse
+	43, // 58: fxdax.extentd.v1.Extentd.SetMemoryWeight:output_type -> fxdax.extentd.v1.SetMemoryWeightResponse
+	45, // 59: fxdax.extentd.v1.Extentd.SetTenantRoom:output_type -> fxdax.extentd.v1.SetTenantRoomResponse
+	47, // 60: fxdax.extentd.v1.Extentd.ShrinkMemory:output_type -> fxdax.extentd.v1.ShrinkMemoryResponse
+	49, // 61: fxdax.extentd.v1.Extentd.SetDiskLimit:output_type -> fxdax.extentd.v1.SetDiskLimitResponse
+	51, // 62: fxdax.extentd.v1.Extentd.GetTenantDisk:output_type -> fxdax.extentd.v1.GetTenantDiskResponse
+	40, // [40:63] is the sub-list for method output_type
+	17, // [17:40] is the sub-list for method input_type
 	17, // [17:17] is the sub-list for extension type_name
 	17, // [17:17] is the sub-list for extension extendee
 	0,  // [0:17] is the sub-list for field type_name
@@ -3525,20 +3647,20 @@ func file_fxdax_extentd_v1_extentd_proto_init() {
 		return
 	}
 	file_fxdax_extentd_v1_extentd_proto_msgTypes[0].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[26].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[29].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[33].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[37].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[41].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[45].OneofWrappers = []any{}
-	file_fxdax_extentd_v1_extentd_proto_msgTypes[48].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[28].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[31].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[35].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[39].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[43].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[47].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[50].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fxdax_extentd_v1_extentd_proto_rawDesc), len(file_fxdax_extentd_v1_extentd_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   59,
+			NumMessages:   61,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

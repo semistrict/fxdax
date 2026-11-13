@@ -143,6 +143,8 @@ fn tenants_reach_no_store_of_another_tenants_cell() {
 
 /// TASK-364: a point of another tenant's, which its VM manager gives a tenant (TASK-154), the
 /// tenant's VM processes restore from, each restore a store of a cell of the tenant's own.
+/// TASK-395.7: while it is shared: before, and once unshared, a restore is refused (EACCES),
+/// making nothing, and the restores made live on.
 #[test]
 fn tenants_restore_points_given_them_into_cells_of_their_own() {
     let dir = tempfile::tempdir().unwrap();
@@ -159,10 +161,57 @@ fn tenants_restore_points_given_them_into_cells_of_their_own() {
 
     let given = there.acme.join("given");
     assert_eq!(there.daemon.create(&given, point, None).unwrap(), point);
+    let refused = there.acme.join("refused");
+    assert_eq!(restore(&there.socket, &refused, &given, 0).map(drop), Err(Some(Errno::EACCES)));
+    assert!(!refused.exists(), "a refused restore made a store");
+    here.daemon.share(&globex.join("point"), true).unwrap();
     let restored = restore(&there.socket, &there.acme.join("restored"), &given, 0).unwrap();
     assert_eq!(restored.root().unwrap(), b"globex");
     let made = there.daemon.branch(&there.acme.join("restored")).unwrap();
     assert_eq!((made.cell.tenant, made.id), (1, restored.branch()));
+    here.daemon.share(&globex.join("point"), false).unwrap();
+    assert_eq!(restore(&there.socket, &refused, &given, 0).map(drop), Err(Some(Errno::EACCES)));
+    assert!(!refused.exists(), "a refused restore made a store");
+    assert_eq!(restored.root().unwrap(), b"globex");
+}
+
+/// TASK-395.7: a base made a point forks into another tenant's directory, a cell of that
+/// tenant's, only while shared (SharePoint, or ForkStore's `shared`): refused otherwise (EACCES),
+/// making nothing. Into its own tenant's it forks either way. Only a point is shared (EINVAL).
+#[test]
+fn bases_made_shared_points_fork_into_other_tenants() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut here = Host::new(dir.path(), "here");
+    let globex = dir.path().join("here/globex");
+    std::fs::create_dir(&globex).unwrap();
+    let theirs = here.daemon.grant("globex", 2, &globex, None).unwrap();
+    let base = here.acme.join("base");
+    let vm = RemoteExtentStore::connect(&here.socket, &base, CAPACITY).unwrap();
+    write(&vm, &pattern(8), b"base");
+    drop(vm);
+    let (point, shared) = (here.acme.join("point"), here.acme.join("shared"));
+    assert_eq!(here.daemon.point(&base, &point).unwrap().cell.tenant, 1);
+    let fork = |daemon: &mut Daemon, from: &Path, to: &Path| daemon.fork(from, to).map(drop);
+
+    let refused = globex.join("refused");
+    let forked = fork(&mut here.daemon, &point, &refused);
+    assert_eq!(failure(forked), (Code::PermissionDenied, Errno::EACCES));
+    assert!(!refused.exists(), "a refused fork made a store");
+    fork(&mut here.daemon, &point, &here.acme.join("ours")).unwrap();
+    here.daemon.share(&point, true).unwrap();
+    assert_eq!(here.daemon.fork(&point, &globex.join("theirs")).unwrap().cell.tenant, 2);
+    let vm = RemoteExtentStore::connect(&theirs, globex.join("theirs"), CAPACITY).unwrap();
+    assert_eq!(vm.root().unwrap(), b"base");
+    drop(vm);
+    here.daemon.share(&point, false).unwrap();
+    let forked = fork(&mut here.daemon, &point, &refused);
+    assert_eq!(failure(forked), (Code::PermissionDenied, Errno::EACCES));
+
+    here.daemon.fork_store(&base, &shared, (true, true)).unwrap();
+    assert_eq!(here.daemon.fork(&shared, &globex.join("later")).unwrap().cell.tenant, 2);
+    let forked = here.daemon.fork_store(&base, &here.acme.join("no-point"), (false, true));
+    assert_eq!(failure(forked), (Code::InvalidArgument, Errno::EINVAL));
+    assert_eq!(failure(here.daemon.share(&base, true)), (Code::InvalidArgument, Errno::EINVAL));
 }
 
 /// A revoked tenant's socket goes, and takes no more connections, while its VM processes

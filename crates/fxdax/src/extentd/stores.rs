@@ -740,7 +740,7 @@ pub(super) async fn fork_from(
     (path, tenant): (&Path, Option<u64>),
 ) -> Result<(), Errno> {
     match fork_point(from, capacity, (path, tenant)).await {
-        (Err(errno), Opened::Before) if errno != Errno::EEXIST => {
+        (Err(errno), Opened::Before) if store_at_fault(errno) => {
             // What a crash left at `path` goes first, as before any restore's.
             removed_if_unmade(path)?;
             fork_point(from, capacity, (path, tenant)).await.0
@@ -793,11 +793,18 @@ async fn fork_point(
     });
     let failed = Arc::downgrade(&point);
     drop(point);
-    // fxdax: but for its being there already, which is no fault of the point's.
-    if forked.as_ref().is_err_and(|errno| *errno != Errno::EEXIST) {
+    if forked.is_err_and(store_at_fault) {
         let_go_failed(&store_key(from), failed).await;
     }
     (forked, opened)
+}
+
+/// fxdax: whether a fork that failed with `errno` may have failed by the store it forks, as a
+/// point kept open whose branch another host took, which is let go of, and opened anew for a fork
+/// once more: not by its child's path being taken (`EEXIST`), nor by the fork being refused, as of
+/// another tenant's point not shared (`EACCES`, TASK-395.7), which no store opened anew changes.
+fn store_at_fault(errno: Errno) -> bool {
+    !matches!(errno, Errno::EEXIST | Errno::EACCES)
 }
 
 /// fxdax: when a restore's point was opened ([`point`]).
@@ -841,27 +848,57 @@ async fn point(from: &Path, capacity: u64) -> Result<(Arc<HeldStore>, Opened), E
 /// finding the child's record another's (TASK-79.95). A point kept open whose fork fails, as once
 /// another host took its branch, is opened anew for a fork once more, as a restore's
 /// ([`fork_from`], TASK-79.103). The fork is a point if `point` ([`ExtentStore::point`],
-/// TASK-158), live or not, once nothing is open. It is the one volume of a new cell of `tenant`'s,
-/// if given: the granted tenant's whose directory `to` is in; or of `from`'s tenant's; its ID the
-/// bucket's to give (TASK-364).
+/// TASK-158), live or not, once nothing is open; and shared, if `shared` too, once made
+/// ([`share`]): if sharing it fails, the point stands, not shared. It is the one volume of a new
+/// cell of `tenant`'s, if given: the granted tenant's whose directory `to` is in; or of `from`'s
+/// tenant's; its ID the bucket's to give (TASK-364). A point not shared forks to no cell of another
+/// tenant's than its own (`EACCES`, TASK-395.7). Only a point is shared (`EINVAL`).
 pub(super) async fn fork(
     from: PathBuf,
     to: PathBuf,
     tenant: Option<u64>,
+    (point, shared): (bool, bool),
+) -> Result<Branch, Errno> {
+    if shared && !point {
+        return Err(Errno::EINVAL);
+    }
+    let forked = fork_from_store(&from, &to, tenant, point).await?;
+    if shared {
+        share(to, true).await?;
+    }
+    Ok(forked)
+}
+
+/// fxdax: forks the store at `from` to `to` as [`fork`] does, a point if `point`.
+async fn fork_from_store(
+    from: &Path,
+    to: &Path,
+    tenant: Option<u64>,
     point: bool,
 ) -> Result<Branch, Errno> {
-    let _child = hold_to_fork(&to).await?;
-    let key = store_key(&from);
+    let _child = hold_to_fork(to).await?;
+    let key = store_key(from);
     // fxdax: the one volume of a new cell of `tenant`'s, or the store's tenant's (TASK-364).
-    let from_branch = extent_store::host_branch(&from).map_err(|_| Errno::ENOENT)?;
+    let from_branch = extent_store::host_branch(from).map_err(|_| Errno::ENOENT)?;
     let cell = || crate::host_store::new_cell(tenant.unwrap_or(from_branch.cell.tenant));
     let was_kept = kept(&key).is_some();
-    match fork_held(&from, &to, cell(), point, &key).await {
-        Err(errno) if was_kept && errno != Errno::EEXIST => {
-            fork_held(&from, &to, cell(), point, &key).await
+    match fork_held(from, to, cell(), point, &key).await {
+        Err(errno) if was_kept && store_at_fault(errno) => {
+            fork_held(from, to, cell(), point, &key).await
         }
         forked => forked,
     }
+}
+
+/// fxdax: shares the point the store at `path` is of, if `shared`, or no longer
+/// ([`ExtentStore::share`], TASK-395.7): `EINVAL` if it is no point; `ENOENT` if no store is
+/// there, or its point was deleted. Nothing of the store here changes, open or not.
+pub(super) async fn share(path: PathBuf, shared: bool) -> Result<(), Errno> {
+    blocking(move || {
+        ExtentStore::share(&path, shared)
+            .map_err(|err| errno_of(format_args!("sharing {}", path.display()), err))
+    })
+    .await
 }
 
 /// fxdax: forks the store at `from`, whose key is `key`, to `to`, which the caller holds, as
@@ -917,8 +954,7 @@ async fn fork_held(
     }
     .await;
     forking.close().await;
-    // fxdax: but for its being there already, which is no fault of the point's.
-    if forked.as_ref().is_err_and(|errno| *errno != Errno::EEXIST) {
+    if forked.as_ref().is_err_and(|errno| store_at_fault(*errno)) {
         let_go_failed(key, held).await;
     }
     forked

@@ -390,7 +390,7 @@ fn resize(path: &Path, capacity: u64) -> Result<(), Errno> {
 /// Forks the store at `from` to a new branch at `to`, as the control API does (`ForkStore`), and
 /// returns the branch.
 fn fork_store(from: &Path, to: &Path) -> Result<crate::Branch, crate::Error> {
-    let forked = control(super::stores::fork(from.to_owned(), to.to_owned(), None, false));
+    let forked = control(super::stores::fork(from.to_owned(), to.to_owned(), None, (false, false)));
     forked.map_err(crate::Error::from)
 }
 
@@ -4241,7 +4241,8 @@ fn control_forks_failing_fork_again() {
     fork_store(&base, &fork).unwrap();
 
     let failing = fail::FailGuard::new("remote::forked", "1*return").unwrap();
-    let branch = control(super::stores::fork(base.clone(), again.clone(), None, false)).unwrap();
+    let branch =
+        control(super::stores::fork(base.clone(), again.clone(), None, (false, false))).unwrap();
     drop(failing);
     assert_eq!(ExtentStore::open(&again).map(|store| store.branch()).map_err(drop), Ok(branch));
     let (forked, served) = connect(&again, 1 << 24);
@@ -4484,7 +4485,7 @@ fn childs_opened_during_their_forks_wait_for_them() {
     gated.hold_writes(Some(segments));
     let forking = {
         let (path, child) = (path.clone(), child.clone());
-        std::thread::spawn(move || control(super::stores::fork(path, child, None, false)))
+        std::thread::spawn(move || control(super::stores::fork(path, child, None, (false, false))))
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while gated.writes_waiting() == 0 || !child.exists() {
@@ -5165,7 +5166,7 @@ fn restores_fork_their_point_anew_once_another_writer_took_its_branch() {
     write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
     store.commit(Some(b"point")).unwrap();
     let point = dir.path().join("point");
-    let forked = super::stores::fork(dir.path().join("store"), point.clone(), None, false);
+    let forked = super::stores::fork(dir.path().join("store"), point.clone(), None, (false, false));
     let point_branch = control(forked).unwrap();
     drop(store);
     let restore = |name: &str| {
@@ -5198,7 +5199,7 @@ fn control_forks_of_a_point_fork_it_anew_once_another_writer_took_its_branch() {
     write(&store, extent, 0, &pattern(5, BLOCK)).unwrap();
     store.commit(Some(b"point")).unwrap();
     let point = dir.path().join("point");
-    let forked = super::stores::fork(dir.path().join("store"), point.clone(), None, false);
+    let forked = super::stores::fork(dir.path().join("store"), point.clone(), None, (false, false));
     let point_branch = control(forked).unwrap();
     drop(store);
     // A restore keeps the point open.
@@ -5212,7 +5213,7 @@ fn control_forks_of_a_point_fork_it_anew_once_another_writer_took_its_branch() {
     assert_eq!(read(&taking, extent, 0, BLOCK), Ok(pattern(5, BLOCK)));
     drop(taking);
     let child = dir.path().join("child");
-    let branch = control(super::stores::fork(point, child.clone(), None, false)).unwrap();
+    let branch = control(super::stores::fork(point, child.clone(), None, (false, false))).unwrap();
     let child = RemoteExtentStore::connect(&socket, &child, 1 << 24).unwrap();
     assert_eq!(child.branch(), branch.id);
     assert_eq!(child.root(), Ok(b"point".to_vec()));

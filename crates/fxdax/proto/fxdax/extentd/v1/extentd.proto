@@ -44,6 +44,13 @@
 // A branch so granted is the tenant's to read and restore: a VM process opening a point to write
 // it fails with EROFS. Grant one only to the tenant whose snapshot it is.
 //
+// Shared points (TASK-395.7): a point forks only into cells of its own tenant's, unless it is
+// shared (SharePoint, or ForkStore's `shared`): a base image or a snapshot that many tenants clone.
+// A restore, or a ForkStore, of a point of another tenant's that isn't shared fails with
+// PERMISSION_DENIED (EACCES), making nothing; each fork reads whether the point is shared, in the
+// bucket, as it is made, so that unsharing it stops new forks on every host, and those made live
+// on.
+//
 // A fork of anything but a point is a commit of its branch, which takes its branch's writer: a
 // store forks on one host at a time. A base, or any store, forked on several hosts is made a point
 // first, by ForkStore's `point`, and forked as a snapshot's is, from a copy on each host.
@@ -119,6 +126,12 @@ service Extentd {
   // Makes a store a public base, and the branches it inherited from: their pages are cached once,
   // in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
   rpc MakePublic(MakePublicRequest) returns (MakePublicResponse);
+  // Shares a point, or no longer (TASK-395.7): while shared, it forks into cells of other tenants'
+  // than its own, as a base image or a snapshot many tenants clone; unshared, such forks fail
+  // (PERMISSION_DENIED, EACCES), and those made live on. A store of no point is refused
+  // (INVALID_ARGUMENT, EINVAL); one of a point deleted, or none, NOT_FOUND (ENOENT). Nothing of the
+  // store on this host changes: the point's record in the daemon's bucket says it, for every host.
+  rpc SharePoint(SharePointRequest) returns (SharePointResponse);
   // Attaches a fork of a store to a store, a VM's or stopped, and so to its forks and the VMs
   // restored from them: reads and maps of the fork's extents the store doesn't hold read through
   // to it, read-only. Everything the fork holds is readable to the guest, which names extents, so
@@ -196,7 +209,8 @@ message CreateStoreRequest {
   // The tenant whose cell the branch is a volume of. Of a new cell in a granted tenant's
   // directory, that tenant's ID (Grant's `id`), or 0 for it; another is refused
   // (PERMISSION_DENIED, EPERM). A point of another tenant's there is the VM manager's to give: the
-  // tenant's VM processes restore from it, each restore a cell of their tenant's.
+  // tenant's VM processes restore from it, each restore a cell of their tenant's, if the point is
+  // shared (SharePoint); otherwise each restore fails (PERMISSION_DENIED, EACCES).
   uint64 tenant = 5;
   // The cell, or 0 for a new one: the store is a new volume of it, named as `path`'s last name
   // is, unless it takes a branch it has.
@@ -272,6 +286,10 @@ message ForkStoreRequest {
   // at once as wanted. `from` must have nothing open (FAILED_PRECONDITION, EBUSY), as a fork of a
   // store a VM has open does, and be no point itself (INVALID_ARGUMENT): fork that instead.
   bool point = 4;
+  // Whether the point is shared once made, as SharePoint shares it (TASK-395.7): only with
+  // `point` (INVALID_ARGUMENT otherwise). If sharing it fails, the point stands, not shared, and
+  // the call fails: SharePoint shares it then.
+  bool shared = 5;
 }
 
 // The fork made.
@@ -323,6 +341,17 @@ message PlaceStoreRequest {
 
 // The store placed.
 message PlaceStoreResponse {}
+
+// Shares a point, or no longer.
+message SharePointRequest {
+  // A store of the point: the one ForkStore made, or a copy CreateStore made, on this host.
+  string path = 1;
+  // Whether other tenants' forks of it are made from now on.
+  bool shared = 2;
+}
+
+// The point shared, or no longer.
+message SharePointResponse {}
 
 // Makes a store a public base.
 message MakePublicRequest {

@@ -153,6 +153,13 @@ pub enum Error {
     /// fxdax: the cell has no volume of that name.
     #[error("the cell has no volume {0}")]
     NoVolume(String),
+    /// fxdax: a fork of the point to a branch of another tenant's cell than the point's, which the
+    /// point's record doesn't say is shared ([`record::Record::shared`], TASK-395.7).
+    #[error("branch {0} is a point of another tenant's, not shared")]
+    NotShared(layout::Branch),
+    /// fxdax: what only a point is, shared, asked of a branch that is none ([`branch::share`]).
+    #[error("branch {0} is no point")]
+    NotPoint(layout::Branch),
 }
 
 impl From<extent_frame::Corrupt> for Error {

@@ -27,8 +27,10 @@ pub use extent_frame::segment::{
 /// footers, forks and origins name branches with their cells ([`Branch`], TASK-364); nothing reads
 /// 4's. 6: a checkpoint's fences count the branch's strays (TASK-383); nothing reads 5's, whose
 /// fences lack them. 7: a checkpoint names the branch's strays apart from its fences, each void or
-/// late ([`Stray`](crate::recovery::Stray), TASK-388); nothing reads 6's.
-pub const FORMAT: u32 = 7;
+/// late ([`Stray`](crate::recovery::Stray), TASK-388); nothing reads 6's. 8: a point's record says
+/// whether other tenants may fork it ([`Record::shared`](crate::record::Record::shared),
+/// TASK-395.7); nothing reads 7's.
+pub const FORMAT: u32 = 8;
 
 /// fxdax: the prefix of every tenant's cells' objects: all the bucket's branches (TASK-364).
 pub const TENANTS: &str = "tenants/";

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-12 19:51'
+updated_date: '2026-11-13 09:43'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -252,7 +252,8 @@ kinds of branch, deleted or not: a root, of no parent; a fork's child with a bra
 fork made nowhere in the bucket, or one a deletion found no record of; a fork's child, of an
 origin; a point, of an origin; a fork of a point being made, of the point's origin; and a failed
 fork's claim, of an origin. Only a root has no `forked`; only a root and a branch of its own have no
-origin; `point`, `forking` and `claimed` each go with an origin, one at most. Any other combination
+origin; `point`, `forking` and `claimed` each go with an origin, one at most; `shared` goes with
+`point` alone (fxdax, TASK-395.7: Shared points, under Points). Any other combination
 is refused as corrupt as the record is read (`record::Kind`), and what a record allows (whether a
 writer takes it, whether it is a given fork's child, whether the collector may drop it, whether
 its recovery failing lost nothing) is asked of its kind. Every create or update of a record or a
@@ -636,7 +637,9 @@ immutable instead.
 The steps of a fork of point P to child C:
 
 1. C's record, created saying the fork is being made (`forking: P`).
-2. A read of P's record: deleted, the fork fails.
+2. A read of P's record: deleted, the fork fails. fxdax: so does it if C is of another tenant's cell
+   than P, and the record doesn't say P is shared (`Error::NotShared`, `EACCES`; TASK-395.7). The
+   read is made then whatever the rule that checks for deletion says.
 3. C's record, updated with a condition: no longer being made. Only then does the fork succeed.
 
 **What keeps C's data.** C needs just what P does. A pass that finds P live keeps that; so does one
@@ -675,6 +678,16 @@ state, and its forks fork the point itself (TASK-158).
 
 **Deleting a point** is deleting a branch: its forks keep what they inherited, by their records, and
 its moves stay for as long as it lives, as it has no writer to record them in a checkpoint.
+
+**Shared points** *(fxdax, TASK-395.7, format 8).* A point forks only into cells of its own tenant's,
+unless its record says `shared`: a base image or a snapshot many tenants clone. Only a point's record
+says it (another's is corrupt), and only the trusted control API sets it, at the point's making
+(ForkStore's `shared`, after the point is made) or later (SharePoint, `fxdaxctl share`), and clears
+it (`unshare`). The check is step 2's read, which every fork of a point makes, on any host, so that
+unsharing stops the forks whose reads come after, and those made stand. A fork refused leaves C's
+record being made, which its host deletes, as for a point deleted. No tenant is special: tenant 0's
+points are shared or not as any other's. Forks of branches with writers into another tenant's cell
+(a public base forked into a tenant's directory) are not checked yet (TASK-395.9).
 
 ## Reading
 

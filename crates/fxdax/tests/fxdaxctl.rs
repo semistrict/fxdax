@@ -164,6 +164,34 @@ fn copies_are_dropped_through_the_daemon() {
     copies_are_dropped(Fxdaxctl::through_daemon(dir.path(), &[]), dir.path());
 }
 
+/// TASK-395.7: `fxdaxctl point --shared` makes a point shared, as its record in its bucket says,
+/// which `unshare` and `share` change; a store of no point is refused.
+#[test]
+fn points_are_shared_and_unshared_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    let bucket = format!("file://{}", dir.path().join("bucket").display());
+    std::fs::create_dir(dir.path().join("bucket")).unwrap();
+    let fxdaxctl =
+        Fxdaxctl::with_env(&[("FXDAX_EXTENTD_REMOTE", &bucket), ("FXDAX_EXTENTD_TOKEN", "1")]);
+    let (base, point) = (dir.path().join("base"), dir.path().join("point"));
+    fxdaxctl.run(&[Path::new("create"), &base, Path::new("16777216")]).unwrap();
+    let printed =
+        fxdaxctl.run(&[Path::new("point"), &base, &point, Path::new("--shared")]).unwrap();
+    let branch: fxdax::Branch = printed.trim().parse().unwrap();
+    let bucket = ExtentStore::bucket_at(&point).unwrap().unwrap();
+    let shared = || {
+        let record = extent_remote::branch::record(&*bucket, branch);
+        futures::executor::block_on(record).unwrap().unwrap().shared
+    };
+    assert!(shared(), "made a point not shared");
+    fxdaxctl.run(&[Path::new("unshare"), &point]).unwrap();
+    assert!(!shared(), "left shared");
+    fxdaxctl.run(&[Path::new("share"), &point]).unwrap();
+    assert!(shared(), "left unshared");
+    let error = fxdaxctl.run(&[Path::new("share"), &base]).expect_err("shared what is no point");
+    assert!(error.contains("is no point"), "{error}");
+}
+
 #[test]
 fn stores_are_deleted_while_their_forks_live_locally() {
     let dir = tempfile::tempdir().unwrap();

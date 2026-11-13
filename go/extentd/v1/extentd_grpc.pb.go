@@ -44,6 +44,13 @@
 // A branch so granted is the tenant's to read and restore: a VM process opening a point to write
 // it fails with EROFS. Grant one only to the tenant whose snapshot it is.
 //
+// Shared points (TASK-395.7): a point forks only into cells of its own tenant's, unless it is
+// shared (SharePoint, or ForkStore's `shared`): a base image or a snapshot that many tenants clone.
+// A restore, or a ForkStore, of a point of another tenant's that isn't shared fails with
+// PERMISSION_DENIED (EACCES), making nothing; each fork reads whether the point is shared, in the
+// bucket, as it is made, so that unsharing it stops new forks on every host, and those made live
+// on.
+//
 // A fork of anything but a point is a commit of its branch, which takes its branch's writer: a
 // store forks on one host at a time. A base, or any store, forked on several hosts is made a point
 // first, by ForkStore's `point`, and forked as a snapshot's is, from a copy on each host.
@@ -104,6 +111,7 @@ const (
 	Extentd_ResizeStore_FullMethodName     = "/fxdax.extentd.v1.Extentd/ResizeStore"
 	Extentd_PlaceStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/PlaceStore"
 	Extentd_MakePublic_FullMethodName      = "/fxdax.extentd.v1.Extentd/MakePublic"
+	Extentd_SharePoint_FullMethodName      = "/fxdax.extentd.v1.Extentd/SharePoint"
 	Extentd_AttachBase_FullMethodName      = "/fxdax.extentd.v1.Extentd/AttachBase"
 	Extentd_SyncStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/SyncStore"
 	Extentd_StatStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/StatStore"
@@ -161,6 +169,12 @@ type ExtentdClient interface {
 	// Makes a store a public base, and the branches it inherited from: their pages are cached once,
 	// in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
 	MakePublic(ctx context.Context, in *MakePublicRequest, opts ...grpc.CallOption) (*MakePublicResponse, error)
+	// Shares a point, or no longer (TASK-395.7): while shared, it forks into cells of other tenants'
+	// than its own, as a base image or a snapshot many tenants clone; unshared, such forks fail
+	// (PERMISSION_DENIED, EACCES), and those made live on. A store of no point is refused
+	// (INVALID_ARGUMENT, EINVAL); one of a point deleted, or none, NOT_FOUND (ENOENT). Nothing of the
+	// store on this host changes: the point's record in the daemon's bucket says it, for every host.
+	SharePoint(ctx context.Context, in *SharePointRequest, opts ...grpc.CallOption) (*SharePointResponse, error)
 	// Attaches a fork of a store to a store, a VM's or stopped, and so to its forks and the VMs
 	// restored from them: reads and maps of the fork's extents the store doesn't hold read through
 	// to it, read-only. Everything the fork holds is readable to the guest, which names extents, so
@@ -303,6 +317,16 @@ func (c *extentdClient) MakePublic(ctx context.Context, in *MakePublicRequest, o
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MakePublicResponse)
 	err := c.cc.Invoke(ctx, Extentd_MakePublic_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *extentdClient) SharePoint(ctx context.Context, in *SharePointRequest, opts ...grpc.CallOption) (*SharePointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SharePointResponse)
+	err := c.cc.Invoke(ctx, Extentd_SharePoint_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +514,12 @@ type ExtentdServer interface {
 	// Makes a store a public base, and the branches it inherited from: their pages are cached once,
 	// in memory every tenant's VM processes map read-only, and shared by every tenant's forks.
 	MakePublic(context.Context, *MakePublicRequest) (*MakePublicResponse, error)
+	// Shares a point, or no longer (TASK-395.7): while shared, it forks into cells of other tenants'
+	// than its own, as a base image or a snapshot many tenants clone; unshared, such forks fail
+	// (PERMISSION_DENIED, EACCES), and those made live on. A store of no point is refused
+	// (INVALID_ARGUMENT, EINVAL); one of a point deleted, or none, NOT_FOUND (ENOENT). Nothing of the
+	// store on this host changes: the point's record in the daemon's bucket says it, for every host.
+	SharePoint(context.Context, *SharePointRequest) (*SharePointResponse, error)
 	// Attaches a fork of a store to a store, a VM's or stopped, and so to its forks and the VMs
 	// restored from them: reads and maps of the fork's extents the store doesn't hold read through
 	// to it, read-only. Everything the fork holds is readable to the guest, which names extents, so
@@ -581,6 +611,9 @@ func (UnimplementedExtentdServer) PlaceStore(context.Context, *PlaceStoreRequest
 }
 func (UnimplementedExtentdServer) MakePublic(context.Context, *MakePublicRequest) (*MakePublicResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MakePublic not implemented")
+}
+func (UnimplementedExtentdServer) SharePoint(context.Context, *SharePointRequest) (*SharePointResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SharePoint not implemented")
 }
 func (UnimplementedExtentdServer) AttachBase(context.Context, *AttachBaseRequest) (*AttachBaseResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AttachBase not implemented")
@@ -785,6 +818,24 @@ func _Extentd_MakePublic_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ExtentdServer).MakePublic(ctx, req.(*MakePublicRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Extentd_SharePoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SharePointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).SharePoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_SharePoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).SharePoint(ctx, req.(*SharePointRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1079,6 +1130,10 @@ var Extentd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MakePublic",
 			Handler:    _Extentd_MakePublic_Handler,
+		},
+		{
+			MethodName: "SharePoint",
+			Handler:    _Extentd_SharePoint_Handler,
 		},
 		{
 			MethodName: "AttachBase",

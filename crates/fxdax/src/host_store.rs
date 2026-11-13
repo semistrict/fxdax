@@ -211,6 +211,22 @@ pub(crate) fn bucket_at(path: &Path) -> anyhow::Result<Option<Arc<Bucket>>> {
     }
 }
 
+/// fxdax: shares the point the store at `path` is of, if `shared`, or no longer, in the bucket its
+/// description names (`branch::share`, TASK-395.7): `ENOENT` if no store is there, or its point
+/// was deleted; `EINVAL` if it is of no point. Nothing of the store here changes: every host's
+/// fork of the point reads its record as it is made.
+pub(crate) fn share(path: &Path, shared: bool) -> Result<(), Error> {
+    let bucket = bucket_at(path).map_err(Error::new)?;
+    let (Ok(point), Some(bucket)) = (extent_store::host_branch(path), bucket) else {
+        return Err(Errno::ENOENT.into());
+    };
+    let sharing = upload::block_on(branch::share(&*bucket, point, shared))?;
+    Ok(sharing.map_err(|err| match err {
+        extent_remote::Error::Deleted => Failure::PointDeleted,
+        err => Failure::Remote(err),
+    })?)
+}
+
 /// The options stores are opened with: their extents hold at most what the guest's device says
 /// one does (doc-4's `max_extent`).
 pub(crate) fn options() -> Options {
@@ -357,7 +373,8 @@ pub(crate) fn unmade(path: &Path) -> bool {
 /// (TASK-79.78); its host crashing, it stands, or never was, as the bucket has it.
 ///
 /// A fork of a point commits nothing: its child's record is the fork, which fails with `ENOENT`
-/// once the point is deleted (`Remote::forked`).
+/// once the point is deleted (`Remote::forked`), and with `EACCES` if the child is of another
+/// tenant's cell than the point, which isn't shared (`branch::finish_point_fork`, TASK-395.7).
 pub(crate) fn fork<H>(
     store: &Store<HostDir>,
     remote: &Remote<HostDir>,
@@ -394,6 +411,11 @@ fn fork_in<H>(
         Failure::Remote(extent_remote::Error::IdTaken(_)) => taken(branch),
         Failure::PointDeleted => anyhow::Error::new(Errno::ENOENT)
             .context(format!("forking to branch {branch}: the point was deleted")),
+        // fxdax: another tenant's point, not shared (TASK-395.7).
+        Failure::Remote(refused @ extent_remote::Error::NotShared(_)) => {
+            anyhow::Error::new(Errno::EACCES)
+                .context(format!("forking to branch {branch}: {refused}"))
+        }
         err => anyhow::anyhow!("forking to branch {branch}: {err}"),
     };
     if !remote.child_free(branch).map_err(|err| Error::new(failed(err)))? {

@@ -1076,6 +1076,15 @@ impl ExtentStore {
         extent_store::place_host(path.as_ref(), token).map_err(Error::new)
     }
 
+    /// fxdax: shares the point the store at `path` is of, if `shared`, or no longer: forks of it
+    /// to cells of other tenants' than its own are made while it is shared, and refused
+    /// (`EACCES`) while not, those made living on (TASK-395.7). Its record in the bucket the
+    /// store's description names says so, which every host's fork of the point reads. `EINVAL` if
+    /// the store is of no point; `ENOENT` if none is at `path`, or its point was deleted.
+    pub fn share(path: impl AsRef<Path>, shared: bool) -> Result<(), Error> {
+        host_store::share(path.as_ref(), shared)
+    }
+
     /// fxdax: deletes the store at `path`, which nothing has open: with `bucket`, its branch
     /// there first, its forks' branches living on, which the collector keeps what they inherited
     /// for; then its directory, which holds its branch alone (TASK-165.7). A deletion that stopped

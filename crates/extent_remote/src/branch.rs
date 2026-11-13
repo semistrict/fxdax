@@ -205,16 +205,24 @@ pub async fn fork_point(
 }
 
 /// Makes the fork being made of `point` to `child` ([`fork_point`]), whose record is created: fails
-/// with [`Error::Deleted`] if the point was deleted, or the fork was given up on.
+/// with [`Error::Deleted`] if the point was deleted, or the fork was given up on. fxdax: and with
+/// [`Error::NotShared`] if `child` is of another tenant's cell than the point, which its record,
+/// as this read finds it, doesn't say is shared (TASK-395.7): unsharing it stops the forks whose
+/// reads come after. Its host deletes `child` then, as for a point deleted.
 pub async fn finish_point_fork(
     bucket: &impl Bucket,
     child: Branch,
     point: Branch,
 ) -> Result<(), Error> {
-    if rules().forks_check_points
-        && !record(bucket, point).await?.is_some_and(|record| !record.deleted)
-    {
-        return Err(Error::Deleted);
+    let tenant = child.cell.tenant;
+    if rules().forks_check_points || point.cell.tenant != tenant {
+        let found = record(bucket, point).await?;
+        if rules().forks_check_points && !found.is_some_and(|record| !record.deleted) {
+            return Err(Error::Deleted);
+        }
+        if !found.is_some_and(|record| record.may_fork_into(point, tenant)) {
+            return Err(Error::NotShared(point));
+        }
     }
     failpoint!("point::checked");
     // Conditional, against its being deleted, or given up on ([`abandon`]). A record's bytes
@@ -232,6 +240,22 @@ pub async fn finish_point_fork(
         failpoint!("point::made");
     }
     Ok(())
+}
+
+/// fxdax: shares `point`, if `shared`, or no longer: other tenants' cells than its own may have
+/// branches forked from it while it is shared, and no new ones once not ([`Record::shared`],
+/// TASK-395.7); forks made stay. The trusted control API's alone: no guest asks for it. Fails with
+/// [`Error::NotPoint`] for a branch that is no point, [`Error::Deleted`] for one deleted, and
+/// [`Error::NoBranch`] for none.
+pub async fn share(bucket: &impl Bucket, point: Branch, shared: bool) -> Result<(), Error> {
+    change(bucket, point, Start::Read, |found| match found {
+        None => Err(Error::NoBranch),
+        Some(found) if found.deleted => Err(Error::Deleted),
+        Some(found) if !found.is_point() => Err(Error::NotPoint(point)),
+        Some(found) if found.shared == shared => Ok(Step::Stop(())),
+        Some(found) => Ok(Step::Write(Record { shared, ..found }, ())),
+    })
+    .await
 }
 
 /// Whether no writer has `branch`: it has no lease, or its deletion's.
@@ -671,6 +695,40 @@ mod tests {
         );
         let record = block_on(record(&bucket, test_branch(2))).unwrap();
         assert_eq!(record, Some(Kind::Fork(origin).of(0x22)));
+    }
+
+    /// TASK-395.7: a fork of a point to a branch of another tenant's cell is refused unless the
+    /// point's record, as the fork reads it, says the point is shared; shared, the fork is made;
+    /// unshared, new forks are refused again, and the fork made stands. Forks within the point's
+    /// tenant need no sharing. Only a point is shared, and not once deleted.
+    #[test]
+    fn forks_of_points_into_other_tenants_need_them_shared() {
+        let bucket = Direct(SimBucket::new());
+        let origin = Origin { parent: test_branch(1), at: 7 };
+        let point = test_branch(3);
+        let made = Child { branch: point, owner: 0x33, point: true };
+        block_on(record_fork(&bucket, made, origin)).unwrap();
+        let theirs = |id| Branch { cell: layout::Cell { tenant: 2, id: 1 }, id };
+        let fork = |child: Branch| block_on(fork_point(&bucket, child, point, origin, child.id));
+        let record = |branch| block_on(record(&bucket, branch)).unwrap();
+
+        assert_eq!(fork(theirs(4)), Err(Error::NotShared(point)));
+        assert_eq!(fork(test_branch(5)), Ok(()));
+        assert_eq!(block_on(share(&bucket, point, true)), Ok(()));
+        assert_eq!(block_on(share(&bucket, point, true)), Ok(()), "shared again");
+        assert_eq!(record(point), Some(Record { shared: true, ..Kind::Point(origin).of(0x33) }));
+        assert_eq!(fork(theirs(6)), Ok(()));
+        assert_eq!(block_on(share(&bucket, point, false)), Ok(()));
+        assert_eq!(fork(theirs(7)), Err(Error::NotShared(point)));
+        assert_eq!(record(point), Some(Kind::Point(origin).of(0x33)));
+        assert_eq!(record(theirs(6)), Some(Kind::Fork(origin).of(6)));
+        assert_eq!(record(test_branch(5)), Some(Kind::Fork(origin).of(5)));
+
+        let refused = block_on(share(&bucket, test_branch(5), true));
+        assert_eq!(refused, Err(Error::NotPoint(test_branch(5))));
+        assert_eq!(block_on(share(&bucket, test_branch(8), true)), Err(Error::NoBranch));
+        block_on(mark_deleted(&bucket, point)).unwrap();
+        assert_eq!(block_on(share(&bucket, point, true)), Err(Error::Deleted));
     }
 
     /// TASK-79.82's last case: two forks name one child within a round trip, neither's segment
