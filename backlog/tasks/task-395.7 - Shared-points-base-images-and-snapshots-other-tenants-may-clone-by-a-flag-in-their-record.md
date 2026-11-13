@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 09:29'
+updated_date: '2026-11-13 10:23'
 labels:
   - bucket
   - collector
@@ -50,3 +50,14 @@ Today any tenant can be given another tenant's point to restore, and ForkStore m
 5. Tests: record flags/format, branch::share and refusal (extent_remote); a point forks into another tenant's cell only while shared, and its clone keeps its data after the point is deleted and collected (fxdax remote.rs); fxdaxctl local share/unshare; Linux grants: restores of another tenant's point refused until shared, ForkStore of shared points into other tenants.
 6. AC #3 (references) left to TASK-395.3. Writable cross-tenant forks (ForkStore of a tenant-0 public base into a tenant's directory) left as they are: follow-up task.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed on main as a19ec824a (rebased from 88f81c2d1).
+- extent_remote: Record.shared (a point's alone; shared on any other kind is corrupt); FORMAT 7 -> 8, format 7's records refused by name (Error::Format); branch::share (CAS of the point's record; NoBranch, Deleted, NotPoint); finish_point_fork's read of the point's record now refuses a child of another tenant's cell unless shared (Error::NotShared), the read made for such a child even with forks_check_points off. Every clone of a point (restores via stores::fork_from, ForkStore from a point copy, fxdaxctl, images) goes Remote::forked -> fork_point -> finish_point_fork, so one check covers them.
+- fxdax: NotShared -> EACCES, NotPoint -> EINVAL (remote::errno; host_store::fork_in keeps EACCES); ExtentStore::share(path, shared) from the store's description; control API SharePoint and ForkStore.shared (point made, then shared; EINVAL without point); EACCES is no fault of a kept point (stores::store_at_fault: no let-go, no retry); fxdaxctl share / unshare / point --shared; go/ regenerated; doc-7 Points (Shared points) and Kinds of record updated. Mutant forks-take-branches-claimed.patch re-anchored (its context moved).
+- Tests: extent_remote record flags (128 combinations, 14 records) and format 7 refused; branch::forks_of_points_into_other_tenants_need_them_shared; fxdax remote::points_fork_into_other_tenants_cells_while_shared (refused EACCES leaving nothing, same tenant unchecked, shared/unshared, then the point deleted and two collector passes: the other tenant's clone still reads all it inherited, so AC #4's third test passes today without references); fxdaxctl points_are_shared_and_unshared_locally; Linux only, not run here: grants.rs tenants_restore_points_given_them_into_cells_of_their_own (restore refused until SharePoint, again after unshare) and bases_made_shared_points_fork_into_other_tenants (ForkStore, shared at making, EINVAL cases).
+- Verified on macOS: clippy (test.sh part and default) clean; scripts/test.sh whole: workspace 2290/2290, sim 55/55, shuttle parts all passed, scripts and go passed, mutants 1 broken (fixed, scripts part re-run: 0 broken). After the rebase onto TASK-395.5's collector/bucket changes: clippy clean, nextest extent_remote+extent_store+fxdax 782/782.
+- Not checked: AC #1 and #2 wait on ubu1's run of the Linux daemon tests (grants.rs); AC #3 needs fork references (TASK-395.3, not built); AC #4 partly (the daemon tests on Linux). Writable cross-tenant forks (tenant-0 public bases forked into tenants' directories) left unchecked: TASK-395.9. Decisions in OPEN_QUESTIONS.md. TASK-395.2's layout is now format 9.
+<!-- SECTION:NOTES:END -->
