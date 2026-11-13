@@ -5,8 +5,7 @@
 # Killer: remote::tests::forks_to_a_branch_the_bucket_has_fail_with_eexist
 --- a/crates/fxdax/src/host_store.rs
 +++ b/crates/fxdax/src/host_store.rs
-@@ -417,9 +417,7 @@
-                 .context(format!("forking to branch {branch}: {refused}"))
+@@ -418,9 +418,7 @@
          }
          err => anyhow::anyhow!("forking to branch {branch}: {err}"),
      };
