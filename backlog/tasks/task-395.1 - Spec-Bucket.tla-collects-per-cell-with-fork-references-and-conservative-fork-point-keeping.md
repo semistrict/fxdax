@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:52:00Z'
-updated_date: '2026-11-13 12:49'
+updated_date: '2026-11-13 14:54'
 labels:
   - bucket
   - collector
@@ -61,6 +61,8 @@ Model (specs/bucket/Bucket.tla): CellOf (OneCell/CellEach/Pair), refs [p, at, c]
 Found by TLC: a clone in its origin's own cell was lost (BucketOverlap): records read before it, its point's reference (another cell) retired before the references were listed. Fix: every clone writes a reference, its own cell included. With that, NoRecordsRelisted and NoRecoveriesByOrigins no longer fail; their mutations now drop references too (both rules kept).
 Runs (macOS laptop, scripts/check-tla.sh): all bucket models hold but BucketTakeovers (not run, ~1h47m, one branch, unchanged): Bucket 40s, Compaction 128s, Deletions 158s, Forks 832s (was 1002s before cells), Inherit 103s, Overlap 860s (399s before), Own 6s, Placements 84s, Points 136s, PointsDeep 185s, Spans 138s, SpansCollect 31s, Strays 1063s (one cell, unchanged), Twins 1s, Wal 4s, BucketCells 101s (2.9M states), BucketCellsPoints 146s (4.1M). All 51 mutations fail as expected; new: NoReferences 1s, NoReferencesFirst 1s, NoClonesReferFirst 22s, NoReferencesHeld 12s, NoReferencesRelisted 80s, NoForkPointsKept 1s.
 Decisions in OPEN_QUESTIONS.md (# Decisions, TASK-395.1). No Rust changed: DoD #1 holds trivially (cargo nextest not run). scripts/upstream-changes.py --check passes.
+
+BucketTakeovers on the per-cell spec (67ffb6377) still unchecked: a run at nice 19 on the macOS laptop beside TASK-395.2-.4's builds was stopped at the 2 h limit unfinished (TLC's log went with it). To run once the laptop is idle, un-niced (~1h47m).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
