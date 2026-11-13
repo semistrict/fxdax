@@ -4,11 +4,11 @@ title: >-
   A durable sync takes 12 bucket round trips where one would do: sync(2) makes 3
   durable commits, each waits for 2 upload cycles, each a segment PUT then a
   lease GET, in series (3/s at 25 ms latency)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-12 01:53'
-updated_date: '2026-11-12 09:52'
+updated_date: '2026-11-13 10:19'
 labels:
   - bug
   - extentd
@@ -39,14 +39,14 @@ The same run with cache_type Unsafe (bench-fs-fxfs-guest-dax-unsafe) does 3,470 
 - [x] #1 A durable commit with nothing new since the last durable one returns without an upload, or the guest sends none: sync(2) costs one durable commit, not three
 - [x] #2 A durable commit waits for one upload cycle, not two
 - [x] #3 The lease check of an acknowledgement goes beside the segment's PUT, or a lease held by time needs none: one round trip a durable commit
-- [ ] #4 bench-fs-fxfs-guest-dax's sync-loop on ubu1 at 25 ms bucket latency: 25/s or more
+- [x] #4 bench-fs-fxfs-guest-dax's sync-loop on ubu1 at 25 ms bucket latency: 25/s or more
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -72,4 +72,16 @@ AC #4 (25/s) not met: the bucket part is one round trip; what remains is the loc
 Checks: extent_store 242/242 (sim needs-tests: fences_kept seed 0 of recreated(), takeovers_kept seed 1702 of late_checkpoints(), forks_after_lease of deleted_bases(); each loses an acknowledged commit, or a child's segments, without its rule), extent_remote 210, fxfs-posix 102, fxdax remote:: 68, TLA+ all 83 models (scripts/check-tla.sh), scripts' Python 305, guide's anchors check.
 
 Re-run on main 3037d0772, bench lock, IO cap in force (2026-11-12 09:43Z, ~/src/fxdax-t350-results/t371b): bench-fs-fxfs-guest-dax sync 6.1/s, syncfs 8.3/s, freeze 3.3/s; CPU stall 0.05 s, IO stall 6.4 s. Still one durable commit a sync and 6 bucket GETs the whole run, creates 36 ms each; the daemon waits ~145 ms a durable commit. Where the rest goes (78b94e218, durable_commits_through_the_daemon, a guest round's requests through the daemon at 25 ms): median 37.0 ms with the store on ubu1's ZFS home (one round trip + 12 ms, ~27 syncs/s), 116.9 ms (76-543) on /mnt/fxdax-scratch, ext4 on a zvol, where the bench's stores are; the store alone there (bucket_round_trips_by_phase, no writes between commits) 40 ms. So the writes' growing raw files make the flush's fdatasyncs wait for ext4 journal commits: TASK-369's finding #1. AC #4 waits on that (dependency TASK-369).
+
+2026-11-13, AC #4 on ubu1, main 10f613290, bench-fs-fxfs-guest-dax FXDAX_BENCH_GROUPS=sync at FXDAX_REMOTE_LATENCY_MS=25, one round each, ubu1 idle (fxjob ps: 0 jobs):
+- store on ext4 scratch (/mnt/fxdax-scratch), bucket on /dev/shm: sync-loop 30.1/s (32.5 ms a durable commit, the bucket's round trip ~30 ms), syncfs-loop 30.8/s, freeze-loop 9.9/s.
+- bench-rounds.sh's default, store and file bucket both on ZFS home: sync-loop 10.8/s (91 ms), syncfs 13.1/s, freeze 3.7/s. Bucket on /dev/shm, store still on ZFS: 15.9/s (62 ms).
+The 25 ms bucket costs one round trip a sync, as asked; what's left in the default layout is ZFS home's syncs for the file bucket and the store, no part of fxdax (TASK-397 filed for the bench's default). Results: ubu1 /mnt/fxdax-scratch/t371e, ~/src/fxdax-t350-results/t371c and t371d.
+DoD #1: main CI 43200591789 (macOS and Linux) green on 693849713 with TASK-371 in; #2 scripts/upstream-changes.py --check passes on 10f613290.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A durable sync is one bucket round trip: sync(2), syncfs and freeze make one durable commit, not three (the guest's durable guard over the final device flush only; the VFS's wait=0 sync_fs and a freeze's second sync made ordered), and a durable commit is its segment's create alone, no lease read, the writer's create as its fence (fences_kept/takeovers_kept, then TASK-388's one keep rule; TLA+ mutations, simulation profiles, layout FORMAT 4). On ubu1 at 25 ms bucket latency the sync-loop went 3.2/s to 30.1/s (store on ext4 scratch, bucket on tmpfs), its durable commit 32.5 ms against the bucket's ~30 ms round trip. Verified by syncs_make_one_commit_durable, durable_commits_cost_their_segments_create, the TLA+ mutation suite, the simulation needs-tests, main CI 43200591789, and the ubu1 bench.
+<!-- SECTION:FINAL_SUMMARY:END -->
