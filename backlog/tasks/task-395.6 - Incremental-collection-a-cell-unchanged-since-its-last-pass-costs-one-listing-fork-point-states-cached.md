@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-13 23:00'
 labels:
   - bucket
   - collector
@@ -33,7 +33,7 @@ Most cells are idle between sweeps: a stopped VM, a base image, a snapshot. With
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -71,4 +71,6 @@ ACs: #3 proven. #1 holds for every cell but dead ones with children in other cel
 Integration (@claude, 2026-11-13, branch t3/395-integrated, with TASK-395.5's sweep and TASK-395.10's references): <C>gc/lease is one object, passed::GcLease {format, epoch, holder, until, ended, passed}. passed::take decides Held/Swept (the sweep's rules), carries ended and passed; passed::change (CAS on epoch and holder) renews, and Collector::release lets go and records in one write: a pass in full writes its Passed there, a pass that skips nothing new (it renews/lets go as any pass, setting ended), a failed pass keeps the old record. Lease 0 (tests, sim): no renewal, no letting go, only the record written, so this task's request counts stand. Format 9 kept. Skip validity across processes: a record is written only by a pass still holding its own taking, carried by every taking, outside the digest (holders, times, the lease); other options decide anew. Test: sweep::tests::processes_by_turns_skip_an_idle_cell_by_each_others_records (two sweeps by turns over an idle cell: each skipping pass GET 2, UPDATE 2, LIST 1, record unchanged; a sweep begun before a skipping pass ended leaves the cell; a record written makes the next go in full, the other skip after; a process of other options passes in full and so does the first's after). Red with the lease in the digest (hand mutant, reverted). Report::skipped added (fxdax-gc totals 'over N cells (M unchanged)', metrics outcome=skipped). TASK-395.14: re-retirement kept (notes there). ACs #1 and #2 stay unchecked for the reasons above (dead cells' DELETE; no fork-point cache).
 
 Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+
+ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1. ACs #1 and #2 wait on TASK-395.14 and TASK-395.12's decision.
 <!-- SECTION:NOTES:END -->

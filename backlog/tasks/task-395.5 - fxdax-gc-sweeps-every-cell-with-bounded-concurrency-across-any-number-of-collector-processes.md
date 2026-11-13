@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-13 23:00'
 labels:
   - bucket
   - collector
@@ -35,9 +35,9 @@ With a pass per cell, collecting a bucket is running passes over all its cells: 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -94,4 +94,6 @@ To measure (AC #5), from a clean tree: FXDAX_HOST_RUN=<run> FXDAX_HOST_COMMIT=<h
 Integration (@claude, 2026-11-13, branch t3/395-integrated, on TASK-395.6/.8 and .10/.11): the lease merged with TASK-395.6's record (passed::GcLease, layout::GcLease gone; see TASK-395.6's notes); the letting go writes the record. sweep::Passed renamed sweep::Ran. Report::skipped; fxdax-gc lines and metrics count cells skipped unchanged (fxdax_gc_sweep_cells{outcome="skipped"}). cell::listed composed of cell::tenants and cell::of_tenant over bucket::prefixes, shared with --usage. cells_are_listed_a_page_at_a_time unchanged and passing. A skipping pass with a lease held for a time costs GET+PUT (take), LIST, GET+PUT (let go): 5 requests an idle cell; letting go by the version the taking wrote would save a GET (not done: transition doesn't return the written version).
 
 Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+
+ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1. AC #5's measurement runs on ubu1 (run t395sweep on 22602dbd1).
 <!-- SECTION:NOTES:END -->

@@ -3,11 +3,11 @@ id: TASK-395.7
 title: >-
   Shared points: base images and snapshots other tenants may clone, by a flag in
   their record
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-13 23:00'
 labels:
   - bucket
   - collector
@@ -35,9 +35,9 @@ Today any tenant can be given another tenant's point to restore, and ForkStore m
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -70,4 +70,12 @@ ACs #1, #2, #4 checked on t395w1's evidence: branch::tests::forks_of_points_into
 AC #3 (@claude, 2026-11-13; 218be7c5a): collector::tests::clones_of_shared_points_in_other_tenants_keep_what_they_inherit_by_references: a shared point cloned into two cells of tenant 2 writes each reference under the origin's cell (tenant 1); point and origin deleted, two sweeps, both clones read what they inherited; clones deleted, a sweep retires both references and testing::uncollected finds nothing. Also restore_faults now unexcused, and clones write their reference after their record (TASK-395.10).
 
 Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+
+AC #3 by TASK-395.10's tests (a shared point's clone in another tenant refers under the point's cell; the point deleted, the clones keep their data across passes; the reference retired once they go). ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Points carry a shared flag (format 8, then 9), set and cleared through the control API and fxdaxctl share/unshare/point --shared; a fork of another tenant's point is refused EACCES unless shared, at the read of the point's record every point fork makes; a shared point's clones refer under its cell like any clone, so the point's state stays while they live. Writable forks across tenants are TASK-395.9. ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
+<!-- SECTION:FINAL_SUMMARY:END -->

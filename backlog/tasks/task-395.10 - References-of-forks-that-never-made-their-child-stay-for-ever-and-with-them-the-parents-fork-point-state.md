@@ -3,11 +3,11 @@ id: TASK-395.10
 title: >-
   References of forks that never made their child stay for ever, and with them
   the parent's fork-point state
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13 13:47'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-13 23:00'
 labels:
   - bucket
   - collector
@@ -32,7 +32,7 @@ Found by fxdax's restore_faults (TASK-395.3's crash rounds), and TASK-395.4's re
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -59,4 +59,12 @@ Tests: unit tests in collector.rs (see commit), fault tests unexcused (restore_f
 Also filed TASK-403 (deleted_forking seed 100732 fails on the base too: a log found diverged).
 
 Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+
+ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+References are always named: a clone writes its being-made record, then its reference, then reads the point's record; whoever finds the child's record naming another origin or none takes the reference back; modelled (ReferencesNamed, BucketRefsTaken, BucketRefsClones; mutations NoClonesRecordFirst, NoReferencesTakenBack caught); the fault tests pass unexcused. One narrower window is TASK-395.13. BucketForks, BucketOverlap and BucketStrays hold on this spec on ubu1. ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
+<!-- SECTION:FINAL_SUMMARY:END -->

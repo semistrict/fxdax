@@ -3,11 +3,11 @@ id: TASK-395.11
 title: >-
   A writer records a fork across cells whose parent's state at the fork point is
   gone (sim restores seed 11)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13 15:51'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-13 23:00'
 labels:
   - bug
   - bucket
@@ -31,7 +31,7 @@ Found by the simulation's points_restored_on_many_hosts_at_once, seed 11 (restor
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -50,4 +50,12 @@ Found by the simulation's points_restored_on_many_hosts_at_once, seed 11 (restor
 Round (@claude, 2026-11-13; 218be7c5a). Seed 11 no longer reached the path (seeds moved); a temporary panic on record_fork's Lost arm and a search of restores found seed 2545. Cause: a stale read, not a stale state. The writer acknowledged a sound fork; record_fork read the child's record (none), and before checkpoint_at the child was deleted by its host (branch::delete of a child with no record: a deleted Kind::Own), the parent's checkpoint dropped the fork (child deleted), and a pass freed the fork point; checkpoint_at then failed Lost. The structure does not let a writer acknowledge a fork whose state is gone: the state at a fork point goes only once the child is deleted (the parent's state names the fork until a checkpoint drops it, which a deleted child alone lets; the parent's deletion records the child before marking the parent deleted). Fix: record_fork reads the child's record again after the checkpoint (narrowing TASK-395.10's stale-recorder window too) and goes by it; on Lost with none there it fails Lost (would break the argument). The deleted-record path is gone. Test forks_recorded_after_their_children_went_record_nothing reproduces the real interleaving (Hooked after-get hook: child deleted, next writer checkpoints, sweep) instead of the old fabricated state; failed_forks_across_cells_of_a_state_gone_are_deleted_from_the_first keeps delete_fork's case. doc-7 and OPEN_QUESTIONS.md updated.
 
 Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+
+ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Root cause: a stale read, not a bad acknowledgement: record_fork read no record, the child was deleted, its fork dropped and its state freed before the fork-point checkpoint; record_fork now reads the child again after that checkpoint and goes by it; the path writing a deleted record is gone; sim seed 2545's order reproduced in a test. ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1.
+<!-- SECTION:FINAL_SUMMARY:END -->
