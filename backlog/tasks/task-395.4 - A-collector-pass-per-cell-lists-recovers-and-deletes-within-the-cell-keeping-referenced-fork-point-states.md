@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 17:37'
+updated_date: '2026-11-13 20:33'
 labels:
   - bucket
   - collector
@@ -37,7 +37,7 @@ Replaces the whole-bucket pass. A pass over one cell takes the cell's collector 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -80,4 +80,6 @@ Review round (@claude, 2026-11-13; a6cc31ba1, 7e1eeac79, 0de908c63 on t3/395-per
 Also: a fork across cells whose parent's state at the fork point is gone (sim restores seed 11) is recorded deleted, not failing the uploader (TASK-395.11 filed for why); a cross-cell claim with that state gone is deleted from the first (seed 143). The pre-lease GET moved two seed searches out of 0..20,000: takeovers_need_takings_pinned (first seed now 62,844) and deletions_need_fences (32,625); wider parallel searches showed the rules still needed; their windows now start there.
 Linux: extentd's Report literal fixed (ubu1 t395w2). cargo check --workspace --tests --target x86_64-unknown-linux-gnu WORKS on macOS with CC_x86_64_unknown_linux_gnu='zig cc -target x86_64-linux-gnu' (CXX likewise, AR='zig ar') and CRATE_CC_NO_DEFAULTS=1; also guest/tests (-p test_cases -p runner --features test_cases/host). Both clean.
 Tests (macOS): scripts/test.sh exit 0: workspace 2325/2325, sim 59/59, Shuttle and scripts parts pass; hand mutants 22+2 apply.
+
+ubu1 run t395w3 on bb07304a6 (under fxjob): workspace 2596/2596 passed (90 skipped), sim 59/59, the other nextest parts all passed, mutant checks 0 broken, guest tests exit 0. Merged to main as 1c1174bb4 (rebased over backlog-only commits).
 <!-- SECTION:NOTES:END -->

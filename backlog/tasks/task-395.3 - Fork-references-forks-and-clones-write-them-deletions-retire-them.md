@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 17:37'
+updated_date: '2026-11-13 20:33'
 labels:
   - bucket
   - collector
@@ -71,4 +71,6 @@ Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on ori
 AC #4 left unchecked: the simulation and the fault rounds cover a host dying at each reference step and lose nothing, but a reference without a child is not always retired: a clone's whose host died between its reference and its record stays (TASK-395.10, excused by name in restore_faults).
 
 Review round (@claude, 2026-11-13; a6cc31ba1, 0de908c63): a clone refused by a record of its child's ID (Deleted, IdTaken) deletes the reference it wrote, test clones_refused_by_records_there_take_their_references_back; TASK-395.10's description has the case. fork_faults/restore_faults excuse exactly what a left reference keeps (testing::fork_point_keeps). record_fork re-puts the reference of a child recorded already (as the model), skipping the checkpoint's recovery; a child whose fork point's state is gone is recorded deleted with no reference (TASK-395.11).
+
+ubu1 run t395w3 on bb07304a6 (under fxjob): workspace 2596/2596 passed (90 skipped), sim 59/59, the other nextest parts all passed, mutant checks 0 broken, guest tests exit 0. Merged to main as 1c1174bb4 (rebased over backlog-only commits).
 <!-- SECTION:NOTES:END -->
