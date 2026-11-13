@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 11:27'
+updated_date: '2026-11-13 19:59'
 labels:
   - bucket
   - collector
@@ -29,7 +29,7 @@ Today any tenant can be given another tenant's point to restore, and ForkStore m
 <!-- AC:BEGIN -->
 - [x] #1 A point's record says whether it is shared; the trusted control API (and fxdaxctl) makes a point shared at its making or later, and unshares it, which stops new clones only
 - [x] #2 A clone of a point of another tenant's, by restore, ForkStore or any path, is refused unless the point is shared, checked at the read of the point's record the clone already makes; clones within a tenant are unchanged
-- [ ] #3 A clone of a shared point writes its reference under the point's cell as any clone does, and the point's cell keeps the point's state while any reference stands, deleted point or not
+- [x] #3 A clone of a shared point writes its reference under the point's cell as any clone does, and the point's cell keeps the point's state while any reference stands, deleted point or not
 - [x] #4 Tests: a tenant clones a shared base; a tenant cannot clone another's unshared point (EACCES); deleting a shared base with live clones in other tenants loses none of their data
 <!-- AC:END -->
 
@@ -49,6 +49,8 @@ Today any tenant can be given another tenant's point to restore, and ForkStore m
 4. fxdax: NotShared -> EACCES, NotPoint -> EINVAL; host_store::share / ExtentStore::share(path, shared) from the store's description (branch, bucket); daemon: SharePoint rpc, ForkStore.shared (point made, then shared; EINVAL without point); EACCES not the point store's fault (no let-go, no retry); fxdaxctl share/unshare/point --shared; go/ regenerated.
 5. Tests: record flags/format, branch::share and refusal (extent_remote); a point forks into another tenant's cell only while shared, and its clone keeps its data after the point is deleted and collected (fxdax remote.rs); fxdaxctl local share/unshare; Linux grants: restores of another tenant's point refused until shared, ForkStore of shared points into other tenants.
 6. AC #3 (references) left to TASK-395.3. Writable cross-tenant forks (ForkStore of a tenant-0 public base into a tenant's directory) left as they are: follow-up task.
+
+7. AC #3 (with TASK-395.10): collector test of a shared point cloned into another tenant: reference under the origin's cell, the point and origin deleted and swept twice keeping the clones' data, references retired once the clones go, nothing left.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -64,4 +66,6 @@ Landed on main as a19ec824a (rebased from 88f81c2d1).
 ubu1 run t395w1 on main 09863b785 (a1348601d + a19ec824a, under fxjob): workspace 2563/2563 passed (86 skipped), sim 55/55, the other nextest parts all passed, the grants.rs daemon tests (restore refused until shared, ForkStore with shared points) among them; guest tests exit 0; scripts 307 OK. One failure: crates/fxdax/mutants/forks-take-branches-claimed.patch didn't apply under GNU patch: this task's hand re-anchoring left its first hunk counting 9 of its 10 lines, with 4 lines of context before and 2 after; BSD patch on macOS took it. Fixed in 7ed0b0290. Blind spot: the mutant scripts' check ran on BSD patch on macOS, laxer than GNU's -F0. Class test: 50512c5bf, scripts/lib/patches.sh's patch_well_formed (header counts, even context away from a file's ends) in all four crates' mutant scripts, scripts/tests/test_patches.py; red on the old patch, all 68 committed patches pass. Looked around: guest/sim/lib.sh applies patches only on Linux (GNU patch), not affected.
 
 ACs #1, #2, #4 checked on t395w1's evidence: branch::tests::forks_of_points_into_other_tenants_need_them_shared, remote::tests::points_fork_into_other_tenants_cells_while_shared, fxdaxctl points_are_shared_and_unshared_locally, grants bases_made_shared_points_fork_into_other_tenants and tenants public_bases_are_shared_read_only passed on ubu1 as on macOS. #3 waits on TASK-395.3.
+
+AC #3 (@claude, 2026-11-13; 218be7c5a): collector::tests::clones_of_shared_points_in_other_tenants_keep_what_they_inherit_by_references: a shared point cloned into two cells of tenant 2 writes each reference under the origin's cell (tenant 1); point and origin deleted, two sweeps, both clones read what they inherited; clones deleted, a sweep retires both references and testing::uncollected finds nothing. Also restore_faults now unexcused, and clones write their reference after their record (TASK-395.10).
 <!-- SECTION:NOTES:END -->

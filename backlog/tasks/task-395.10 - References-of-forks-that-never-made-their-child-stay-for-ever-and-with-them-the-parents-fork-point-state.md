@@ -3,10 +3,11 @@ id: TASK-395.10
 title: >-
   References of forks that never made their child stay for ever, and with them
   the parent's fork-point state
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13 13:47'
-updated_date: '2026-11-13 15:26'
+updated_date: '2026-11-13 19:59'
 labels:
   - bucket
   - collector
@@ -25,13 +26,35 @@ Found by fxdax's restore_faults (TASK-395.3's crash rounds), and TASK-395.4's re
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A clone whose host dies between its reference and its record leaves nothing once its directory is deleted and passes ran
-- [ ] #2 fork_faults and restore_faults no longer excuse references left behind
+- [x] #1 A clone whose host dies between its reference and its record leaves nothing once its directory is deleted and passes ran
+- [x] #2 fork_faults and restore_faults no longer excuse references left behind
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Rule clonesRecordFirst: a clone creates its forking record before its reference (still before the point's read), so every clone reference has a record naming its origin, retired by its child's cell's pass whatever comes of the clone; a refused clone writes none.
+2. Rule referencesTakenBack: whoever finds a fork's child's record naming another origin or none (record_fork's read and refused create; next writer; parent's deletion) deletes the reference.
+3. Spec: both rules, mutations NoClonesRecordFirst/NoReferencesTakenBack, invariant ReferencesNamed (named by its child's record or pending), models BucketRefsTaken/BucketRefsClones; check-tla.sh under 5 min a run.
+4. Code: Rules fields, branch::fork_point/record_fork/take_back; testing::uncollected flags unnamed references (class oracle); sim Profile::forget (hosts forgetting crash-stopped restores) + leak-needs test; unit tests; remove the fault tests' excuses.
+5. doc-7, OPEN_QUESTIONS.md.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round (@claude, 2026-11-13; branch t3/395-references, 865d035af spec, 218be7c5a code and tests, cb10ab0d0 docs).
+Retirement rule: no grace period; a reference is always named by its child's record or taken back. (1) clones_record_first: a clone creates its forking record (naming the origin) before its reference, then reads the point: a host dying anywhere leaves a record the collector abandons once the point goes, and the child's cell's pass retires the reference by its origin; a refused clone writes none (the old take-back on refusal is gone with the rule on). (2) references_taken_back: whoever finds the child's record naming another origin or none deletes the reference (record_fork's read and refused create; the next writer and the parent's deletion record every fork again before a checkpoint drops it). Safe because records are kept and their origins never change. Grace-by-age rejected: a pass lists fork points by delimiter, not references, so it would list every reference (a million for a base cloned a million times) and GET each child's record every pass (OPEN_QUESTIONS.md).
+Proof: specs/bucket invariant ReferencesNamed (named by the child's record, or pending); NoClonesRecordFirst and NoReferencesTakenBack violate it (1 s each); new models BucketRefsTaken (contest, crash, delete; 1.36M states) and BucketRefsClones (clones whose hosts die; 665k) hold; check-tla.sh: Bucket, Cells, CellsPoints, Compaction, Deletions, Inherit, Own, Placements, Points, PointsDeep, Spans, SpansCollect, Twins, Wal hold, all 52 mutations fail as expected. Not run (14 min-2 h): BucketForks, BucketOverlap, BucketStrays, BucketTakeovers. TLC found one modelling slip of mine on the way (the deletion took back by records before recording; two forks to one child ID), fixed.
+Blind spots: the sim's hosts always knew their restores' children (production's unmade directory doesn't), and testing::uncollected kept any reference. Class tests: Profile::forget + profile forgotten (test_holds restores_forgotten_leave_nothing_behind, test_leaks forgotten_restores_need_clones_record_first); uncollected flags a reference whose child has no record and that no live fork pends. Looking around with that oracle found the stale recorder: a writer reads no record, the child is then deleted with none (Own) and another recorder takes back, the writer writes the reference and stops before its create (sim restores 17 and four other profiles). Narrowed (record read again after the checkpoint), not closed: no finite set of earlier lookers can; filed TASK-395.13 (marker in the child's cell, or writable forks recorded pending first), which uncollected excuses by name (child's record naming another origin or none).
+Structure: the leak class came from a write whose only retirer keys on a record that may never name it; making the clone's record precede its reference removes the class for clones; writable forks need the same shape (TASK-395.13).
+Tests: unit tests in collector.rs (see commit), fault tests unexcused (restore_faults, fork_faults all pass). macOS scripts/test.sh: clippy clean, workspace 2333/2333, sim 61/61, Shuttle all, scripts 312 OK, mutants 0 broken (forks-take-branches-claimed re-anchored, killer kills it), go ok; Linux check (zig) clean. Not run: ubu1.
+Also filed TASK-403 (deleted_forking seed 100732 fails on the base too: a log found diverged).
+<!-- SECTION:NOTES:END -->
