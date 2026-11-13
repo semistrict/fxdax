@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 09:19'
+updated_date: '2026-11-13 10:07'
 labels:
   - bucket
   - collector
@@ -28,7 +28,7 @@ With a pass per cell, collecting a bucket is running passes over all its cells: 
 <!-- AC:BEGIN -->
 - [ ] #1 `Bucket` lists by delimiter (S3, GCS, Azure, file and memory stores, and the S3 test server), and the sweep finds cells by it, never listing their objects to find them
 - [ ] #2 One process runs up to N cell passes at once (a flag); two or more processes over one bucket split the cells, a cell's lease keeping two passes off one cell, and a process dying leaves its cells to the next sweep
-- [ ] #3 Moves footers are read, and objects compacted, concurrently within a pass; deletes use the store's batch delete where it has one (S3 DeleteObjects)
+- [x] #3 Moves footers are read, and objects compacted, concurrently within a pass; deletes use the store's batch delete where it has one (S3 DeleteObjects)
 - [ ] #4 A sweep reports, per pass and in total, cells visited, requests, bytes deleted and compacted, and the slowest cells, as text and as metrics
 - [ ] #5 Measured on ubu1 against a file bucket or RustFS of at least 1M objects in 10k+ cells: a sweep's peak memory bounded by its concurrency times the largest cell, and its wall time recorded in docs/measurements
 <!-- AC:END -->
@@ -51,3 +51,17 @@ Scope of this round (agent @claude, 2026-11-13): AC #1's delimiter listing in Bu
 5. Tests: conformance gains delimiter listing and batch deletes (memory, file, simulated, S3 server; RustFS/GCS/Azurite through their ignored runs); faults wrapper fails both; S3 server request counts show a pass's deletes in DeleteObjects batches; served_in_rounds shows moves footers and compactions in one round.
 6. clippy, nextest -p extent_remote, scripts/test.sh; commit; rebase; push to main.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round 1 (@claude, 2026-11-13), commit a1348601d on main: AC #1's delimiter listing in Bucket and AC #3. AC #2 (the sweep over cells, which AC #1's second half also needs), #4 and #5 are left for after the per-cell pass (TASK-395.1-.4).
+Landed:
+- Bucket::list_delimited, required of every bucket with no fallback through a whole listing. Store uses object_store's list_with_delimiter (S3, GCS, Azure, files, memory); SimBucket/Direct have an op of their own; the S3 test server answers delimiter=/ with CommonPrefixes and counts its requests by kind; the Faulty wrapper fails it like any request.
+- Bucket::delete_batch and bucket::delete_all: batches of 1,000, 4 at once, each retried whole. Store goes through delete_stream: one DeleteObjects per batch on S3, Azure's bulk requests, single deletes 10 at once on GCS and files. The trait's default (one delete per object, 32 at once) is kept by the simulation and test doubles, so their deletes stay single requests. File buckets take their lock once per batch.
+- Store counts list-delimited and delete-batch requests (spans bucket.list_delimited and bucket.delete_batch; trace::PREFIXES); docs/tracing.md updated.
+- Collector: moves footers are read a hop at a time, every way's next hop at once (MovesMaps::read_listed, from the pass's own listing); compactions run 8 at once (COMPACTIONS_AT_ONCE); deletes go through delete_all. Ordering kept: all compactions end before the doomed set is worked out (it comes from the listing taken before, which holds none of their moves), and deletes start only after the fence check. Deletes were already unordered.
+Bug found: file buckets kept the directories of deleted objects forever, one per deleted branch, and a delimiter listing reported them as prefixes of nothing. Found by the new conformance check. Blind spot: conformance only listed whole prefixes, which skip directories. Fixed with LocalFileSystem's automatic cleanup; creates racing it are safe (a staged upload recreates its directory, and a non-empty directory is never removed). Structure: fine, a one-line setting.
+Tests: conformance (memory, file, simulated, S3 server; RustFS/GCS/Azurite through their ignored runs) lists by delimiter and deletes a batch; faults::requests_fail_as_their_faults_say; store::s3_deletes_in_batches_and_lists_by_delimiter (2,500 deletes in 3 DeleteObjects, 0 DELETE, 1 delimiter listing); collector::passes_delete_in_batches_over_s3 (a pass's 5 deletes in 1 DeleteObjects); collector::passes_compact_and_read_moves_at_once (5 compactions, 5 moves footers and 5 deletes, each in one round).
+Verified: cargo clippy -p extent_remote -p extent_store --all-targets clean for these changes (3 pre-existing warnings elsewhere); cargo nextest run -p extent_remote 240 passed, 9 skipped; scripts/test.sh passed (workspace 2290/2290, sim 55, shuttle 37 and the rest, scripts 307 OK, mutant checks, go). Two fxdax remote tests that listed every request kind were updated. No ubu1 run (the parent batches one). Decisions in OPEN_QUESTIONS.md.
+<!-- SECTION:NOTES:END -->
