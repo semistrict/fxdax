@@ -59,9 +59,16 @@ patched() { # name
     echo "$copy/$model"
 }
 
+# patch_well_formed (scripts/lib/patches.sh): whether a patch applies with no fuzz on every host.
+source scripts/lib/patches.sh
+
 broken=0
 if [[ -n $check ]]; then
     for name in "${names[@]}"; do
+        if ! patch_well_formed "$mutants/$name.patch"; then
+            broken=$((broken + 1))
+            continue
+        fi
         if ! copy=$(patched "$name"); then
             echo "$name doesn't apply" >&2
             broken=$((broken + 1))

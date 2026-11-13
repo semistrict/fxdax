@@ -40,33 +40,13 @@ if [[ ${#names[@]} == 0 ]]; then
     done
 fi
 
-# Whether a patch applies and reverses, leaving the files it changes as they were, in a copy of them.
-round_trip() { # patch
-    local copy file status=0
-    copy=$(mktemp -d)
-    for file in $(sed -n 's|^+++ b/||p' "$1"); do
-        mkdir -p "$copy/$(dirname "$file")"
-        cp "$file" "$copy/$file"
-    done
-    if ! patch -s -F0 -p1 -d "$copy" < "$1" > /dev/null; then
-        echo "$1 doesn't apply" >&2
-        status=1
-    elif ! patch -s -F0 -R -p1 -d "$copy" < "$1" > /dev/null; then
-        echo "$1 doesn't reverse" >&2
-        status=1
-    else
-        for file in $(sed -n 's|^+++ b/||p' "$1"); do
-            cmp -s "$file" "$copy/$file" || { echo "$1: $file isn't as it was, reversed" >&2; status=1; }
-        done
-    fi
-    rm -r "$copy"
-    return $status
-}
+# patch_round_trip (scripts/lib/patches.sh): whether a patch is well formed, applies and reverses.
+source scripts/lib/patches.sh
 
 broken=0
 if [[ -n $check ]]; then
     for name in "${names[@]}"; do
-        round_trip "$mutants/$name.patch" || broken=$((broken + 1))
+        patch_round_trip "$mutants/$name.patch" || broken=$((broken + 1))
     done
     echo "mutants: ${#names[@]} checked, $broken broken"
     exit $((broken > 0))
@@ -75,7 +55,7 @@ fi
 printf '%-42s %-8s %s\n' mutant time 'found by'
 for name in "${names[@]}"; do
     patch=$mutants/$name.patch
-    if ! round_trip "$patch"; then
+    if ! patch_round_trip "$patch"; then
         printf '%-42s %-8s %s\n' "$name" - "BROKEN: its patch doesn't apply"
         broken=1
         continue
