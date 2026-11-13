@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 14:30'
+updated_date: '2026-11-13 14:59'
 labels:
   - bucket
   - collector
@@ -26,10 +26,10 @@ Moves objects live at `moves/<key>` (and `moves/moves/...`), so a cell's compact
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Moves of a cell's objects, and moves of those moves, have keys under the cell's prefix; readers following an object's moves find them there
-- [ ] #2 Each cell has a collector lease key under its prefix; `gc/lease` is gone
-- [ ] #3 Fork references have keys under the parent's cell naming the parent branch, the fork point and the child (tenant, cell, branch), laid out so that one delimiter listing gives a branch's distinct fork points
-- [ ] #4 `layout::kind` parses the new keys and `layout::owner` attributes every one to its cell; a bucket of format 7 is refused by name
+- [x] #1 Moves of a cell's objects, and moves of those moves, have keys under the cell's prefix; readers following an object's moves find them there
+- [x] #2 Each cell has a collector lease key under its prefix; `gc/lease` is gone
+- [x] #3 Fork references have keys under the parent's cell naming the parent branch, the fork point and the child (tenant, cell, branch), laid out so that one delimiter listing gives a branch's distinct fork points
+- [x] #4 `layout::kind` parses the new keys and `layout::owner` attributes every one to its cell; a bucket of format 7 is refused by name
 <!-- AC:END -->
 
 ## Definition of Done
@@ -62,4 +62,6 @@ Landed:
 - Readers: MovesMaps::read and fetch follow the new keys; marks::Watch holds marks per cell, a cell's refreshed every REFRESH alongside a read of that cell (Store::refresh_marks(cell)); the collector's census of a cell isn't logged.
 Where code differs from the spec: none in layout; marks per cell cost a LIST a minute per cell read (OPEN_QUESTIONS.md, Decisions).
 Tests: layout::tests (a_cells_objects_are_under_its_tenants_prefix, references_list_by_parent_then_fork_point, moves_are_further_along_the_way_in_their_cell, objects_of_no_cell_have_no_moves, kinds, owners), cell::tests::cells_are_listed_by_their_prefixes, marks::tests (per cell), store::tests::stores_warn_of_reading_what_the_newest_marks_name (two cells), fxdax-gc unit + tests/gc.rs (usage over the new keys, file bucket layout).
+
+Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on origin/main c6ba0d117): scripts/test.sh before the rebase exit 0: clippy clean, workspace 2315/2315, sim 59/59, Shuttle 37+10+33+6+10+18 all passed, scripts 312 OK, mutant checks 0 broken, go ok. After it: clippy gate clean, nextest extent_remote+extent_store+fxdax 807/807, sim 59/59, mutant checks 0 broken. Commits 1d07b12e8 (code and tests), a05be7dc2 (doc-7, OPEN_QUESTIONS.md), 675fd333b (backlog). Not run: ubu1 (the parent's), TLA+ (specs untouched). Flake seen once under load, outside this change: TASK-399.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 14:30'
+updated_date: '2026-11-13 14:59'
 labels:
   - bucket
   - collector
@@ -28,11 +28,11 @@ Replaces the whole-bucket pass. A pass over one cell takes the cell's collector 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A pass over a cell makes no LIST outside the cell's prefix and deletes nothing outside it; its memory and requests grow with the cell's objects, branches and references, not the bucket's (shown by a test counting requests and listed objects over a bucket of many cells)
-- [ ] #2 A pass keeps everything the parent state at each referenced fork point needs (objects, moves ways, what recovering it reads), and a fork point's state shared by many references (a point cloned many times) is recovered once
-- [ ] #3 A cell with no live branch and no references is reclaimed whole, but its cell object (kept, doc-7)
-- [ ] #4 The whole-bucket pass and `gc/lease` are removed; `--dry-run`, `--mark-only`, `--branches` and `--delete-branch` work per cell or over all cells
-- [ ] #5 Every existing collector test, the simulation, Shuttle and crash-round suites pass against the per-cell collector
+- [x] #1 A pass over a cell makes no LIST outside the cell's prefix and deletes nothing outside it; its memory and requests grow with the cell's objects, branches and references, not the bucket's (shown by a test counting requests and listed objects over a bucket of many cells)
+- [x] #2 A pass keeps everything the parent state at each referenced fork point needs (objects, moves ways, what recovering it reads), and a fork point's state shared by many references (a point cloned many times) is recovered once
+- [x] #3 A cell with no live branch and no references is reclaimed whole, but its cell object (kept, doc-7)
+- [x] #4 The whole-bucket pass and `gc/lease` are removed; `--dry-run`, `--mark-only`, `--branches` and `--delete-branch` work per cell or over all cells
+- [x] #5 Every existing collector test, the simulation, Shuttle and crash-round suites pass against the per-cell collector
 <!-- AC:END -->
 
 ## Definition of Done
@@ -68,4 +68,6 @@ Ported tests: every existing collector/sim/fault test runs against the per-cell 
 New tests: passes_over_a_cell_list_and_delete_within_it_alone (AC #1: no LIST/PUT/DELETE outside the cell but the retirement; identical requests with 3 or 30 other cells), fork_points_shared_by_many_references_are_recovered_once (1 clone vs 8: same requests, the fork point's segment read once), references_hold_while_their_childrens_cells_hold_references (AC #3: dead cells reclaimed whole but records), fork_points_kept_for_children_in_other_cells_need_what_recovering_them_reads, fxdax-gc passes_and_lists_go_over_a_cell_or_all, sweeps_say_what_their_passes_did, tests/gc.rs --cell and --branches --cell.
 Simulation: the per-cell passes moved the seeds of five rules' searches, which then found nothing in 20,000: Profile::one_cell (chance of a pass over one branch's cell alone, default 0.5); deleted_forking and recreated sweep only (records_reread, newest_checkpoint found again); takeovers_need_takings_pinned searches recreated (late_checkpoints found none in 60,000); collector_abandons now also gates the clone give-up (without it the give-up hid the rule's case); candidates_first searches a new profile fresh_cells (passes over one cell, the child's among them before its record; every sim fork is to a cell of its own), with a soak passes_over_cells_being_made. New searches: collection_needs_references, _fork_points_kept, _references_held (each found within a few seeds); records_listed_after_states turns references off too, as its TLA+ mutation.
 Upload's Shuttle tests gate a cell's whole listing, a pass's of its candidates, as they gated the bucket's.
+
+Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on origin/main c6ba0d117): scripts/test.sh before the rebase exit 0: clippy clean, workspace 2315/2315, sim 59/59, Shuttle 37+10+33+6+10+18 all passed, scripts 312 OK, mutant checks 0 broken, go ok. After it: clippy gate clean, nextest extent_remote+extent_store+fxdax 807/807, sim 59/59, mutant checks 0 broken. Commits 1d07b12e8 (code and tests), a05be7dc2 (doc-7, OPEN_QUESTIONS.md), 675fd333b (backlog). Not run: ubu1 (the parent's), TLA+ (specs untouched). Flake seen once under load, outside this change: TASK-399.
 <!-- SECTION:NOTES:END -->

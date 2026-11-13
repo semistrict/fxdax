@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 14:30'
+updated_date: '2026-11-13 14:59'
 labels:
   - bucket
   - collector
@@ -25,9 +25,9 @@ A per-cell collector keeps what forks in other cells inherited only if it can se
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A writable fork's child record, by whoever writes it (the fork's host, the parent's writers recovering, the parent's deletion), is preceded by its reference, of bytes unique to the fork (its owner) so that every writer writes the same
-- [ ] #2 A clone of a point writes its reference before its forking record, and before reading the point's record
-- [ ] #3 A deleted child's reference is removed by its cell's collector pass only once the child's cell holds no references itself
+- [x] #1 A writable fork's child record, by whoever writes it (the fork's host, the parent's writers recovering, the parent's deletion), is preceded by its reference, of bytes unique to the fork (its owner) so that every writer writes the same
+- [x] #2 A clone of a point writes its reference before its forking record, and before reading the point's record
+- [x] #3 A deleted child's reference is removed by its cell's collector pass only once the child's cell holds no references itself
 - [ ] #4 The simulation (extent_remote sim) and crash rounds cover a host dying between each pair of steps: no live branch loses data, and a reference without a child is retired
 <!-- AC:END -->
 
@@ -65,4 +65,8 @@ Where code differs from the spec:
 - record_fork reads the child's record before the reference, and writes none for a child deleted or another's: nothing inherits through it, and nothing would retire it (fork_faults found both: a fork deleted before its host knew its origin, recorded Own; an ID taken). The model writes it whatever the record. A GET more per fork across cells.
 - References that are never retired (a clone's host dying between its reference and its record; an ID taken between the read and the create): space, never data, as the model too has them. Filed TASK-395.10; restore_faults/fork_faults excuse exactly those, naming it.
 Tests: collector::tests writable_forks_refer_before_their_childrens_records, clones_refer_before_their_records_and_their_points_read, deletions_refer_before_they_mark_parents_deleted (+ _need_references_first), clones_keep_what_they_inherit_as_their_points_go (+ _need_clones_refer_first), references_hold_while_their_childrens_cells_hold_references (+ _need_references_held), fork_points_keep_what_children_in_other_cells_inherit (+ _need_references), dry_runs_and_mark_only_passes_retire_nothing; mutant patch forks-take-branches-claimed re-anchored to the read-first refusal.
+
+Verified on macOS (branch t3/395-per-cell-collector at 675fd333b, rebased on origin/main c6ba0d117): scripts/test.sh before the rebase exit 0: clippy clean, workspace 2315/2315, sim 59/59, Shuttle 37+10+33+6+10+18 all passed, scripts 312 OK, mutant checks 0 broken, go ok. After it: clippy gate clean, nextest extent_remote+extent_store+fxdax 807/807, sim 59/59, mutant checks 0 broken. Commits 1d07b12e8 (code and tests), a05be7dc2 (doc-7, OPEN_QUESTIONS.md), 675fd333b (backlog). Not run: ubu1 (the parent's), TLA+ (specs untouched). Flake seen once under load, outside this change: TASK-399.
+
+AC #4 left unchecked: the simulation and the fault rounds cover a host dying at each reference step and lose nothing, but a reference without a child is not always retired: a clone's whose host died between its reference and its record stays (TASK-395.10, excused by name in restore_faults).
 <!-- SECTION:NOTES:END -->
