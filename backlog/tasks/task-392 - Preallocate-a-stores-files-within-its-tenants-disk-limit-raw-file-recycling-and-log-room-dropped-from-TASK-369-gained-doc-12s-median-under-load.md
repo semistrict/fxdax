@@ -3,9 +3,11 @@ id: TASK-392
 title: >-
   Preallocate a store's files within its tenant's disk limit: raw-file recycling
   and log room, dropped from TASK-369, gained doc-12's median under load
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-13 00:02'
+updated_date: '2026-11-13 09:31'
 labels:
   - performance
   - extent_store
@@ -43,7 +45,7 @@ Find a way that keeps the gain within the limit. Options: admit the preallocatio
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 A pgbench/pgbench-dax A/B on ubu1 keeps recycling's durable-lag gain (doc-12's median), io per guest byte within 0.02 of main's
-- [ ] #2 Linux's tenant disk tests pass (hostile.rs, disk.rs), and serves_hundreds_of_forks_of_a_base
+- [x] #2 Linux's tenant disk tests pass (hostile.rs, disk.rs), and serves_hundreds_of_forks_of_a_base
 <!-- AC:END -->
 
 ## Definition of Done
@@ -52,3 +54,28 @@ Find a way that keeps the gain within the limit. Options: admit the preallocatio
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-13, measured on branch t3/392-preallocation-admitted (local only, not pushed; head d06dfb1d6):
+- **Design (option 1, the user's choice):** a store's preallocated files are its tenant's. Before making its spare raw file, spare logs or logs' room, a store has its tenant's disk admit them as a write is admitted (extent_store::TenantDisk, extentd's Disk::admit_ahead); none are made past the limit. When a write of the tenant's is refused, the store's next flush drops what it kept, and nothing more is made ahead until a write is admitted again.
+- **Linux tests:** the four that failed now pass with their limits unchanged (hostile a_tenant_filling_its_disk_leaves_others_committing and a_compromised_vm_process_harms_no_tenant_beside_it, disk.rs tenants_past_their_disk_limits_are_refused_while_others_write, serves_hundreds_of_forks_of_a_base).
+- **Suites:**
+  - Linux suite on ubu1 (one job, --test-threads 4): 2,558/2,559. The one failure is TASK-315's page-cache test, which fails on main too.
+  - Crash loop: 10/10.
+  - macOS scripts/test.sh: clippy, workspace 2,289/2,289, sim 55, Shuttle 37, all green.
+- **Daemon test** (durable_commits_through_the_daemon, ubu1, bucket on /dev/shm at 25 ms, 5 interleaved runs under fxjob --bench, each side its own target, the binary checked for a TASK-392-only string): main (4e0bf82f5) 34.3-34.6 ms median rounds, TASK-392 34.1-34.6 ms. No gain.
+- **The one gain seen earlier:** under load, recycling took doc-12's share within 50 ms from 56% to 68% (pgbench), at about 10% more host disk writes (TASK-369's A/B, before TASK-384). main now reaches about 82% within 50 ms on quiet pgbench (TASK-369's lean A/B).
+- The loaded A/B against main was stopped before its first round ended (the user's choice).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as not worth it (the user's choice, without the loaded A/B).
+- Counting a store's preallocated files as its tenant's (option 1) made Linux's disk tests pass with their limits unchanged; the suites and the crash loop were green.
+- But the daemon test showed no gain over main: 34.1-34.6 ms vs 34.3-34.6 ms.
+- The one earlier gain, doc-12's share within 50 ms under load (56% to 68%), cost about 10% more disk writes, and main now reaches about 82% on quiet pgbench.
+- The code stays on the local branch t3/392-preallocation-admitted for reference; not pushed.
+<!-- SECTION:FINAL_SUMMARY:END -->
