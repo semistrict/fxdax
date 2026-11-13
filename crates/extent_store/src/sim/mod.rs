@@ -341,10 +341,13 @@ fn deleted_forking() -> Profile {
 
 test_holds!(branches_deleted_twice_while_forking, deleted_forking());
 
-// None of seeds 0..20,000 found it once a pass read its cell before taking its lease (TASK-395.4's
-// review); since record_fork reads the child's record again after the checkpoint (TASK-395.10),
-// seed 8,363 does, and none of 20,000..100,000.
-test_needs!(deletions_need_fences, deletions_fence, deleted_forking());
+// The seeds that find it move with every change of the collector's requests: 32,625 and others
+// once a pass read its cell before taking its lease (TASK-395.4's review), 8,363 once record_fork
+// read the child's record again (TASK-395.10), and 113,765 alone of 0..120,000 once passes skipped
+// unchanged cells and held them for a time (TASK-395.5, .6). Searched from 110,000: seeds 36,924,
+// 76,898 and 99,084 fail without the rule as with it, a store's log found diverged, TASK-403's
+// bug, which says nothing of this rule (TASK-403 names them).
+test_needs!(deletions_need_fences, deletions_fence, deleted_forking(), 110_000..120_000);
 
 // A deletion begun as another marks the branch deleted, recovering once a pass deleted that one's
 // fence and a writer's segment of a fork, taken over, landed where it was: the fork's child,
