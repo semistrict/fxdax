@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-12 13:42'
-updated_date: '2026-11-13 00:03'
+updated_date: '2026-11-13 01:40'
 labels:
   - performance
   - extent_store
@@ -26,7 +26,7 @@ TASK-369's clean daemon comparison (crates/fxdax/src/extentd/tests.rs durable_co
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 durable_commits_through_the_daemon on ubu1's ext4 scratch disk with the bucket on /dev/shm: median round within 5 ms of the bucket's round trip
-- [ ] #2 Crash tests and the sim show no commit acknowledged durable is lost; the recovery rule that makes it safe is written in doc-12 (and the TLA+ model if it covers it)
+- [x] #2 Crash tests and the sim show no commit acknowledged durable is lost; the recovery rule that makes it safe is written in doc-12 (and the TLA+ model if it covers it)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -59,4 +59,6 @@ TASK-369's clean daemon comparison (crates/fxdax/src/extentd/tests.rs durable_co
 - A first version let the acknowledgement go through before the framed file was durable. That left acknowledged segments' files in the store until the next acknowledgement, so page-ins missed the host's cache, and fxdax's remote tests failed (2 hung). So an acknowledgement now waits for the syncs, which the bucket's round trip mostly outlasts.
 - commits_wait_at_the_lag_bound_in_bytes hung once in about 60 runs with the uploader faster (once in 354 on main): the uploader closing the segment between the second commit's write and its commit put a block more in the lag. The test now bounds the lag at three blocks and its third commit writes two (600/600 runs).
 - Landed on TASK-369's lean version, without log room: placed logs carry a header alone.
+
+On t3/369-lean (no log room): durable_commits_through_the_daemon on ubu1, bucket on /dev/shm at 25 ms, 5 interleaved runs: main 39.6-42.8 ms (median 39.7), lean 35.2-45.1 (median 35.5); round trip 30.1-30.6. AC #1 is on its line, 5 ms. With TASK-369's log room it was 32.0: without room each log append grows the file, its sync a journal commit again. TASK-392 is the room within a tenant's disk limit. AC #2: the crash test segments_upload_before_their_framed_files_are_durable, Shuttle and the sim green; doc-12 updated.
 <!-- SECTION:NOTES:END -->

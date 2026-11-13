@@ -4,11 +4,11 @@ title: >-
   With TASK-310, pgbench-dax's durable-lag tail grows on ubu1's shared disk:
   flushes wait 2-15 s on log syncs while a batch makes framed segments durable
   (p99 1152 ms vs main's 256)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-11 22:52'
-updated_date: '2026-11-13 00:02'
+updated_date: '2026-11-13 01:53'
 labels:
   - extent_store
   - durability
@@ -27,15 +27,15 @@ TASK-310's A/B on ubu1 (2026-11-11, main 04280b595's base cf757b22e vs TASK-310,
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Which syncs the slow flushes wait behind, shown by a trace
-- [ ] #2 pgbench-dax's durable lag p99 back to main's, slowest framing kept under 1 s, by an A/B on ubu1
+- [x] #1 Which syncs the slow flushes wait behind, shown by a trace
+- [x] #2 pgbench-dax's durable lag p99 back to main's, slowest framing kept under 1 s, by an A/B on ubu1
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -65,4 +65,24 @@ Next: rebase on TASK-371 (one durable commit per sync, same path) when it lands,
   - durable_commits_through_the_daemon on a quiet ubu1 (bucket on /dev/shm, 25 ms, 5 interleaved runs): main 39.2-40.6 ms median rounds, with room and recycling 39.6-42.9, without them 39.8-42.2. Nothing.
   - Recycling's one gain: doc-12's median under load, within 50 ms 68% vs 56% (pgbench) and 63% vs 52% (pgbench-dax). Its cost: about 10% more host writes and up to a segment of disk per store. Filed as TASK-387.
 - The daemon test's gain is TASK-384's: 32.0 ms against a 30.1-30.6 ms round trip.
+
+Validation on t3/369-lean, rebased on main f926e1488:
+- macOS scripts/test.sh (clippy, workspace 2282/2282, sim 53, Shuttle 37, the rest) green.
+- Linux on ubu1 (fxjob) green but for: TASK-315's page-cache test (ZFS target dir, fails on main too); fork_faults' host-death copy, which raced the stores' renames and was fixed (10/10 runs after); Go, not installed on ubu1.
+- pgbench A/B, lean vs main, 3 quiet interleaved rounds (/mnt/fxdax-scratch/t369/ab9-pg), all 12 runs within doc-12's median:
+  - pgbench: within 50 ms 81.9% vs 79.2%, p50 32 vs 64 ms, p99 128 vs 128 ms, max 466 vs 300 ms, tps 3005 vs 3015, io per guest byte 1.32 vs 1.32.
+  - pgbench-dax: within 50 ms 81.7% vs 76.1%, p50 32 vs 64 ms, p99 128 vs 256 ms, max 378 vs 1158 ms, slowest framing 105 vs 124 ms, tps 3102 vs 3075.
+- Daemon test, quiet-ish ubu1: main 39.7 ms median rounds, lean (with TASK-384) 35.5.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+pgbench-dax's durable-lag tail is back under main's (p99 128 vs 256 ms, max 378 vs 1158 ms, 3 interleaved rounds on ubu1).
+- **Changed:**
+  - A flush marks the entries it synced, so a making of framed segments durable syncs only its own.
+  - The next segment's log is prepared off the state lock, by a flush that made commits durable (TASK-333).
+  - Recovery takes a log as its segment's only if its header names it.
+- **Dropped:** raw-file recycling and log room. They broke tenant disk limits and bought nothing in the daemon test on a quiet host; TASK-392 follows them up.
+- **Verified:** macOS and Linux suites, Shuttle, sim, crash loop, the pgbench A/B, the daemon test.
+<!-- SECTION:FINAL_SUMMARY:END -->
