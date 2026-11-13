@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 07:25'
-updated_date: '2026-11-13 11:59'
+updated_date: '2026-11-13 15:13'
 labels:
   - testing
   - ci
@@ -64,4 +64,6 @@ Sized to fit 16 GiB at LangSmith's shape (2 hosts, 16 VMs 8 at a time, 8-vCPU bu
 2026-11-13 (claude): second long-mode pass, main 10f613290 (soak off), ubu1 fxjob --bench --mem 16G, 11:15:17-11:28:28 UTC: FAILED the framing check alone: host-b framed 1 segment in 1,045.0 ms (own 0.0, write 1,045.0: all write phase, no sync), host-a's slowest 908.3 ms (685/685 logged slow, sum 94.1/90.1 s). Everything else passed: VMs 755.5 s, stores 1.21x the guests' 73.8 GiB, no memory-guard stop (peak RSS 3.22/3.32 GB, anon 1,010 MiB at most), daemon CPU 14.47 ms per guest MiB of 20 (28% headroom), commands <= 86 ms; durable lag 59.1%/61.0% within 50 ms, p50 <=64 ms, p99 <=512 ms, max 4.40/2.32 s. Clean: zd0's writes not the bench's at most 12.1 MB/s (mostly 1-2), fxdax-work.slice's at most 1 MB/s. The run's cgroup CPU pressure (some avg10) reached 65%: 28 vCPUs on 8 CPUs starve the framer's write phase, TASK-336's cause, now on ubu1 too. So the framing check is marginal on main under bench: slowest 949 ms (pass 1) and 1,045 ms (pass 2). AC #1 not met; open until TASK-336.
 
 2026-11-13 (claude): the soak under fxjob --bench, main 10f613290, 11:29:09-11:59:15 UTC (qualify.sh's soak part alone, 1,800 s, RustFS through the faulty proxy): PASSED, clean (zd0's other writes at most 1.4 MB/s, work 0). Bucket faults said: 73 in the full phase, 22 more out of service (95 in all), none answering or slow. Daemon CPU 5.45 ms per guest MiB of the soak's 20 (84.2 s), anon 1,630 of 2,947 MiB, uploads 1,533 of 1,536 MiB, disk 15.2 GiB for the guests' 15,360 MiB (1.008x), stores uploaded 14.6-20.4 s after the bucket answered, longest fsync 251 s (the outage). TASK-382's soak budget confirmed under bench.
+
+2026-11-13 (claude, TASK-336's agent): long mode on ubu1 (fxjob --bench --mem 16G), afternoon, three passes, all failing the framing check alone on the disk: main 487f443a8 5 past 1 s (slowest 1.65 s); main c6ba0d117 19 (slowest 5.77 s; read phases of raw files evicted under the cgroup, TASK-400, and write-back waits, TASK-401); main before TASK-336 (c211ff96) 11 (slowest 2.97 s). Durable lag within 50 ms 36-60%, max 5.1-12.6 s, against this morning's 59-65% and 1.7-4.4 s: ubu1's disk degraded through the day (the same build's short mode 72% -> 36-46% within 50 ms, its I/O stall 3 -> 9-27 s; host swap full, other users' apps resident), so passes hours apart don't compare; compare within ABBA rounds. Everything else passed each time: stores 1.20-1.21x, daemon CPU 14.3-15.3 ms per guest MiB of 20, commands < 100 ms, no memory-guard stop. AC #1 waits on TASK-400 and TASK-401.
 <!-- SECTION:NOTES:END -->
