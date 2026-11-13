@@ -3,11 +3,11 @@ id: TASK-395.5
 title: >-
   fxdax-gc sweeps every cell with bounded concurrency, across any number of
   collector processes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 23:00'
+updated_date: '2026-11-13 23:50'
 labels:
   - bucket
   - collector
@@ -30,7 +30,7 @@ With a pass per cell, collecting a bucket is running passes over all its cells: 
 - [x] #2 One process runs up to N cell passes at once (a flag); two or more processes over one bucket split the cells, a cell's lease keeping two passes off one cell, and a process dying leaves its cells to the next sweep
 - [x] #3 Moves footers are read, and objects compacted, concurrently within a pass; deletes use the store's batch delete where it has one (S3 DeleteObjects)
 - [x] #4 A sweep reports, per pass and in total, cells visited, requests, bytes deleted and compacted, and the slowest cells, as text and as metrics
-- [ ] #5 Measured on ubu1 against a file bucket or RustFS of at least 1M objects in 10k+ cells: a sweep's peak memory bounded by its concurrency times the largest cell, and its wall time recorded in docs/measurements
+- [x] #5 Measured on ubu1 against a file bucket or RustFS of at least 1M objects in 10k+ cells: a sweep's peak memory bounded by its concurrency times the largest cell, and its wall time recorded in docs/measurements
 <!-- AC:END -->
 
 ## Definition of Done
@@ -96,4 +96,12 @@ Integration (@claude, 2026-11-13, branch t3/395-integrated, on TASK-395.6/.8 and
 Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 
 ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1. AC #5's measurement runs on ubu1 (run t395sweep on 22602dbd1).
+
+AC #5: ubu1 run t395sweep on main 22602dbd1 under fxjob --bench, 1,000,855 objects in 10,000 cells (largest 955 objects): peak memory 28/27/29/49 MiB at 1/4/16/64 passes at once (second sweeps 25-59 MiB), bounded by passes in flight; wall time 629/320/492/395 s first sweeps, 196/160/318/252 s second. Recorded in docs/measurements/ubu1-gc-sweep-2026-11-13T2259Z-50e7eb9e. Found: no speed-up past 4 at once (TASK-395.15); 7 LISTs and a delimited LIST per pass (TASK-395.16).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxdax-gc sweeps every cell: cells found by paged delimiter listings, streamed; up to --at-once passes (default 16) in one process; several processes split a bucket by cell leases held for --lease, renewed and released, a dead process's cells taken by the next sweep once its leases expire; batch deletes (S3 DeleteObjects), concurrent footer reads and compactions within a pass; per-pass and total reports as text and a Prometheus file (--metrics). Measured on ubu1 over 1M objects in 10k cells: 25-59 MiB peak whatever the concurrency, 160-629 s a sweep. Verified by the request-counting and two-process tests, the macOS suite and ubu1 runs t395w4/t395w5. Follow-ups: TASK-395.15 (scaling past 4 at once), TASK-395.16 (LISTs per pass).
+<!-- SECTION:FINAL_SUMMARY:END -->
