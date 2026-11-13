@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 19:12'
+updated_date: '2026-11-13 21:55'
 labels:
   - bucket
   - collector
@@ -90,4 +90,8 @@ Decisions in OPEN_QUESTIONS.md.
 Bug found by the simulation (first scripts/test.sh run: 8 sim profiles failed with "collector: the cell is left to another pass of the collector, which holds it"). A pass holding its cell for no time (tests, the sim) read the clock before reading the lease and wrote until = that time. A racing lease-0 pass that took the lease in between looked unexpired, so the cell was left as held. Blind spot: the lease tests never raced two lease-0 passes while the clock moved, and the sweep tests use leases of a minute. Fix: lease-0 passes write until 0 (holding nothing), and every take reads the clock when it decides, after its read. The sim's profiles are the class test; they pass with the fix. Structure: fine; the clock read is now in the one place that decides.
 Verified (macOS, commit a02dc9fa6): cargo check --workspace --tests clean; cargo clippy --workspace --tests (nothing new but pre-existing warnings); scripts/test.sh exit 0 (clippy gate, workspace 2334/2334, sim 59/59, Shuttle 37+10+6+33+10+18, scripts 313 OK, mutant checks 0 broken, go ok); cargo nextest -p extent_remote 278/278 after the last edits; the Linux check (zig cross, cargo check --workspace --tests --target x86_64-unknown-linux-gnu) clean. Not run: ubu1 (the parent's).
 To measure (AC #5), from a clean tree: FXDAX_HOST_RUN=<run> FXDAX_HOST_COMMIT=<head of t3/395-sweep> scripts/gc-sweep-host.sh
+
+Integration (@claude, 2026-11-13, branch t3/395-integrated, on TASK-395.6/.8 and .10/.11): the lease merged with TASK-395.6's record (passed::GcLease, layout::GcLease gone; see TASK-395.6's notes); the letting go writes the record. sweep::Passed renamed sweep::Ran. Report::skipped; fxdax-gc lines and metrics count cells skipped unchanged (fxdax_gc_sweep_cells{outcome="skipped"}). cell::listed composed of cell::tenants and cell::of_tenant over bucket::prefixes, shared with --usage. cells_are_listed_a_page_at_a_time unchanged and passing. A skipping pass with a lease held for a time costs GET+PUT (take), LIST, GET+PUT (let go): 5 requests an idle cell; letting go by the version the taking wrote would save a GET (not done: transition doesn't return the written version).
+
+Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13 13:47'
-updated_date: '2026-11-13 19:59'
+updated_date: '2026-11-13 21:55'
 labels:
   - bucket
   - collector
@@ -57,4 +57,6 @@ Blind spots: the sim's hosts always knew their restores' children (production's 
 Structure: the leak class came from a write whose only retirer keys on a record that may never name it; making the clone's record precede its reference removes the class for clones; writable forks need the same shape (TASK-395.13).
 Tests: unit tests in collector.rs (see commit), fault tests unexcused (restore_faults, fork_faults all pass). macOS scripts/test.sh: clippy clean, workspace 2333/2333, sim 61/61, Shuttle all, scripts 312 OK, mutants 0 broken (forks-take-branches-claimed re-anchored, killer kills it), go ok; Linux check (zig) clean. Not run: ubu1.
 Also filed TASK-403 (deleted_forking seed 100732 fails on the base too: a log found diverged).
+
+Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 <!-- SECTION:NOTES:END -->

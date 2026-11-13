@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13 15:51'
-updated_date: '2026-11-13 19:59'
+updated_date: '2026-11-13 21:55'
 labels:
   - bug
   - bucket
@@ -48,4 +48,6 @@ Found by the simulation's points_restored_on_many_hosts_at_once, seed 11 (restor
 
 <!-- SECTION:NOTES:BEGIN -->
 Round (@claude, 2026-11-13; 218be7c5a). Seed 11 no longer reached the path (seeds moved); a temporary panic on record_fork's Lost arm and a search of restores found seed 2545. Cause: a stale read, not a stale state. The writer acknowledged a sound fork; record_fork read the child's record (none), and before checkpoint_at the child was deleted by its host (branch::delete of a child with no record: a deleted Kind::Own), the parent's checkpoint dropped the fork (child deleted), and a pass freed the fork point; checkpoint_at then failed Lost. The structure does not let a writer acknowledge a fork whose state is gone: the state at a fork point goes only once the child is deleted (the parent's state names the fork until a checkpoint drops it, which a deleted child alone lets; the parent's deletion records the child before marking the parent deleted). Fix: record_fork reads the child's record again after the checkpoint (narrowing TASK-395.10's stale-recorder window too) and goes by it; on Lost with none there it fails Lost (would break the argument). The deleted-record path is gone. Test forks_recorded_after_their_children_went_record_nothing reproduces the real interleaving (Hooked after-get hook: child deleted, next writer checkpoints, sweep) instead of the old fabricated state; failed_forks_across_cells_of_a_state_gone_are_deleted_from_the_first keeps delete_fork's case. doc-7 and OPEN_QUESTIONS.md updated.
+
+Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 19:59'
+updated_date: '2026-11-13 21:55'
 labels:
   - bucket
   - collector
@@ -68,4 +68,6 @@ ubu1 run t395w1 on main 09863b785 (a1348601d + a19ec824a, under fxjob): workspac
 ACs #1, #2, #4 checked on t395w1's evidence: branch::tests::forks_of_points_into_other_tenants_need_them_shared, remote::tests::points_fork_into_other_tenants_cells_while_shared, fxdaxctl points_are_shared_and_unshared_locally, grants bases_made_shared_points_fork_into_other_tenants and tenants public_bases_are_shared_read_only passed on ubu1 as on macOS. #3 waits on TASK-395.3.
 
 AC #3 (@claude, 2026-11-13; 218be7c5a): collector::tests::clones_of_shared_points_in_other_tenants_keep_what_they_inherit_by_references: a shared point cloned into two cells of tenant 2 writes each reference under the origin's cell (tenant 1); point and origin deleted, two sweeps, both clones read what they inherited; clones deleted, a sweep retires both references and testing::uncollected finds nothing. Also restore_faults now unexcused, and clones write their reference after their record (TASK-395.10).
+
+Merged with TASK-395.5/.6/.8 on t3/395-integrated (cherry-picked unchanged; conflicts only in collector tests and docs). Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 <!-- SECTION:NOTES:END -->

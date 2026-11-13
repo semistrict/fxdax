@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-13 18:38'
+updated_date: '2026-11-13 21:55'
 labels:
   - bucket
   - collector
@@ -34,3 +35,11 @@ Found by the simulation (seed 53 of restores) once TASK-395.6 skipped unchanged 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Integration (@claude, 2026-11-13, branch t3/395-integrated): checked whether TASK-395.10's second read of the child's record in branch::record_fork rules the re-creation out. It does not: the second read is made only when the first found no record. A writer whose first read finds the child's record live and its own (Some, is_child_of) goes on to refer_fork, writing the reference again (rule references_first), then its create stops on the record it read (Start::Found, no read again) and returns Ok. Between that read and that write the child may be deleted and its dead cell's pass retire the reference: the write lands after, seed 53's order, unchanged. So the per-pass re-retirement of a dead cell's references stays (collector::Collector::skip retires passed.retired again; tested by collector::tests::passes_skip_only_what_the_cell_alone_decides, red without it). Way out, for this task: a record found live naming the fork's origin had its reference written by its maker before its create (references_first; a clone's record precedes its reference, but a writer never records a clone's child), so record_fork may skip the write in that case, which removes the re-creation; it changes Bucket.tla's recording (the model re-puts), so the model, a mutation (re-put kept) and seed 53's order as a direct test first, then the code, then drop Passed::retired's re-send.
+
+Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
+<!-- SECTION:NOTES:END -->
