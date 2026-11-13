@@ -1769,12 +1769,17 @@ fn segments_made_durable_sync_no_entries_a_flush_synced() {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         store.commit(None).unwrap();
         settled(&store);
+        // fxdax: and the next segment placed, its entries synced by the store's opener, on a
+        // thread of its own, before the closing and after it, so that it counts those of the next
+        // after it alone (TASK-384).
+        store.prepared().unwrap();
         let before = dir.io().synced_dirs;
         store.close_segment().unwrap();
         store.commit_ordered(None).unwrap();
         // Framed and made durable, then the commit's flush.
         store.wait_framed().unwrap();
         store.flush().unwrap();
+        store.prepared().unwrap();
         let synced = dir.io().synced_dirs - before;
         assert_eq!(synced, 3, "closing after extent {sequence}: directories synced");
     }
