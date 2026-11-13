@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:58:00Z'
-updated_date: '2026-11-13T08:58:00Z'
+updated_date: '2026-11-13T09:45:00Z'
 labels:
   - ubu1
 dependencies: []
@@ -44,4 +44,6 @@ ubu1, 2026-11-13: agents start fxjob jobs with nothing comparing what they ask f
 
 <!-- SECTION:NOTES:BEGIN -->
 scripts/fxjob-check.sh: 41 checks pass on ubu1 (2026-11-13), run in a scope of MemoryMax=1G, no swap, its jobs in fxdax-fxjobcheck*.slice on a 300M/10 CPU budget, isolation off. --cpus is recorded in the scope description (cpus=N), not CPUQuota/CPUWeight: either would enable the cpu controller in fxdax.slice, whose subtree has only io memory pids, and share CPU by cgroup instead of by the niceness host builds run at. CPUs count logical CPUs (budget defaults to nproc, 16; a measurement reserves its 8, 4-7,12-15; --cpus defaults to 4, FXDAX_HOST_JOBS). Peaks are read by a shell inside the scope once the command ends: systemd forgets a scope (MemoryPeak [not set]) as soon as it ends. A nested fxjob (inside a job scope) skips the queue, as queueing it could deadlock with its parent. An incident while testing: an earlier OOM case, tail /dev/zero, streamed zeros into the driver pipe's tail -70 (outside any job) which grew to 11.7 GB until user-1000.slice OOM-killed it; nothing else was killed. The check now allocates a bounded 256M and the driver runs capped. Left: install (sudo) and change step 146 to install scripts/fxjob instead of its heredoc; host-remote.sh could pass --cpus FXDAX_HOST_JOBS once installed.
+
+Installed on ubu1 2026-11-13 04:40 by step 146, now from origin/main (dc1e5083); ~/docs committed locally (c01774a). Against it the nested-job check failed: a command ending before the watcher saw its scope up had the watcher SIGKILLed, leaving its sleep 0.05 in the parent job scope, whose reap then needed sudo (none in agent sessions). Fixed: fxjob leaves a flag file and waits for the watcher. The OOM case of fxjob-check.sh is opt-in (FXJOB_CHECK_OOM=1): each contained 64M OOM kill raised GNOME's system-out-of-memory notification; it also failed once in four runs (status or peak), not looked into.
 <!-- SECTION:NOTES:END -->

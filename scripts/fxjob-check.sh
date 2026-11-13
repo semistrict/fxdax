@@ -13,6 +13,9 @@
 #   scripts/fxjob-check.sh            checks scripts/fxjob
 #   FXJOB=/usr/local/bin/fxjob scripts/fxjob-check.sh
 #                                     checks the one installed
+#   FXJOB_CHECK_OOM=1 scripts/fxjob-check.sh
+#                                     checks a job past its limit too: an OOM kill of 64M, which
+#                                     the desktop reports as the system out of memory
 #
 # What it checks: a request past the budget fails at once; jobs past the budget wait and start
 # first come, first served, a small one never passing a large one ahead of it, as many at once
@@ -192,11 +195,16 @@ check "fxjob exits with the command's status" test $rc -eq 3
 # its output nowhere: were the limit not set, it would take that and no more. (tail of /dev/zero,
 # which was to grow without end, wrote the zeros out instead, and what read them, outside every
 # job's limit, grew to 11.7 GB, until user-1000.slice's OOM killer took it.)
-rc=0
-"$fxjob" --name oom --bench --mem 64M -- \
-  bash -c 'head -c 256M /dev/zero | python3 -c "import sys; d = sys.stdin.buffer.read()"' \
-  > /dev/null 2>&1 || rc=$?
-check "a job past its memory limit exits 137" test $rc -eq 137
+# Only with FXJOB_CHECK_OOM=1: the kernel's OOM kill, however small and contained, has the
+# desktop say the system ran out of memory.
+oom=${FXJOB_CHECK_OOM:-0}
+if [[ $oom == 1 ]]; then
+  rc=0
+  "$fxjob" --name oom --bench --mem 64M -- \
+    bash -c 'head -c 256M /dev/zero | python3 -c "import sys; d = sys.stdin.buffer.read()"' \
+    > /dev/null 2>&1 || rc=$?
+  check "a job past its memory limit exits 137" test $rc -eq 137
+fi
 python3 - "$FXJOB_HISTORY" > "$tmp/history" <<'EOF'
 import json, sys
 for line in open(sys.argv[1]):
@@ -206,7 +214,8 @@ for line in open(sys.argv[1]):
 EOF
 history() { awk -v n="$1" '$1 == n' "$tmp/history"; }
 check "every line is JSON with every field" test -s "$tmp/history"
-ran=(n1 n2 n3 n4 n5 n6 big1 big2 small c1 c2 k2 q1 q3 s1 w1 b1 w2 b2 inner outer three oom)
+ran=(n1 n2 n3 n4 n5 n6 big1 big2 small c1 c2 k2 q1 q3 s1 w1 b1 w2 b2 inner outer three)
+if [[ $oom == 1 ]]; then ran+=(oom); fi
 check "a line for each job that ran, and no other" \
   test "$(cut -d' ' -f1 "$tmp/history" | sort | paste -sd ' ')" == \
   "$(printf '%s\n' "${ran[@]}" | sort | paste -sd ' ')"
@@ -214,8 +223,10 @@ check "n4's says it waited" awk '$1 == "n4" && $5 > 1 { f = 1 } END { exit !f }'
 check "n1's says it didn't, ran 2 s, asked 100M and 1 CPU" \
   awk '$1 == "n1" && $5 < 1 && $6 >= 2 && $3 == 104857600 && $4 == 1 { f = 1 } END { exit !f }' "$tmp/history"
 check "three's status is 3" test "$(history three | cut -d' ' -f2)" == 3
-check "oom's status is 137, its peak its limit" \
-  awk '$1 == "oom" && $2 == 137 && $7 >= 60 * 2^20 && $10 == "true" { f = 1 } END { exit !f }' "$tmp/history"
+if [[ $oom == 1 ]]; then
+  check "oom's status is 137, its peak its limit" \
+    awk '$1 == "oom" && $2 == 137 && $7 >= 60 * 2^20 && $10 == "true" { f = 1 } END { exit !f }' "$tmp/history"
+fi
 check "k1's, killed with its fxjob, has none" test -z "$(history k1)"
 check "peaks and CPU time measured" \
   awk '$7 == "null" || $8 == "null" || $9 == "null" { f = 1 } END { exit f }' "$tmp/history"

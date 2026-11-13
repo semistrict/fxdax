@@ -256,7 +256,7 @@ entry='' isolated='' stats=''
 # shellcheck disable=SC2329 # The EXIT trap's.
 leave() {
   if [[ -n $entry ]]; then rm -f "$entry"; fi
-  if [[ -n $stats ]]; then rm -f "$stats"; fi
+  if [[ -n $stats ]]; then rm -f "$stats" "$ran"; fi
   if [[ -n $isolated ]]; then
     sudo -n /usr/local/libexec/fxjob-isolate off
     user set-property --runtime "$bench" AllowedCPUs=
@@ -388,19 +388,23 @@ reap() {
 # The watcher holds the lock, fd 8 shared with it, until the scope is up (30 s at most); this
 # shell lets go of its own fd 8 before systemd-run, which must not inherit it, nor the command:
 # the lock would be held for as long as the job ran. systemd-run stays this shell's foreground
-# command, as a background one would ignore SIGINT and read no standard input.
+# command, as a background one would ignore SIGINT and read no standard input. A command that
+# ended before the watcher saw its scope up (`true`) leaves $ran, which ends the watcher at its
+# next look, waited for: killed, it would leave its sleep behind, in a job's scope if this is a
+# job's fxjob, for that job's reap to find (and kill with sudo, or fail without it).
+ran=$run/ran-$$
 watch() {
   local tries
   trap '' HUP INT TERM
   exec 9>&-
   for (( tries = 0; tries < 600; tries++ )); do
+    [[ ! -e $ran ]] || return 0
     [[ $(user show -P ActiveState "$unit" 2> /dev/null 8>&-) != active ]] || return 0
     sleep 0.05 8>&-
   done
 }
 watch &
 watcher=$!
-disown "$watcher" # killed below once systemd-run returns, which bash would say
 exec 8>&-
 
 # The command runs under a shell of the scope's own, which, once it ended, reads what the job
@@ -433,7 +437,9 @@ trap : HUP INT TERM
 status=0
 systemd-run --user --scope --quiet --collect --slice="$slice" --unit="$unit" "${props[@]}" \
   -- bash -c "$measure" fxjob "$stats" "$@" || status=$?
-kill -KILL "$watcher" 2> /dev/null || true
+: > "$ran"
+wait "$watcher" || true
+rm -f "$ran"
 ended=$(now)
 reaped=0
 reap || reaped=$?
