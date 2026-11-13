@@ -16,7 +16,7 @@ use std::time::Instant;
 pub const FLUSH_PHASES: [&str; 6] = ["wait", "data", "dirs", "logs", "gone", "raw"];
 
 /// The phases of a framing ([`crate::Store::framing`]): syncing the extents stored on their own
-/// its footer names; fxdax: reading its raw data, its parts on threads, each checksummed and
+/// its footer names; fxdax: reading its raw data, part by part, each checksummed and
 /// sampled if it may be framed in place (`framing::read`); compressing them, if it is to be framed
 /// in a copy (`framing::pack`); and writing its framed file, or its tail, written back as it goes
 /// (TASK-336: one phase, `write`, said nothing of whether a framing's second went to the host's

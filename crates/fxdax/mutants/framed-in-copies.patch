@@ -16,9 +16,9 @@
  ) -> Result<Arc<Framed<D::File>>, Error> {
      let started = Instant::now();
 +    let quiet = false && quiet;
-     // fxdax: its parts read on threads, each in a buffer of its own, whose waits to run count in
-     // this one's stead; checksummed and looked at if it may be framed in place (TASK-336).
-     let handing = timing.waits.handing();
+     // fxdax: its parts read, each in a buffer kept for the framings after; checksummed and looked
+     // at if it may be framed in place (TASK-336).
+     let parts = framing::read(&**raw, len, quiet)?;
 --- a/crates/extent_store/src/store.rs
 +++ b/crates/extent_store/src/store.rs
 @@ -2041,10 +2041,6 @@ impl<D: Dir> Store<D> {

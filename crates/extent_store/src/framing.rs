@@ -2,19 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax: a closed segment's parts, read from its raw file, looked at and packed on threads, each
-//! part in a buffer of its own (TASK-336): what a framing does with its data before it writes it
+//! fxdax: a closed segment's parts, read from its raw file and looked at on the framer's thread,
+//! then packed on threads, each part in a buffer kept for the framings after, as are the
+//! compressors (TASK-336): what a framing does with its data before it writes it
 //! (`segments::frame_segment`).
 //!
-//! A framing read the whole of its data, 32 MiB, into one buffer on its own thread, looked at all
-//! of it there, its zeros and a sample of its compression, and checksummed it, before compressing
-//! its parts on threads. On a host whose CPUs its VMs' vCPUs keep busy, each thread gets its share
-//! of them, no more: so the reading, its buffer's every page faulted in afresh, and the looking,
-//! on one thread, took most of a framing's time, up to half a second each of 0.8 s, beside 28
-//! spinning threads on ubu1's 8 CPUs (store-bench framing); and so on ubu1's sandboxes run, its
-//! slow framings' reading 2.5 s, compressing 2.3 s and writing 0.6 s of 5.3 s, 1.1 s of it waiting
-//! to run. On threads, each part in a buffer kept for the framings after ([`Buffer`]), as are the
-//! threads' compressors, no page faulted in afresh, they take what compressing them takes.
+//! A framing read the whole of its data, 32 MiB, into one buffer taken afresh, every page faulted
+//! in, 8,192 faults, and its packing threads took compressors afresh, their tables faulted in too.
+//! On a host whose CPUs its VMs' vCPUs keep busy, a thread gets its share of them and no more: so
+//! the faults, and the copying and looking on the framer's thread, took most of a framing's time,
+//! up to half a second each of 0.8 s beside 28 spinning threads on ubu1's 8 CPUs (store-bench
+//! framing); and on ubu1's sandboxes run, its slow framings read for 2.5 s, compressed for 2.3 s
+//! and wrote for 0.6 s of 5.3 s, 1.1 s of it waiting to run. Each part in a buffer kept
+//! ([`Buffer`]), as are the packing threads' compressors, a framing faults nothing in. Reading the
+//! parts on threads too took the VMs' CPUs from them: dead-ends/framing-reads-on-threads.md.
 
 use crate::dir::File;
 use crate::timings::runnable_ns;
@@ -23,7 +24,7 @@ use std::io;
 use std::sync::Mutex;
 
 /// fxdax: the most part buffers ([`Buffer`]) and compressors ([`PartPacker`]) kept for framings to
-/// come: two segments' worth of parts, 64 MiB, and a compressor for each of their threads. Taken
+/// come: two segments' worth of parts, 64 MiB, and as many compressors. Taken
 /// afresh, each framing's 32 MiB of buffers were faulted in page by page, 8,192 faults, and each
 /// thread's compressor's tables too, every framing: as much of its reading's time as the copying
 /// (store-bench framing, perf stat on ubu1). More framings at once than that take theirs afresh,
@@ -167,20 +168,23 @@ pub(crate) struct Read {
 }
 
 /// fxdax: the parts of the `len` bytes of a segment's data its raw file `raw` holds, each read in
-/// a buffer of its own, on threads ([`on_threads`]); and, if `in_place`, the segment may be framed
-/// in place, each checksummed and looked at. Returns them, and the longest any thread waited to
-/// run, in nanoseconds.
-pub(crate) fn read<F: File>(raw: &F, len: u64, in_place: bool) -> (io::Result<Vec<Read>>, u64) {
-    on_threads(len.div_ceil(PART) as usize, |part, packer| {
-        let at = part as u64 * PART;
+/// a buffer of its own ([`Buffer`]), on the calling thread; and, if `in_place`, the segment may be
+/// framed in place, each checksummed and looked at.
+pub(crate) fn read<F: File>(raw: &F, len: u64, in_place: bool) -> io::Result<Vec<Read>> {
+    let mut packer = PACKERS.take(PartPacker::new);
+    let parts = (0..len.div_ceil(PART)).map(|part| {
+        let at = part * PART;
         let mut data = Buffer::of((len - at).min(PART) as usize);
         raw.read_cached(&mut data, at)?;
         let (crc, look) = match in_place {
-            true => (PackedPart::raw(&data).crc, Look::at(&data, packer)),
+            true => (PackedPart::raw(&data).crc, Look::at(&data, &mut packer)),
             false => (0, Look::default()),
         };
         Ok(Read { data, crc, look })
-    })
+    });
+    let parts = parts.collect();
+    PACKERS.give(packer);
+    parts
 }
 
 /// fxdax: `parts`, a segment's data, read ([`read`]), packed, on threads ([`on_threads`]); and the
@@ -278,18 +282,17 @@ mod tests {
         assert!(saves_little(&few), "noise, but for four blocks of zeros");
     }
 
-    /// TASK-336: a segment's parts, read and packed on threads, are its data's, in order, each
+    /// TASK-336: a segment's parts, read, then packed on threads, are its data's, in order, each
     /// packed as one packer packs it, a last part cut short among them; each checksummed and
     /// looked at as a raw part if it may be framed in place, and not otherwise.
     #[test]
-    fn parts_read_on_threads_are_the_segments() {
+    fn parts_read_are_the_segments() {
         let len = 9 * MIB + 1000;
         let mut data = noise(5, len);
         data[2 * MIB..3 * MIB].fill(7);
         let raw = MemDir::new().create("raw", true).unwrap();
         raw.write_at(&data, 0).unwrap();
-        let (parts, _) = read(&raw, len as u64, true);
-        let parts = parts.unwrap();
+        let parts = read(&raw, len as u64, true).unwrap();
         assert_eq!(parts.len(), 10);
         let mut packer = PartPacker::new();
         for (read, part) in parts.iter().zip(data.chunks(PART as usize)) {
@@ -302,10 +305,9 @@ mod tests {
             data.chunks(PART as usize).map(|part| packer.pack(part)).collect();
         assert_eq!(packed, each);
         assert!(packed[2].compressed.is_some() && packed[0].compressed.is_none());
-        let (parts, _) = read(&raw, len as u64, false);
-        let parts = parts.unwrap();
+        let parts = read(&raw, len as u64, false).unwrap();
         assert!(parts.iter().all(|read| read.crc == 0 && read.look == Look::default()));
-        assert!(read(&raw, 0, true).0.unwrap().is_empty(), "no data, no parts");
+        assert!(read(&raw, 0, true).unwrap().is_empty(), "no data, no parts");
     }
 
     /// TASK-336: a part that fails to read fails them all.
@@ -332,7 +334,7 @@ mod tests {
                 unreachable!()
             }
         }
-        let error = read(&Failing, 8 * PART, true).0.err().expect("a part failed");
+        let error = read(&Failing, 8 * PART, true).err().expect("a part failed");
         assert_eq!(error.to_string(), "failing");
     }
 }

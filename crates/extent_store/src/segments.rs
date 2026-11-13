@@ -1322,12 +1322,9 @@ fn frame_segment<D: Dir>(
     timing: &mut Timing<4>,
 ) -> Result<Arc<Framed<D::File>>, Error> {
     let started = Instant::now();
-    // fxdax: its parts read on threads, each in a buffer of its own, whose waits to run count in
-    // this one's stead; checksummed and looked at if it may be framed in place (TASK-336).
-    let handing = timing.waits.handing();
-    let (parts, waited) = framing::read(&**raw, len, quiet);
-    timing.waits.handed(handing, waited);
-    let parts = parts?;
+    // fxdax: its parts read, each in a buffer kept for the framings after; checksummed and looked
+    // at if it may be framed in place (TASK-336).
+    let parts = framing::read(&**raw, len, quiet)?;
     timing.took(framing_phase::READ);
     let mut packer = extent_frame::Packer::new();
     // fxdax: in place at once if a sample of its parts says compressing them saves too little,
@@ -1337,6 +1334,7 @@ fn frame_segment<D: Dir>(
     let sampled = quiet && len > 0 && look.saves_little();
     let mut packed = Vec::new();
     if !sampled {
+        // On threads of their own, whose waits to run count in this one's stead.
         let handing = timing.waits.handing();
         let (each, waited) = framing::pack(&parts);
         timing.waits.handed(handing, waited);
