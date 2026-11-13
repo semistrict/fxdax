@@ -3,7 +3,7 @@ id: TASK-395.2
 title: >-
   Bucket layout: everything a cell's collection reads under its prefix (moves,
   collector lease, references), format 8
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
@@ -35,8 +35,8 @@ Moves objects live at `moves/<key>` (and `moves/moves/...`), so a cell's compact
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -69,3 +69,9 @@ Review round (@claude, 2026-11-13; a6cc31ba1, 0de908c63): format 8 cell objects 
 
 ubu1 run t395w3 on bb07304a6 (under fxjob): workspace 2596/2596 passed (90 skipped), sim 59/59, the other nextest parts all passed, mutant checks 0 broken, guest tests exit 0. Merged to main as 1c1174bb4 (rebased over backlog-only commits).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Format 9: moves, the collector's lease and marks, and fork references live under each cell's prefix (<C>moves/, <C>gc/lease, <C>gc/marks/, <C>refs/<parent>/<at>/<tenant>.<cell>.<child>); the root gc/lease is gone; layout::kind and owner cover every key; format 8 refused by name. Verified by extent_remote's layout and format tests, the macOS suite (workspace 2325/2325) and ubu1 run t395w3 (workspace 2596/2596, sim 59/59, guests pass); scripts/upstream-changes.py --check passes. Merged to main (1c1174bb4).
+<!-- SECTION:FINAL_SUMMARY:END -->

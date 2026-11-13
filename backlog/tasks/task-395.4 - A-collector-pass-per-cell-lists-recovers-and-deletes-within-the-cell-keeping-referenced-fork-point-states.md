@@ -3,7 +3,7 @@ id: TASK-395.4
 title: >-
   A collector pass per cell: lists, recovers and deletes within the cell,
   keeping referenced fork-point states
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
@@ -38,8 +38,8 @@ Replaces the whole-bucket pass. A pass over one cell takes the cell's collector 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -83,3 +83,9 @@ Tests (macOS): scripts/test.sh exit 0: workspace 2325/2325, sim 59/59, Shuttle a
 
 ubu1 run t395w3 on bb07304a6 (under fxjob): workspace 2596/2596 passed (90 skipped), sim 59/59, the other nextest parts all passed, mutant checks 0 broken, guest tests exit 0. Merged to main as 1c1174bb4 (rebased over backlog-only commits).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The whole-bucket pass is replaced by collect_cell: a pass takes its cell's lease, lists only the cell (no LIST outside it: a parent across cells is read by one GET of its checkpoint at the fork point), keeps each referenced fork point's state (recovered once however many references share it), reclaims a dead unreferenced cell whole but its cell object, and keeps nothing across cells; fxdax-gc takes --cell for passes, --dry-run, --mark-only and --branches; readers list per-cell marks only while gc/marking exists. Reviewed independently (7 findings fixed). Verified by request-counting tests over many cells, every collector, sim, Shuttle and crash test, the macOS suite and ubu1 run t395w3 (workspace 2596/2596, sim 59/59, guests pass). Merged to main (1c1174bb4).
+<!-- SECTION:FINAL_SUMMARY:END -->
