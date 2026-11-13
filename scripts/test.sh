@@ -92,6 +92,10 @@ if part scripts; then
     "$root/crates/fxdax/mutants.sh" --check
     "$root/crates/extent_remote/mutants.sh" --check
     "$root/scripts/guest-mutants-host.py" --check
+    # Firecracker's lock as Cargo resolves it with fxdax's crates, which only Linux builds: a
+    # dependency added to them went unnoticed on macOS (TASK-395).
+    git -C "$root" submodule update --init vendor/firecracker
+    "$root/scripts/firecracker-cargo.sh" --check
 fi
 # The Go client of the daemon's control API (TASK-219): its generated code as the .proto generates
 # it, its tests, and on Linux its tests against the daemon itself, built from this tree.

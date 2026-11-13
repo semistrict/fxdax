@@ -22,6 +22,10 @@
 #
 # Usage: firecracker-cargo.sh CARGO_ARGS...   e.g. build --release -p firecracker --features fxdax
 #        firecracker-cargo.sh --lock          updates vendor/firecracker.lock as Cargo resolves it
+#        firecracker-cargo.sh --check         fails unless vendor/firecracker.lock is as Cargo resolves
+#                                             it: on every host, as scripts/test.sh's scripts part
+#                                             runs it (a dependency added to fxdax's crates broke
+#                                             only Linux's Firecracker and guest runs, TASK-395)
 #        firecracker-cargo.sh --tree          prints the copy's directory
 # FXDAX_FIRECRACKER_SRC names the tree to copy (default vendor/firecracker), and
 # FXDAX_FIRECRACKER_TREE the copy (default target/firecracker), which must be in this repo.
@@ -32,7 +36,7 @@ src=${FXDAX_FIRECRACKER_SRC:-$root/vendor/firecracker}
 tree=${FXDAX_FIRECRACKER_TREE:-$root/target/firecracker}
 lock=$root/vendor/firecracker.lock
 
-[[ $# -gt 0 ]] || { echo "Usage: $0 CARGO_ARGS... | --lock | --tree" >&2; exit 2; }
+[[ $# -gt 0 ]] || { echo "Usage: $0 CARGO_ARGS... | --lock | --check | --tree" >&2; exit 2; }
 [[ -f $src/src/vmm/Cargo.toml ]] || { echo "$src: no Firecracker (git submodule update --init vendor/firecracker)" >&2; exit 1; }
 case "$tree/" in
     "$root"/*) ;;
@@ -59,6 +63,14 @@ put "$manifest" "$tree/src/vmm/Cargo.toml"
 put "$lock" "$tree/Cargo.lock"
 cd "$tree"
 
+# locked fails unless the lock is as Cargo resolves the copy.
+locked() {
+    cargo metadata --locked --format-version 1 > /dev/null || {
+        echo "vendor/firecracker.lock is not as Cargo resolves the tree: scripts/firecracker-cargo.sh --lock updates it" >&2
+        exit 1
+    }
+}
+
 case "$1" in
     --tree)
         echo "$tree"
@@ -67,12 +79,11 @@ case "$1" in
         cargo metadata --format-version 1 > /dev/null
         put Cargo.lock "$lock"
         ;;
+    --check)
+        locked
+        ;;
     *)
-        if [[ -z ${FXDAX_FIRECRACKER_UNLOCKED:-} ]] &&
-            ! cargo metadata --locked --format-version 1 > /dev/null; then
-            echo "vendor/firecracker.lock is not as Cargo resolves the tree: scripts/firecracker-cargo.sh --lock updates it" >&2
-            exit 1
-        fi
+        [[ -n ${FXDAX_FIRECRACKER_UNLOCKED:-} ]] || locked
         exec cargo "$@"
         ;;
 esac
