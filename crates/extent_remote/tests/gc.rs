@@ -15,15 +15,65 @@ fn gc(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_fxdax-gc")).args(args).output().unwrap()
 }
 
+/// What `out` said on standard error, its times, which vary, as `T`, and the requests it says it
+/// made, which its unit tests check, as `R`.
+fn said(out: &std::process::Output) -> String {
+    let words = |line: &str| -> String {
+        let timed =
+            line.split(' ').map(|word| match word.contains('.') && word.parse::<f64>().is_ok() {
+                true => "T",
+                false => word,
+            });
+        timed.collect::<Vec<_>>().join(" ")
+    };
+    (String::from_utf8_lossy(&out.stderr).lines())
+        .map(|line| match line.find("; requests: ") {
+            Some(at) => format!("{}; requests: R\n", words(&line[..at])),
+            None => format!("{}\n", words(line)),
+        })
+        .collect()
+}
+
+/// What a sweep that deleted `deleted` objects of `bytes` bytes says of its passes over `cells`
+/// cells, none unchanged since a pass before, none failed, none left to others; then how long it
+/// took, and its slowest, `slowest`.
+fn swept(deleted: usize, bytes: u64, cells: usize, slowest: &str) -> String {
+    format!(
+        "fxdax-gc: deleted {deleted} ({bytes} bytes), compacted 0 (0 bytes), retired 0 references, \
+         over {cells} cells (0 unchanged), 0 held by other passes, 0 swept by them since, 0 \
+         failed; requests: R\nfxdax-gc: took T s; slowest: {slowest}\n"
+    )
+}
+
 /// A pass over a bucket (in memory: empty) reports what it did, over no cell, and exits.
 #[test]
 fn collects_a_bucket_once() {
     let out = gc(&["memory:///", "--grace", "1"]);
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 0, compacted 0, retired 0 references, over 0 cells, 0 failed\n"
-    );
+    assert_eq!(said(&out), swept(0, 0, 0, "none"));
     assert!(out.status.success());
+}
+
+/// TASK-395.5: `--metrics` writes what the sweep did, in Prometheus' text format, to its file.
+#[test]
+fn sweeps_write_their_metrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("gc.prom");
+    let out = gc(&["memory:///", "--at-once", "2", "--metrics", file.to_str().unwrap()]);
+    assert_eq!(said(&out), swept(0, 0, 0, "none"));
+    assert!(out.status.success());
+    let metrics = std::fs::read_to_string(&file).unwrap();
+    for line in [
+        "fxdax_gc_sweeps_total 1",
+        "fxdax_gc_sweep_cells{outcome=\"passed\"} 0",
+        "fxdax_gc_sweep_cells{outcome=\"skipped\"} 0",
+        "fxdax_gc_sweep_requests{request=\"list-delimited\"} 1",
+        "fxdax_gc_pass_seconds_count 0",
+    ] {
+        assert!(metrics.lines().any(|had| had == line), "{line} in {metrics}");
+    }
+    let peak = metrics.lines().find_map(|line| line.strip_prefix("fxdax_gc_peak_resident_bytes "));
+    let peak: u64 = peak.unwrap().parse().unwrap();
+    assert!((1 << 20..1 << 34).contains(&peak), "a process's memory, at most: {peak}");
 }
 
 /// TASK-79.85: a bucket (in memory: empty) has no live branches, and a branch is deleted, as an
@@ -68,17 +118,26 @@ fn collects_a_file_bucket() {
         }
         writer.checkpoint().await.unwrap();
     });
+    // The two segments a pass deletes, and their bytes.
+    let at = "tenants/0000000000000001/cells/0000000000000001";
+    let doomed = [1, 2].map(|seq| format!("{at}/segments/0000000000000001/{seq:016x}"));
+    let bytes: u64 = futures::executor::block_on(async {
+        use extent_remote::Bucket as _;
+        let listed = Store::from_url(&url).unwrap().list("").await.unwrap();
+        listed.iter().filter(|meta| doomed.contains(&meta.key)).map(|meta| meta.size).sum()
+    });
     // TASK-395.4: a pass over another cell, named, leaves this one be.
     let out = gc(&[&url, "--cell", "1/2", "--grace", "0"]);
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 0, compacted 0, retired 0 references, over 1 cells, 0 failed\n"
-    );
+    assert_eq!(said(&out), swept(0, 0, 1, "1/2 T s"));
     // Over the one cell there: the other's pass, of a cell holding nothing, took no lease there.
     let out = gc(&[&url, "--grace", "0"]);
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 1 cells, 0 failed\n"
+        said(&out),
+        format!(
+            "fxdax-gc: cell 1/1: deleted 2 ({bytes} bytes), compacted 0 (0 bytes), retired 0 \
+             references, in T s; requests: R\n{}",
+            swept(2, bytes, 1, "1/1 T s")
+        )
     );
     assert!(out.status.success());
     let left = futures::executor::block_on(async {
@@ -181,10 +240,14 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     let at = "tenants/0000000000000001/cells/0000000000000001";
     let marks = format!("{at}/gc/marks/0000000000000001");
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
+        said(&out),
         format!(
             "fxdax-gc: cell 1/1: marked 2 ({bytes} bytes) in {marks}, deleted 0, compacted 0, \
-             resurrected 0\n"
+             resurrected 0, in T s; requests: R\n\
+             fxdax-gc: marked 2 ({bytes} bytes), compacted 0 (0 bytes), resurrected 0, over 1 \
+             cells (0 unchanged), 0 held by other passes, 0 swept by them since, 0 failed; \
+             requests: R\n\
+             fxdax-gc: took T s; slowest: 1/1 T s\n"
         )
     );
     let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
@@ -195,8 +258,12 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
 
     let out = gc(&[&url, "--grace", "0"]);
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 1 cells, 0 failed\n"
+        said(&out),
+        format!(
+            "fxdax-gc: cell 1/1: deleted 2 ({bytes} bytes), compacted 0 (0 bytes), retired 0 \
+             references, in T s; requests: R\n{}",
+            swept(2, bytes, 1, "1/1 T s")
+        )
     );
     let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
     // The bucket's lock, no object, then the objects, the collector's under the cell's prefix.
@@ -272,10 +339,17 @@ fn usage_says_what_each_files_cell_and_tenant_takes_as_passes_found() {
     let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
     let before = now().as_millis() as u64;
     let out = gc(&[&url, "--grace", "0"]);
+    let said = said(&out);
+    // The slowest passes, last, in an order of their times.
+    let (did, slowest) = said.split_at(said.find("fxdax-gc: took").unwrap());
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        "fxdax-gc: deleted 2, compacted 0, retired 0 references, over 3 cells, 0 failed\n"
+        did,
+        "fxdax-gc: cell 1/1: deleted 2 (396 bytes), compacted 0 (0 bytes), retired 0 references, \
+         in T s; requests: R\nfxdax-gc: deleted 2 (396 bytes), compacted 0 (0 bytes), retired 0 \
+         references, over 3 cells (0 unchanged), 0 held by other passes, 0 swept by them since, 0 \
+         failed; requests: R\n"
     );
+    assert!(slowest.starts_with("fxdax-gc: took T s; slowest: "), "{slowest}");
     let after = now().as_millis() as u64;
     // A cell made after the pass, which no pass went over.
     futures::executor::block_on(branch::create(&*bucket, Branch { cell: unpassed, id: 4 }, 0))
@@ -378,7 +452,8 @@ fn usage_says_what_each_files_cell_and_tenant_takes_as_passes_found() {
 fn without_a_bucket_prints_its_usage() {
     let out = gc(&[]);
     let usage = "usage: fxdax-gc URL [--cell TENANT/CELL] [--mark-only] [--every SECONDS] \
-                 [--grace SECONDS] [--compact-below FRACTION] | fxdax-gc URL [--cell TENANT/CELL] \
+                 [--grace SECONDS] [--compact-below FRACTION] [--at-once PASSES] [--lease SECONDS] \
+                 [--metrics FILE] | fxdax-gc URL [--cell TENANT/CELL] \
                  --dry-run [--grace SECONDS] [--compact-below FRACTION] | fxdax-gc URL --branches \
                  [--cell TENANT/CELL] [--held FILE] | fxdax-gc URL --delete-branch \
                  TENANT/CELL/ID | fxdax-gc URL --usage [--tenant TENANT] (every cell, or the one \

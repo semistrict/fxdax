@@ -2674,7 +2674,9 @@ fn what_guests_free_the_collector_compacts() {
     let collected = extent_remote::collector::collect(&*bucket, 1, &options);
     let report = futures::executor::block_on(collected).unwrap();
     // The writer's fence, which no extent is in, is kept (TASK-371).
-    assert_eq!(report, extent_remote::collector::Report { deleted: 1, compacted: 2, retired: 0 });
+    let counted =
+        extent_remote::collector::Report { deleted: 1, compacted: 2, retired: 0, ..report };
+    assert_eq!(report, counted);
     let (store, served) = connect(&path, 16 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };

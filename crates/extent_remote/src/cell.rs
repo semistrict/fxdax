@@ -21,6 +21,7 @@ use crate::branch::{Start, Step, transition};
 use crate::bucket::Bucket;
 use crate::layout::{self, Branch, Cell, FORMAT};
 use crate::{Error, bucket, rules};
+use futures::{Stream, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -311,33 +312,34 @@ pub async fn holds(bucket: &impl Bucket, held: Held) -> Result<bool, Error> {
 
 /// fxdax: every cell of `bucket` with an object under its prefix, in the order of their keys: found
 /// by delimiter listings of `tenants/` then of each tenant's `cells/`, listing none of their objects
-/// (TASK-395.4, TASK-395.5): what a sweep of the collector over every cell visits. A request a
-/// tenant, and one more for every 1,000 of its cells, as S3 pages them.
-pub async fn listed(bucket: &impl Bucket) -> Vec<Cell> {
-    let mut cells = Vec::new();
-    for tenant in tenants(bucket).await {
-        cells.extend(of_tenant(bucket, tenant).await);
-    }
-    cells
+/// (TASK-395.4, TASK-395.5): what a sweep of the collector over every cell visits. A page at a
+/// time, of tenants and of a tenant's cells, each listed as the cells before it are taken: so it
+/// holds no more than a page of each, a tenant of millions of cells as one of a few. A request for
+/// every [`LIST_PAGE`](bucket::LIST_PAGE) tenants, and one for every
+/// [`LIST_PAGE`](bucket::LIST_PAGE) cells of each.
+pub fn listed<B: Bucket>(bucket: &B) -> impl Stream<Item = Cell> + Send + '_ {
+    tenants(bucket).flat_map(move |tenant| of_tenant(bucket, tenant))
 }
 
-/// fxdax: every tenant of `bucket` with a cell, in order: by a delimiter listing of `tenants/`,
-/// listing none of their cells' objects.
-pub async fn tenants(bucket: &impl Bucket) -> Vec<u64> {
-    let listed = bucket::list_delimited(bucket, layout::TENANTS).await.prefixes;
-    listed.iter().filter_map(|prefix| layout::tenant_of_prefix(prefix)).collect()
+/// fxdax: every tenant of `bucket` with a cell, in order: by a delimiter listing of `tenants/`, a
+/// page at a time, listing none of their cells' objects.
+pub fn tenants<B: Bucket>(bucket: &B) -> impl Stream<Item = u64> + Send + '_ {
+    let tenants = bucket::prefixes(bucket, layout::TENANTS.to_owned());
+    tenants.filter_map(|prefix| std::future::ready(layout::tenant_of_prefix(&prefix)))
 }
 
 /// fxdax: every cell of `tenant` with an object under its prefix, in order: by a delimiter listing
-/// of the tenant's `cells/`, listing none of their objects (`fxdax-gc --usage`, TASK-395.8).
-pub async fn of_tenant(bucket: &impl Bucket, tenant: u64) -> Vec<Cell> {
-    let listed = bucket::list_delimited(bucket, &layout::cells_of(tenant)).await.prefixes;
-    listed.iter().filter_map(|prefix| layout::cell_of_prefix(prefix)).collect()
+/// of the tenant's `cells/`, a page at a time, listing none of their objects (`fxdax-gc --usage`,
+/// TASK-395.8).
+pub fn of_tenant<B: Bucket>(bucket: &B, tenant: u64) -> impl Stream<Item = Cell> + Send + '_ {
+    let cells = bucket::prefixes(bucket, layout::cells_of(tenant));
+    cells.filter_map(|prefix| std::future::ready(layout::cell_of_prefix(&prefix)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bucket::LIST_PAGE;
     use crate::layout::TEST_CELL;
     use crate::testing::{Direct, SimBucket};
     use futures::executor::block_on;
@@ -391,8 +393,60 @@ mod tests {
         for key in keys {
             block_on(bucket.put(&key, vec![1].into(), PutMode::Create)).unwrap();
         }
-        assert_eq!(block_on(listed(&bucket)), cells);
-        assert_eq!(block_on(listed(&Direct(SimBucket::new()))), []);
+        assert_eq!(block_on(listed(&bucket).collect::<Vec<_>>()), cells);
+        assert_eq!(block_on(listed(&Direct(SimBucket::new())).collect::<Vec<_>>()), []);
+    }
+
+    /// TASK-395.5: a bucket's cells are listed a page at a time, of tenants and of each tenant's
+    /// cells, each page asked for once the cells before it are taken: a tenant of more cells than
+    /// a page, among others, all in order, each once, and no request made but for the pages of
+    /// cells taken so far.
+    #[test]
+    fn cells_are_listed_a_page_at_a_time() {
+        use crate::bucket::PutMode;
+        let sim = SimBucket::new();
+        let bucket = Direct(sim.clone());
+        let many = LIST_PAGE as u64 * 2 + 5;
+        let mut cells: Vec<Cell> = (0..many).map(|id| Cell { tenant: 2, id }).collect();
+        cells.extend([Cell { tenant: 1, id: 7 }, Cell { tenant: 3, id: 1 }]);
+        for &cell in &cells {
+            let key = layout::record(Branch { cell, id: 1 });
+            block_on(bucket.put(&key, vec![1].into(), PutMode::Create)).unwrap();
+        }
+        cells.sort();
+        // Each page as it is asked for: its requests, as the bucket served them, completed as
+        // they come.
+        let mut stream = std::pin::pin!(listed(&*sim));
+        let mut taken = Vec::new();
+        let (first, asked) = sim.served(stream.next());
+        taken.extend(first);
+        assert_eq!(
+            asked,
+            [
+                "list-delimited tenants/".to_owned(),
+                "list-delimited tenants/0000000000000001/cells/".to_owned()
+            ]
+        );
+        let (rest, asked) = sim.served(async {
+            let mut rest = Vec::new();
+            while let Some(cell) = stream.next().await {
+                rest.push(cell);
+            }
+            rest
+        });
+        taken.extend(rest);
+        assert_eq!(taken, cells);
+        let tenant = "tenants/0000000000000002/cells/";
+        let after = |id: u64| format!("list-delimited {tenant} after {tenant}{id:016x}/");
+        assert_eq!(
+            asked,
+            [
+                format!("list-delimited {tenant}"),
+                after(LIST_PAGE as u64 - 1),
+                after(LIST_PAGE as u64 * 2 - 1),
+                "list-delimited tenants/0000000000000003/cells/".to_owned(),
+            ]
+        );
     }
 
     /// A cell taken goes to the next epoch, its taker's; a placement of a lower token than the one

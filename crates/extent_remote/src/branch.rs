@@ -1129,9 +1129,10 @@ mod tests {
             fn list_delimited(
                 &self,
                 prefix: &str,
+                page: crate::bucket::Page<'_>,
             ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
             {
-                self.bucket.list_delimited(prefix)
+                self.bucket.list_delimited(prefix, page)
             }
 
             fn put(

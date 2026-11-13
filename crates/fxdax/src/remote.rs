@@ -87,7 +87,8 @@ pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
         Failure::Remote(Error::NotShared(_)) => Some(Errno::EACCES),
         // A branch of a newer format than this host reads, until it is upgraded (doc-11).
         Failure::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
-        Failure::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_))
+        // The collector's alone (TASK-395.5).
+        Failure::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_) | Error::Left(_))
         | Failure::Local(_) => None,
     }
 }

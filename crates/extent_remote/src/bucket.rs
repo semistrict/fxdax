@@ -41,8 +41,8 @@ pub struct Meta {
     pub modified: u64,
 }
 
-/// fxdax: one level of the keys under a prefix, as a listing by delimiter finds it
-/// ([`Bucket::list_delimited`], TASK-395.5).
+/// fxdax: one level of the keys under a prefix, or a page of it, as a listing by delimiter finds
+/// it ([`Bucket::list_delimited`], TASK-395.5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Listing {
     /// The prefixes, each ending with `/`, of the keys holding a `/` past the prefix listed, once
@@ -50,7 +50,66 @@ pub struct Listing {
     pub prefixes: Vec<String>,
     /// The objects whose keys hold no `/` past it, in the order of their keys.
     pub objects: Vec<Meta>,
+    /// Where the next page starts ([`Page::after`]), if this is not the last: what the bucket
+    /// says, which means nothing to its caller.
+    pub next: Option<String>,
 }
+
+impl Listing {
+    /// fxdax: the page `page` of this listing of a whole level, for a bucket that lists a level
+    /// whole whatever page is asked (files, memory, the simulation's): the prefixes and objects
+    /// after `page.after` (here the key of the last of the page before), in the order of their
+    /// keys among each other, `page.max` of them at most, and the last one's key as where the next
+    /// page starts, if any are left.
+    pub(crate) fn page(self, page: Page<'_>) -> Self {
+        assert!((1..=LIST_PAGE).contains(&page.max), "a page of 1 to {LIST_PAGE}: {}", page.max);
+        let after = |key: &str| page.after.is_none_or(|after| key > after);
+        let mut prefixes = self.prefixes.into_iter().filter(|key| after(key)).peekable();
+        let mut objects = self.objects.into_iter().filter(|meta| after(&meta.key)).peekable();
+        let mut listing = Listing::default();
+        let mut last = None;
+        for _ in 0..page.max {
+            let prefix_first = match (prefixes.peek(), objects.peek()) {
+                (None, None) => break,
+                (Some(prefix), Some(meta)) => *prefix < meta.key,
+                (prefix, _) => prefix.is_some(),
+            };
+            if prefix_first {
+                let prefix = prefixes.next().unwrap();
+                last = Some(prefix.clone());
+                listing.prefixes.push(prefix);
+            } else {
+                let meta = objects.next().unwrap();
+                last = Some(meta.key.clone());
+                listing.objects.push(meta);
+            }
+        }
+        if prefixes.peek().is_some() || objects.peek().is_some() {
+            listing.next = last;
+        }
+        listing
+    }
+}
+
+/// fxdax: which page of a level of keys a listing by delimiter lists ([`Bucket::list_delimited`],
+/// TASK-395.5): a level of millions of keys, a tenant's cells, is listed a page at a time, none of
+/// its pages held but the one listed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Page<'a> {
+    /// Where the page before ended, as its listing said ([`Listing::next`]): none for the first.
+    pub after: Option<&'a str>,
+    /// The most prefixes and objects, together, it holds: at least 1, and at most [`LIST_PAGE`].
+    pub max: usize,
+}
+
+impl Page<'_> {
+    /// The first page, of as many as a request of S3's lists.
+    pub const FIRST: Page<'static> = Page { after: None, max: LIST_PAGE };
+}
+
+/// fxdax: the most prefixes and objects a page of a listing by delimiter holds: as many as S3's and
+/// GCS's ListObjects give a request.
+pub const LIST_PAGE: usize = 1000;
 
 /// fxdax: the most objects [`Bucket::delete_batch`] is given at once: as many as S3's
 /// DeleteObjects takes (TASK-395.5).
@@ -116,11 +175,18 @@ pub trait Bucket: Send + Sync + 'static {
     /// The objects whose keys start with `prefix`, in the order of their keys.
     fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send;
 
-    /// fxdax: one level of the keys under `prefix`, empty or ending with `/`, by delimiter `/`
-    /// (S3's and GCS's `delimiter=/`, TASK-395.5): the objects right under it, and the prefixes
-    /// of the rest, listing none of the objects under those. Every bucket lists so: none falls
-    /// back to listing every object under `prefix`, which costs a request a page of them.
-    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send;
+    /// fxdax: a page of one level of the keys under `prefix`, empty or ending with `/`, by delimiter
+    /// `/` (S3's and GCS's `delimiter=/`, TASK-395.5): the objects right under it, and the
+    /// prefixes of the rest, listing none of the objects under those; of them, `page.max` at most,
+    /// after where `page` says, in the order of their keys, and where the next page starts, if
+    /// any are left. Every bucket lists so: none falls back to listing every object under
+    /// `prefix`, which costs a request a page of them. Pages are read one after another, as S3's
+    /// are: a key created or deleted meanwhile is listed, or not, as the pages before it went.
+    fn list_delimited(
+        &self,
+        prefix: &str,
+        page: Page<'_>,
+    ) -> impl Future<Output = Result<Listing, Error>> + Send;
 
     fn put(
         &self,
@@ -237,14 +303,59 @@ pub(crate) async fn list(bucket: &impl Bucket, prefix: &str) -> Vec<Meta> {
     }
 }
 
-/// fxdax: the listing of `prefix` by delimiter ([`Bucket::list_delimited`]), retried while it
-/// fails.
-pub(crate) async fn list_delimited(bucket: &impl Bucket, prefix: &str) -> Listing {
+/// fxdax: the page `page` of the listing of `prefix` by delimiter ([`Bucket::list_delimited`]),
+/// retried while it fails.
+pub(crate) async fn list_delimited_page(
+    bucket: &impl Bucket,
+    prefix: &str,
+    page: Page<'_>,
+) -> Listing {
     let mut failures = 0;
     loop {
-        match bucket.list_delimited(prefix).await {
+        match bucket.list_delimited(prefix, page).await {
             Ok(listing) => return listing,
             Err(_) => failed(bucket, &mut failures).await,
+        }
+    }
+}
+
+/// fxdax: the prefixes of the listing of `prefix` by delimiter ([`Bucket::list_delimited`]), in
+/// their order, a page at a time, each page listed once those before it are taken, and retried while
+/// it fails: so that a level of millions, a tenant's cells, is held no more than a page of it at a
+/// time (TASK-395.5, TASK-395.8). A request for every [`LIST_PAGE`] keys of the level.
+pub(crate) fn prefixes<B: Bucket>(
+    bucket: &B,
+    prefix: String,
+) -> impl futures::Stream<Item = String> + Send + '_ {
+    use futures::StreamExt as _;
+    // The page after the one listed last: none once the last was.
+    let first = Some(None::<String>);
+    futures::stream::unfold(first, move |after| {
+        let prefix = prefix.clone();
+        async move {
+            let after = after?;
+            let page = Page { after: after.as_deref(), max: LIST_PAGE };
+            let Listing { prefixes, next, .. } = list_delimited_page(bucket, &prefix, page).await;
+            Some((futures::stream::iter(prefixes), next.map(Some)))
+        }
+    })
+    .flatten()
+}
+
+/// fxdax: the whole listing of `prefix` by delimiter, its pages one after another, each retried
+/// while it fails: for a level of a cell's, whose keys are few (its parents with references, a
+/// parent's fork points), never one of every cell's.
+pub(crate) async fn list_delimited(bucket: &impl Bucket, prefix: &str) -> Listing {
+    let mut whole = Listing::default();
+    let mut after = None;
+    loop {
+        let page = Page { after: after.as_deref(), max: LIST_PAGE };
+        let Listing { prefixes, objects, next } = list_delimited_page(bucket, prefix, page).await;
+        whole.prefixes.extend(prefixes);
+        whole.objects.extend(objects);
+        match next {
+            Some(next) => after = Some(next),
+            None => return whole,
         }
     }
 }
@@ -405,7 +516,8 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     // prefix and the prefixes of the rest, each once, none of what is under them; a prefix whole
     // segments, as above. Then deleted in a batch, which deletes what is gone as nothing.
     let level = |prefix: String| async move {
-        let listing = bucket.list_delimited(&prefix).await.unwrap();
+        let listing = bucket.list_delimited(&prefix, Page::FIRST).await.unwrap();
+        assert_eq!(listing.next, None, "{prefix}: one page");
         let objects: Vec<(String, u64)> =
             listing.objects.into_iter().map(|meta| (meta.key, meta.size)).collect();
         (listing.prefixes, objects)
@@ -434,6 +546,30 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
         )
     );
     assert_eq!(level(format!("{root}/nothing/")).await, (vec![], vec![]));
+    // A page at a time, of so many prefixes and objects together at most, each page going on from
+    // where the one before ended, in the order of their keys, prefixes and objects among each
+    // other: the level whole, each once, no page empty, the last saying none follows.
+    for max in [1, 2, 3] {
+        let (mut pages, mut after) = (Vec::new(), None::<String>);
+        loop {
+            let page = Page { after: after.as_deref(), max };
+            let listing = bucket.list_delimited(&format!("{root}/list/"), page).await.unwrap();
+            let mut entries: Vec<String> = listing.prefixes.clone();
+            entries.extend(listing.objects.iter().map(|meta| meta.key.clone()));
+            entries.sort();
+            assert!(!entries.is_empty() && entries.len() <= max, "{max}: {entries:?}");
+            pages.push(entries);
+            match listing.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        let whole: Vec<String> = pages.iter().flatten().cloned().collect();
+        let expected =
+            [&listed[1], &listed[0], &format!("{root}/list/c/"), &format!("{root}/list/g/")];
+        // GCS and Azure may give fewer than asked, never more.
+        assert_eq!(whole, expected.map(String::as_str), "pages of {max}: {pages:?}");
+    }
     let gone = format!("{root}/list/gone");
     let batch: Vec<&str> = deep.iter().map(String::as_str).chain([gone.as_str()]).collect();
     assert_eq!(bucket.delete_batch(&batch).await, Ok(()));
@@ -491,7 +627,11 @@ mod tests {
             std::future::ready(Err(Error::Unavailable))
         }
 
-        fn list_delimited(&self, _: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
+        fn list_delimited(
+            &self,
+            _: &str,
+            _: Page<'_>,
+        ) -> impl Future<Output = Result<Listing, Error>> + Send {
             std::future::ready(Err(Error::Unavailable))
         }
 
@@ -555,8 +695,9 @@ mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: Page<'_>,
         ) -> impl Future<Output = Result<Listing, Error>> + Send {
-            self.0.list_delimited(prefix)
+            self.0.list_delimited(prefix, page)
         }
 
         fn put(

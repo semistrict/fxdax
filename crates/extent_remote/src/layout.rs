@@ -160,7 +160,8 @@ pub fn moved_from(key: &str) -> Option<String> {
 }
 
 /// fxdax: the collector's lease over `cell`, which its passes over the cell take (doc-7, Garbage
-/// collection; TASK-395.2): passes over other cells run beside them, unfenced.
+/// collection; TASK-395.2), a [`crate::passed::GcLease`]: passes over other cells run beside them,
+/// unfenced.
 pub fn gc_lease(cell: Cell) -> String {
     format!("{}{GC_LEASE}", cell.prefix())
 }

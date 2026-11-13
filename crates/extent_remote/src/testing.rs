@@ -9,7 +9,7 @@
 //! reader does ([`MovesMaps`]). extent_store's simulation of doc-7's protocol runs on it, as this
 //! crate's own tests do.
 
-use crate::bucket::{Bucket, ByteRange, Error, Listing, Meta, Object, PutMode, Version};
+use crate::bucket::{Bucket, ByteRange, Error, Listing, Meta, Object, Page, PutMode, Version};
 use crate::layout::{self, Branch, Kind};
 pub use crate::moves::{Moved, MovesMaps};
 use futures::channel::oneshot;
@@ -23,7 +23,9 @@ enum Op {
     GetRange(String, ByteRange),
     Head(String),
     List(String),
-    ListDelimited(String),
+    /// fxdax: a page of a level of keys (TASK-395.5): where the page before ended, if any, and
+    /// how many it holds at most.
+    ListDelimited(String, Option<String>, usize),
     Put(String, Vec<u8>, PutMode),
     Delete(String),
 }
@@ -240,7 +242,10 @@ impl Op {
             Op::Get(key) => format!("get {key}"),
             Op::Head(key) => format!("head {key}"),
             Op::List(prefix) => format!("list {prefix}"),
-            Op::ListDelimited(prefix) => format!("list-delimited {prefix}"),
+            Op::ListDelimited(prefix, None, _) => format!("list-delimited {prefix}"),
+            Op::ListDelimited(prefix, Some(after), _) => {
+                format!("list-delimited {prefix} after {after}")
+            }
             Op::Put(key, ..) => format!("put {key}"),
             Op::Delete(key) => format!("delete {key}"),
         }
@@ -316,7 +321,7 @@ impl Inner {
                     .map(|(key, _)| self.meta(key).unwrap())
                     .collect(),
             )),
-            Op::ListDelimited(prefix) => {
+            Op::ListDelimited(prefix, after, max) => {
                 assert!(prefix.is_empty() || prefix.ends_with('/'), "a prefix of keys: {prefix}");
                 let mut listing = Listing::default();
                 let under = self.objects.range(prefix.clone()..);
@@ -331,7 +336,7 @@ impl Inner {
                         None => listing.objects.push(self.meta(key).unwrap()),
                     }
                 }
-                Ok(Reply::Listing(listing))
+                Ok(Reply::Listing(listing.page(Page { after: after.as_deref(), max })))
             }
             Op::Put(key, bytes, mode) => {
                 let existing = self.objects.get(&key).map(|stored| stored.version);
@@ -401,8 +406,13 @@ impl Bucket for SimBucket {
         reply!(self.request(Op::List(prefix.to_owned())), List)
     }
 
-    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
-        reply!(self.request(Op::ListDelimited(prefix.to_owned())), Listing)
+    fn list_delimited(
+        &self,
+        prefix: &str,
+        page: Page<'_>,
+    ) -> impl Future<Output = Result<Listing, Error>> + Send {
+        let op = Op::ListDelimited(prefix.to_owned(), page.after.map(str::to_owned), page.max);
+        reply!(self.request(op), Listing)
     }
 
     fn put(
@@ -455,8 +465,13 @@ impl Bucket for Direct {
         reply!(std::future::ready(self.apply(Op::List(prefix.to_owned()))), List)
     }
 
-    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
-        reply!(std::future::ready(self.apply(Op::ListDelimited(prefix.to_owned()))), Listing)
+    fn list_delimited(
+        &self,
+        prefix: &str,
+        page: Page<'_>,
+    ) -> impl Future<Output = Result<Listing, Error>> + Send {
+        let op = Op::ListDelimited(prefix.to_owned(), page.after.map(str::to_owned), page.max);
+        reply!(std::future::ready(self.apply(op)), Listing)
     }
 
     fn put(
@@ -483,8 +498,10 @@ impl Bucket for Direct {
 pub async fn live(
     bucket: &impl Bucket,
 ) -> Result<BTreeMap<Branch, crate::record::Record>, crate::Error> {
+    use futures::StreamExt as _;
     let mut live = BTreeMap::new();
-    for cell in crate::cell::listed(bucket).await {
+    let mut cells = std::pin::pin!(crate::cell::listed(bucket));
+    while let Some(cell) = cells.next().await {
         live.extend(crate::branch::live(bucket, cell).await?);
     }
     Ok(live)

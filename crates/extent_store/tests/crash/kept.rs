@@ -186,9 +186,9 @@ impl extent_remote::Bucket for Cut {
     fn list_delimited(
         &self,
         prefix: &str,
-    ) -> impl Future<Output = Result<extent_remote::bucket::Listing, BucketError>> + Send
-    {
-        self.request(self.bucket.list_delimited(prefix))
+        page: extent_remote::bucket::Page<'_>,
+    ) -> impl Future<Output = Result<extent_remote::bucket::Listing, BucketError>> + Send {
+        self.request(self.bucket.list_delimited(prefix, page))
     }
 
     fn put(

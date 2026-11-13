@@ -33,7 +33,7 @@ physical host others' agents share, through the `scripts/*-host.sh` drivers
 (`scripts/lib/host.sh`; `FXDAX_HOST` names another host): `test-host.sh`, `bench-host.sh`,
 `bench-ab-host.sh`, `perf-gate-host.sh`, `soak-host.sh`, `soak-workloads-host.sh`,
 `mutants-host.sh`, `guest-mutants-host.py`, `gets-host.sh`, `migrate-host.sh`,
-`fork-time-host.sh`. A run is a worktree there of a commit origin has (push first; HEAD of a clean
+`fork-time-host.sh`, `gc-sweep-host.sh`. A run is a worktree there of a commit origin has (push first; HEAD of a clean
 tree by default, `FXDAX_HOST_COMMIT` names another), its own target directories, its job under
 `fxjob` (`--bench` for measurements), results copied back, worktree removed. Guest kernels come
 from a cache on the host keyed by their sources (`host_kernel`). A driver stopped mid-run leaves

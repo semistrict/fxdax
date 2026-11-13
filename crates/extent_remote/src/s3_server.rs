@@ -9,7 +9,9 @@
 //! It serves what branches ask of S3 ([`crate::bucket::conformance`] checks it does), path-style
 //! and unsigned: objects' PUTs, conditional on `If-None-Match: *` or `If-Match`, their GETs, whole
 //! or of a range, HEADs, DELETEs and DeleteObjects, and ListObjectsV2 by prefix, by delimiter `/`
-//! too (TASK-395.5), in one page. An update of no object is a failed precondition, as RustFS and
+//! too (TASK-395.5), in pages of `max-keys` (1,000 by default) objects and prefixes together, each
+//! going on from its `continuation-token`: the last key or prefix of the page before, which it
+//! names as `NextContinuationToken`. An update of no object is a failed precondition, as RustFS and
 //! Azure have it. It counts the requests it serves by kind ([`S3Server::requests`]).
 
 use bytes::Bytes;
@@ -245,26 +247,42 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
             };
             objects.count(if delimited { "list-delimited" } else { "list" });
             let prefix = query.get("prefix").map_or("", |prefix| prefix);
-            let mut xml =
-                String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult>");
-            xml += &format!("<Name>{BUCKET}</Name><IsTruncated>false</IsTruncated>");
-            // The prefixes of the keys holding the delimiter past the prefix, each once, as their
-            // keys are in order: after the objects, as S3 lists them apart.
-            let mut prefixes: Vec<&str> = Vec::new();
+            let max: usize = query.get("max-keys").map_or(1000, |max| max.parse().unwrap());
+            let after = query.get("continuation-token").map(|token| token.to_string());
+            // The objects and the prefixes of the keys holding the delimiter past the prefix, each
+            // once, as their keys are in order, after the token: so many of them, then whether
+            // more follow, the last one's key or prefix saying where they start.
+            let (mut contents, mut prefixes, mut last) = (String::new(), String::new(), None);
+            let mut truncated = false;
+            let mut listed = 0;
             for (key, stored) in objects.objects.range(prefix.to_owned()..) {
                 if !key.starts_with(prefix) {
                     break;
                 }
-                if let Some(slash) = key[prefix.len()..].find('/').filter(|_| delimited) {
-                    let common = &key[..prefix.len() + slash + 1];
-                    if prefixes.last() != Some(&common) {
-                        prefixes.push(common);
-                    }
+                let common = (key[prefix.len()..].find('/').filter(|_| delimited))
+                    .map(|slash| &key[..prefix.len() + slash + 1]);
+                let entry = common.unwrap_or(key);
+                if last.as_deref() == Some(entry)
+                    || after.as_deref().is_some_and(|after| entry <= after)
+                {
+                    continue;
+                }
+                if listed == max {
+                    truncated = true;
+                    break;
+                }
+                listed += 1;
+                last = Some(entry.to_owned());
+                if let Some(common) = common {
+                    prefixes += &format!(
+                        "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
+                        escaped(common)
+                    );
                     continue;
                 }
                 let modified = chrono::DateTime::<chrono::Utc>::from(stored.modified)
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                xml += &format!(
+                contents += &format!(
                     "<Contents><Key>{}</Key><LastModified>{modified}</LastModified>\
                      <ETag>{}</ETag><Size>{}</Size></Contents>",
                     escaped(key),
@@ -272,12 +290,15 @@ async fn serve(objects: &Mutex<Objects>, request: Request<hyper::body::Incoming>
                     stored.bytes.len()
                 );
             }
-            for common in prefixes {
-                xml += &format!(
-                    "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
-                    escaped(common)
-                );
+            let mut xml =
+                String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult>");
+            xml += &format!("<Name>{BUCKET}</Name><IsTruncated>{truncated}</IsTruncated>");
+            if truncated && let Some(last) = &last {
+                xml += &format!("<NextContinuationToken>{}</NextContinuationToken>", escaped(last));
             }
+            // The objects, then the prefixes, as S3 lists them apart.
+            xml += &contents;
+            xml += &prefixes;
             xml += "</ListBucketResult>";
             Response::new(Full::new(Bytes::from(xml)))
         }

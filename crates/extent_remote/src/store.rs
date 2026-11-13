@@ -20,14 +20,23 @@
 //! which the log says why of. And once a write fails, writes of its kind take turns ([`Turns`],
 //! TASK-382): one at a time, probing the bucket, until one is answered, then more as more are.
 //!
+//! fxdax: a level of keys listed by delimiter, it lists a page a request where the store pages
+//! (S3, GCS and Azure, [`PaginatedListStore`]), as many prefixes and objects as the page asks, never
+//! the whole level (TASK-395.5): a tenant's millions of cells are listed a page at a time. Files
+//! and memory list a level whole, which their pages are cut out of: a directory is read whole by
+//! any listing of it, and memory has nothing cheaper.
+//!
 //! fxdax: every reader of a bucket reads it through a store, which warns of reading what the
 //! collector's newest mark-only pass marked ([`crate::marks`], TASK-264): on wherever a marks object
 //! is, as a store reads the newest every [`crate::marks::REFRESH`] alongside a read of its own.
 
-use crate::bucket::{Bucket, ByteRange, Error, Listing, Meta, Object, PutMode, Version};
+use crate::bucket::{
+    Bucket, ByteRange, Error, LIST_PAGE, Listing, Meta, Object, Page, PutMode, Version,
+};
 use crate::client::Client;
 use crate::layout::{self, Kind};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
+use object_store::list::{PaginatedListOptions, PaginatedListStore};
 use object_store::path::Path;
 use object_store::{
     GetOptions, GetRange, ObjectMeta, ObjectStore, PutOptions, PutPayload, UpdateVersion,
@@ -40,6 +49,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A bucket's objects under a prefix.
 pub struct Store {
     store: Arc<dyn ObjectStore>,
+    /// fxdax: the same store, which lists a level of keys a page a request, if it does (S3, GCS,
+    /// Azure): none for files and memory, which list it whole (TASK-395.5).
+    pages: Option<Arc<dyn PaginatedListStore>>,
     prefix: String,
     counts: Counts,
     /// Whether [`Store::probed`] found it honours conditional writes: what it found holds.
@@ -510,11 +522,22 @@ impl Drop for Timed<'_> {
 }
 impl Store {
     /// The objects of `store` under `prefix`, a path of segments separated by `/`, or empty.
+    /// fxdax: it lists a level of keys whole, as files and memory do, cutting pages out of it.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
+        Self::paged(store, None, prefix)
+    }
+
+    /// fxdax: the objects of `store` under `prefix`, a level of which `pages`, the same store,
+    /// lists a page a request, if given (TASK-395.5): S3's, GCS's and Azure's.
+    pub fn paged(
+        store: Arc<dyn ObjectStore>,
+        pages: Option<Arc<dyn PaginatedListStore>>,
+        prefix: &str,
+    ) -> Self {
         let prefix = prefix.trim_matches('/').to_owned();
         let (counts, honoured, decoded) = Default::default();
         let (marks, objectids) = (crate::marks::Watch::new(), crate::objectid::Allocator::new());
-        Self { store, prefix, counts, honoured, decoded, marks, objectids }
+        Self { store, pages, prefix, counts, honoured, decoded, marks, objectids }
     }
 
     /// fxdax: a new object ID of the bucket's, which no other branch of it has, nor will
@@ -624,8 +647,8 @@ impl Store {
     /// reads them; the emulator, Azurite, with `AZURE_STORAGE_USE_EMULATOR=true`. Blob Storage's
     /// conditional writes (If-None-Match: *, If-Match on ETags) are those doc-7 relies on.
     pub fn from_url(url: &str) -> Result<Self, String> {
-        let (store, prefix) = object_store_at(url)?;
-        Ok(Self::new(store, &prefix))
+        let Reached { objects, pages, prefix } = reach(url, std::env::vars(), &Client::DEFAULT)?;
+        Ok(Self::paged(objects, pages, &prefix))
     }
 
     fn path(&self, key: &str) -> Path {
@@ -682,31 +705,57 @@ pub(crate) fn object_store_with(
     options: impl IntoIterator<Item = (String, String)>,
     client: &Client,
 ) -> Result<(Arc<dyn ObjectStore>, String), String> {
+    let Reached { objects, prefix, .. } = reach(url, options, client)?;
+    Ok((objects, prefix))
+}
+
+/// fxdax: a store as it lists a level of keys a page a request, if it does ([`Store::paged`]).
+type Pages = Option<Arc<dyn PaginatedListStore>>;
+
+/// fxdax: what a bucket's URL reaches ([`reach`]).
+pub(crate) struct Reached {
+    pub objects: Arc<dyn ObjectStore>,
+    /// The same store, which lists a level of keys a page a request, if it does: S3's, GCS's and
+    /// Azure's; not a degraded one's ([`crate::faults`]), whose pages would go around its faults,
+    /// which lists a level whole as files and memory do.
+    pub pages: Pages,
+    /// The prefix the URL names in it.
+    pub prefix: String,
+}
+
+/// fxdax: the object store at `url`, as [`object_store_with`] reaches it, and how it lists a level
+/// of keys a page at a time, if it does (TASK-395.5).
+pub(crate) fn reach(
+    url: &str,
+    options: impl IntoIterator<Item = (String, String)>,
+    client: &Client,
+) -> Result<Reached, String> {
     let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
-    let (store, path): (Box<dyn ObjectStore>, Path) = match url.scheme() {
+    let (store, pages, path): (Arc<dyn ObjectStore>, _, Path) = match url.scheme() {
         // fxdax: `object_store`'s own refuses conditional updates (TASK-165.1).
         "file" => {
             let dir = url.to_file_path().map_err(|()| format!("{url}: no directory"))?;
             let local =
                 crate::local::Local::new(&dir).map_err(|error| format!("{url}: {error}"))?;
-            (Box::new(local), Path::default())
+            (Arc::new(local), None, Path::default())
         }
         _ => cloud(&url, options, client).map_err(|error| format!("{url}: {error}"))?,
     };
-    let store: Arc<dyn ObjectStore> = match crate::faults::Faults::from_env()? {
-        Some(faults) => Arc::new(crate::faults::Faulty::new(Arc::from(store), faults)),
-        None => Arc::from(store),
+    let (objects, pages): (Arc<dyn ObjectStore>, _) = match crate::faults::Faults::from_env()? {
+        Some(faults) => (Arc::new(crate::faults::Faulty::new(store, faults)), None),
+        None => (store, pages),
     };
-    Ok((store, path.as_ref().to_owned()))
+    Ok(Reached { objects, pages, prefix: path.as_ref().to_owned() })
 }
 
-/// The store of a URL of a cloud's, or of memory, and the path it names in it, as
-/// `object_store::parse_url_opts` makes them, but with `client`.
+/// The store of a URL of a cloud's, or of memory, the same store as it lists a level of keys a
+/// page a request, if it does, and the path it names in it, as `object_store::parse_url_opts`
+/// makes them, but with `client`.
 fn cloud(
     url: &url::Url,
     options: impl IntoIterator<Item = (String, String)>,
     client: &Client,
-) -> object_store::Result<(Box<dyn ObjectStore>, Path)> {
+) -> object_store::Result<(Arc<dyn ObjectStore>, Pages, Path)> {
     use object_store::ObjectStoreScheme as Scheme;
     let (scheme, path) = Scheme::parse(url)?;
     let path = Path::parse(path)?;
@@ -722,11 +771,14 @@ fn cloud(
                     Err(_) => builder,
                 }
             });
-            Box::new(builder.build()?)
+            let built = Arc::new(builder.build()?);
+            (built.clone() as Arc<dyn ObjectStore>, Some(built as Arc<dyn PaginatedListStore>))
         }};
     }
-    let store: Box<dyn ObjectStore> = match scheme {
-        Scheme::Memory => Box::new(object_store::memory::InMemory::new()),
+    let (store, pages) = match scheme {
+        Scheme::Memory => {
+            (Arc::new(object_store::memory::InMemory::new()) as Arc<dyn ObjectStore>, None)
+        }
         Scheme::AmazonS3 => built!(object_store::aws::AmazonS3Builder),
         Scheme::GoogleCloudStorage => built!(object_store::gcp::GoogleCloudStorageBuilder),
         Scheme::MicrosoftAzure => built!(object_store::azure::MicrosoftAzureBuilder),
@@ -735,7 +787,7 @@ fn cloud(
             return Err(object_store::Error::Generic { store: "fxdax", source });
         }
     };
-    Ok((store, path))
+    Ok((store, pages, path))
 }
 
 /// What a request's failure means to branches. Failures other than the ones the protocol answers
@@ -854,17 +906,38 @@ impl Bucket for Store {
         }
     }
 
-    fn list_delimited(&self, prefix: &str) -> impl Future<Output = Result<Listing, Error>> + Send {
-        let store = self.store.clone();
+    /// fxdax: a page a request where the store pages ([`Store::paged`]); else the level whole,
+    /// which the page is cut out of ([`Listing::page`]).
+    fn list_delimited(
+        &self,
+        prefix: &str,
+        page: Page<'_>,
+    ) -> impl Future<Output = Result<Listing, Error>> + Send {
+        assert!((1..=LIST_PAGE).contains(&page.max), "a page of 1 to {LIST_PAGE}: {}", page.max);
+        let (store, pages) = (self.store.clone(), self.pages.clone());
         let path = self.prefix_path(prefix);
         let refresh = self.marks_due(prefix);
         let prefix = prefix.to_owned();
+        let (after, max) = (page.after.map(str::to_owned), page.max);
         let list = async move {
-            // A request a page, as a listing's (1,000 objects and prefixes on S3 and GCS): one.
             let timed = self.counts.request(Request::ListDelimited, path.as_ref());
-            let listed = timed.answered(store.list_with_delimiter(path.as_ref()).await, |_| 0)?;
-            timed.span.set_count(crate::trace::OBJECTS, listed.objects.len() as u64);
-            timed.span.set_count(crate::trace::PREFIXES, listed.common_prefixes.len() as u64);
+            let listed = match &pages {
+                Some(pages) => {
+                    let options = PaginatedListOptions {
+                        delimiter: Some("/".into()),
+                        max_keys: Some(max),
+                        page_token: after.clone(),
+                        ..PaginatedListOptions::default()
+                    };
+                    // The prefix with its delimiter, which a paged listing adds not.
+                    let under = path.as_ref().map(|path| format!("{path}/"));
+                    let paged = pages.list_paginated(under.as_deref(), options).await;
+                    paged.map(|paged| (paged.result, paged.page_token))
+                }
+                // A request for each page of the level, which `object_store` does not say.
+                None => store.list_with_delimiter(path.as_ref()).await.map(|whole| (whole, None)),
+            };
+            let (listed, next) = timed.answered(listed, |_| 0)?;
             let mut prefixes: Vec<String> = (listed.common_prefixes.iter())
                 .map(|path| format!("{}/", self.key(path.as_ref())))
                 .collect();
@@ -872,7 +945,14 @@ impl Bucket for Store {
             let mut objects: Vec<Meta> =
                 listed.objects.into_iter().map(|meta| self.meta(meta)).collect();
             objects.sort_by(|a, b| a.key.cmp(&b.key));
-            Ok(Listing { prefixes, objects })
+            let listing = match &pages {
+                Some(_) => Listing { prefixes, objects, next },
+                None => Listing { prefixes, objects, next: None }
+                    .page(Page { after: after.as_deref(), max }),
+            };
+            timed.span.set_count(crate::trace::OBJECTS, listing.objects.len() as u64);
+            timed.span.set_count(crate::trace::PREFIXES, listing.prefixes.len() as u64);
+            Ok(listing)
         };
         async move {
             let listed = futures::join!(list, refresh).0;
@@ -1300,7 +1380,7 @@ pub(crate) mod tests {
             assert!(store.get(&layout::segment(test_branch(1), 9)).await.is_err());
             store.head(&segment).await.unwrap();
             store.list("segments/").await.unwrap();
-            store.list_delimited("segments/").await.unwrap();
+            store.list_delimited("segments/", crate::bucket::Page::FIRST).await.unwrap();
             store.delete(&segment).await.unwrap();
             store.delete_batch(&[&extent, &layout::moves(&segment).unwrap()]).await.unwrap();
         });
@@ -1371,8 +1451,9 @@ pub(crate) mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<Listing, crate::bucket::Error>> + Send {
-            self.0.list_delimited(prefix)
+            self.0.list_delimited(prefix, page)
         }
 
         fn put(
@@ -1633,8 +1714,8 @@ pub(crate) mod tests {
     /// fxdax: a bucket of the S3 server in memory (TASK-205), under `prefix`, through `client`.
     fn s3(server: &S3Server, prefix: &str, client: &Client) -> Arc<Store> {
         let url = format!("s3://{}/{prefix}", crate::s3_server::BUCKET);
-        let (store, prefix) = object_store_with(&url, server.options(), client).unwrap();
-        Arc::new(Store::new(store, &prefix))
+        let Reached { objects, pages, prefix } = reach(&url, server.options(), client).unwrap();
+        Arc::new(Store::paged(objects, pages, &prefix))
     }
 
     fn runtime() -> tokio::runtime::Runtime {
@@ -1668,20 +1749,37 @@ pub(crate) mod tests {
                     bucket.put(key, vec![1].into(), PutMode::Create).await.unwrap();
                 })
                 .await;
-            let level = bucket.list_delimited("cells/").await.unwrap();
+            let level = bucket.list_delimited("cells/", Page::FIRST).await.unwrap();
             let cells: Vec<String> = (0..10).map(|n| format!("cells/{n:02}/")).collect();
-            assert_eq!((level.prefixes, level.objects), (cells, vec![]));
+            assert_eq!((level.prefixes, level.objects, level.next), (cells, vec![], None));
+            // A level of 250 objects, pages of 100 asked: three requests, each going on from the
+            // one before by S3's continuation token (TASK-395.5).
+            let (mut pages, mut after) = (Vec::new(), None);
+            loop {
+                let page = Page { after: after.as_deref(), max: 100 };
+                let listing = bucket.list_delimited("cells/03/objects/", page).await.unwrap();
+                pages.push(listing.objects.into_iter().map(|meta| meta.key).collect::<Vec<_>>());
+                match listing.next {
+                    Some(next) => after = Some(next),
+                    None => break,
+                }
+            }
+            assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [100, 100, 50]);
+            let mut third: Vec<String> =
+                keys.iter().filter(|key| key.starts_with("cells/03/")).cloned().collect();
+            third.sort();
+            assert_eq!(pages.concat(), third);
             let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
             crate::bucket::delete_all(&*bucket, &keys).await;
             assert_eq!(bucket.list("cells/").await.unwrap(), vec![]);
             let served = server.requests();
             let served = ["list-delimited", "delete-objects", "delete"]
                 .map(|kind| served.get(kind).copied().unwrap_or(0));
-            assert_eq!(served, [1, 3, 0]);
+            assert_eq!(served, [4, 3, 0]);
             let stats = bucket.stats();
             let counted = [Request::ListDelimited, Request::DeleteBatch, Request::Delete]
                 .map(|request| stats.requests(request));
-            assert_eq!(counted, [1, 3, 0]);
+            assert_eq!(counted, [4, 3, 0]);
         });
     }
 

@@ -2492,7 +2492,7 @@ mod tests {
         // All the checkpoint covers but the writer's fence, which the collector keeps (TASK-371).
         assert_eq!(
             report,
-            extent_remote::collector::Report { deleted: 64, compacted: 0, retired: 0 }
+            extent_remote::collector::Report { deleted: 64, compacted: 0, retired: 0, ..report }
         );
         assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::ESTALE));
     }

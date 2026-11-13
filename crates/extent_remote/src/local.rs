@@ -285,7 +285,7 @@ mod tests {
             let listed: Vec<String> =
                 bucket.list("").await.unwrap().into_iter().map(|meta| meta.key).collect();
             assert_eq!(listed, ["a"]);
-            let level = bucket.list_delimited("").await.unwrap();
+            let level = bucket.list_delimited("", crate::bucket::Page::FIRST).await.unwrap();
             let listed: Vec<String> = level.objects.into_iter().map(|meta| meta.key).collect();
             assert_eq!((level.prefixes, listed), (vec![], vec!["a".to_owned()]));
             assert_eq!(bucket.get("a").await.unwrap().bytes, [2]);

@@ -69,6 +69,7 @@ pub mod recovery;
 #[cfg(test)]
 mod s3_server;
 pub mod store;
+pub mod sweep;
 pub mod trace;
 pub mod wal;
 pub mod writer;
@@ -161,6 +162,21 @@ pub enum Error {
     /// fxdax: what only a point is, shared, asked of a branch that is none ([`branch::share`]).
     #[error("branch {0} is no point")]
     NotPoint(layout::Branch),
+    /// fxdax: a pass of the collector over a cell left it to another pass, as the cell's lease
+    /// said ([`passed::GcLease`], TASK-395.5): nothing failed.
+    #[error("the cell is left to another pass of the collector, which {0}")]
+    Left(Left),
+}
+
+/// fxdax: why a pass of the collector left its cell to another ([`Error::Left`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Left {
+    /// Another pass holds the cell's lease, unexpired.
+    #[error("holds it")]
+    Held,
+    /// Another pass over the cell ended since the pass's sweep began.
+    #[error("went over it since this sweep began")]
+    Swept,
 }
 
 impl From<extent_frame::Corrupt> for Error {

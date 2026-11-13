@@ -1543,9 +1543,10 @@ mod shuttle_tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: extent_remote::bucket::Page<'_>,
         ) -> impl Future<Output = Result<extent_remote::bucket::Listing, BucketError>> + Send
         {
-            self.direct.list_delimited(prefix)
+            self.direct.list_delimited(prefix, page)
         }
 
         fn put(

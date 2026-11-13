@@ -5,8 +5,9 @@
 
 # Runs fxdax's host scripts (scripts/lib/*-linux-host.sh) on a Linux host of one's own, over ssh,
 # for the drivers that source this: scripts/test-host.sh, bench-host.sh, bench-ab-host.sh,
-# gets-host.sh, mutants-host.sh, fork-time-host.sh and migrate-host.sh; and through test-host.sh,
-# perf-gate-host.sh, soak-host.sh, soak-workloads-host.sh, guest-mutants-host.py and dax-gate.sh.
+# gets-host.sh, mutants-host.sh, fork-time-host.sh, gc-sweep-host.sh and migrate-host.sh; and
+# through test-host.sh, perf-gate-host.sh, soak-host.sh, soak-workloads-host.sh,
+# guest-mutants-host.py and dax-gate.sh.
 #
 # The host, FXDAX_HOST as ssh names it (default ubu1), is an x86-64 Linux host with KVM, set up
 # once by its own setup, not by a run (ubu1's ~/docs/system-setup.d: 140-fxdax_dev.sh's packages,

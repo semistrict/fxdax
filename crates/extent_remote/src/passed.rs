@@ -2,42 +2,59 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax: what a pass of the collector over a cell records for the passes after it, and what the
-//! cell takes in the bucket (doc-7, Garbage collection, Passes that skip; TASK-395.6, TASK-395.8).
+//! fxdax: a cell's collector lease (`<C>gc/lease`, [`layout::gc_lease`]): which pass holds the
+//! cell, for how long, and what the last pass over it to end recorded for the passes after it, and
+//! what the cell takes in the bucket (doc-7, Garbage collection; TASK-395.5, TASK-395.6,
+//! TASK-395.8). One object, so that a pass learns all of it by the read that takes the lease.
 //!
-//! It is kept in the cell's collector lease (`<C>gc/lease`, [`layout::gc_lease`]), which every
-//! pass over the cell takes, reading it, before anything else: so a pass reads what the pass before
-//! it recorded with no request more, and any collector process, of any host, reads the same. A pass
-//! that ran to its end records, with a condition on the lease being still its taking, the digest
-//! of its listing of the cell, but the collector's own objects (`<C>gc/`); the options it decided
-//! by; what it found no live branch needs but for the time since an object was written, each with
-//! when it may go ([`Deferred`]); and the cell's objects and bytes, by kind, as of its listing
-//! ([`Usage`]). Each taking of the lease carries what is recorded to the next.
+//! Every pass over the cell takes the lease before anything else ([`take`]): unless another pass
+//! holds it, unexpired, or ended since the taker's sweep began, when the taker leaves the cell to
+//! it ([`Error::Left`], [`Holding`]). A pass holding its cell for a time renews the lease between
+//! its steps and lets it go as it ends ([`change`]); a pass of a process gone holds it until it
+//! expires. A taking fences every pass before it, as a branch's lease does: a pass fenced deletes
+//! nothing, and writes nothing to the lease.
+//!
+//! What it records goes with every taking to the next ([`Passed`]): a pass that ran to its end
+//! records, as it lets the lease go, the digest of its listing of the cell, but the collector's own
+//! objects (`<C>gc/`); the options it decided by; what it found no live branch needs but for the
+//! time since an object was written, each with when it may go ([`Deferred`]); the references it
+//! retired; and the cell's objects and bytes, by kind, as of its listing ([`Usage`]).
 //!
 //! A pass whose listing has the digest recorded, of options the same, decides what the recorded
 //! one did: everything it decides by is under the cell's prefix, and an object there written,
 //! rewritten or deleted since changes the listing, or it was recorded with no digest
 //! ([`Passed::listing`]). It deletes what was deferred once due, and nothing else (doc-7 has why
-//! that is as safe as a pass in full).
+//! that is as safe as a pass in full). Who recorded it, of what process, is of no matter: the
+//! lease's holders and times are under `<C>gc/`, outside the digest, and a pass of other options
+//! decides anew.
 
 use crate::bucket::{self, Bucket, Meta};
-use crate::collector::Options;
+use crate::collector::{Holding, Options};
 use crate::layout::{self, Branch, Cell, FORMAT};
-use crate::{Error, branch};
+use crate::{Error, Left, branch};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 
 /// A cell's collector lease ([`layout::gc_lease`]): the format of the bucket's objects, first, as a
 /// cell's object says it; the epoch of its last taking, and who took it, as a branch's lease
-/// ([`layout::Lease`]); and what the last pass over the cell that ran to its end recorded, carried
-/// from each taking to the next ([`Passed`]).
+/// ([`layout::Lease`]); until when that pass holds the cell, and when the last pass to go through
+/// ended; and what the last pass over the cell that ran to its end recorded, carried from each
+/// taking to the next ([`Passed`]). Time is the store's clock as each pass read it
+/// ([`Bucket::now`]), in milliseconds: a pass's clock ahead takes a cell early, fencing the pass
+/// holding it, which then deletes nothing; never wrong, only late.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GcLease {
     pub format: u32,
     pub epoch: u64,
     /// Who took it: unique to each taking, so that a write of it is recognised.
     pub holder: u64,
+    /// Until when the pass holds the cell, renewed as it goes; 0 once it ended, or if it holds it
+    /// for no time (TASK-395.5). A pass of a process gone holds it until then.
+    pub until: u64,
+    /// When the last pass over the cell that went through, holding it for a time, ended: a sweep
+    /// that began before leaves the cell to it ([`Left::Swept`]). 0 if none did.
+    pub ended: u64,
     pub passed: Option<Passed>,
 }
 
@@ -236,10 +253,12 @@ fn digest_of(digest: &mut Sha256, meta: &Meta) {
     text(digest, meta.version.version.as_deref());
 }
 
-/// What a pass's taking of its cell's collector lease found ([`take`]).
+/// A pass's taking of its cell's collector lease ([`take`]).
 pub(crate) struct Taken {
     /// The epoch it took.
     pub epoch: u64,
+    /// Who took it.
+    pub holder: u64,
     /// What the last pass over the cell that ran to its end recorded.
     pub passed: Option<Passed>,
 }
@@ -250,42 +269,59 @@ pub(crate) async fn found(bucket: &impl Bucket, cell: Cell) -> Option<bucket::Ob
     bucket::get(bucket, &layout::gc_lease(cell)).await
 }
 
-/// Takes the collector lease of `cell` as `holder`, at the epoch after its last taking's, from
-/// `found`, what a read of it found ([`found`]): carrying what it holds to the next taking.
+/// Takes the collector lease of `cell` as `holder`, holding it as `holding` says, at the epoch
+/// after its last taking's, from `found`, what a read of it found ([`found`]): carrying what it
+/// records to the next taking. Unless another holds it, unexpired ([`Left::Held`]), or a pass
+/// that went through ended since the taker's sweep began ([`Left::Swept`]): then it leaves the
+/// cell to that pass, writing nothing ([`Error::Left`]).
 pub(crate) async fn take(
     bucket: &impl Bucket,
     cell: Cell,
     found: Option<bucket::Object>,
     holder: u64,
+    holding: Holding,
 ) -> Result<Taken, Error> {
     let start = branch::Start::Found(found);
     let decode = |bytes: &[u8]| GcLease::decode(cell, bytes);
     branch::transition(bucket, &layout::gc_lease(cell), start, decode, |found| {
-        let (epoch, passed) = match found {
-            None => (1, None),
-            Some(lease) => (lease.epoch + 1, lease.passed),
+        // The time as it decides, after its read: a lease's expiry is never taken for later than
+        // the read found it.
+        let now = bucket.now();
+        let (epoch, ended, passed) = match found {
+            None => (1, 0, None),
+            Some(lease) if lease.holder != holder && lease.until > now => {
+                return Err(Error::Left(Left::Held));
+            }
+            Some(lease) if holding.since.is_some_and(|since| lease.ended > since) => {
+                return Err(Error::Left(Left::Swept));
+            }
+            Some(lease) => (lease.epoch + 1, lease.ended, lease.passed),
         };
-        let lease = GcLease { format: FORMAT, epoch, holder, passed: passed.clone() };
-        Ok(branch::Step::Write(lease, Taken { epoch, passed }))
+        // Holding for no time, it holds nothing: a pass racing it, whose time was read before it
+        // took the lease, does not find it held.
+        let until = match holding.lease {
+            0 => 0,
+            lease => now.saturating_add(lease),
+        };
+        let lease = GcLease { format: FORMAT, epoch, holder, until, ended, passed: passed.clone() };
+        Ok(branch::Step::Write(lease, Taken { epoch, holder, passed }))
     })
     .await
 }
 
-/// Records `passed` in the collector lease of `cell`, if it is still the taking of `epoch` by
-/// `holder`: whether it was. Its usage counts the lease as it is written.
-pub(crate) async fn record(
+/// Changes the collector lease of `cell` as `change` says, if it is still `taken`: whether it
+/// was. Its usage counts the lease as it is written.
+pub(crate) async fn change(
     bucket: &impl Bucket,
     cell: Cell,
-    epoch: u64,
-    holder: u64,
-    passed: Passed,
+    taken: &Taken,
+    change: impl Fn(GcLease) -> GcLease,
 ) -> Result<bool, Error> {
     let decode = |bytes: &[u8]| GcLease::decode(cell, bytes);
     let key = layout::gc_lease(cell);
     branch::transition(bucket, &key, branch::Start::Read, decode, |found| match found {
-        Some(lease) if lease.epoch == epoch && lease.holder == holder => {
-            let lease = GcLease { passed: Some(passed.clone()), ..lease }.counting_itself();
-            Ok(branch::Step::Write(lease, true))
+        Some(lease) if (lease.epoch, lease.holder) == (taken.epoch, taken.holder) => {
+            Ok(branch::Step::Write(change(lease).counting_itself(), true))
         }
         _ => Ok(branch::Step::Stop(false)),
     })
@@ -356,7 +392,8 @@ mod tests {
             retired: vec!["r".into()],
             usage,
         };
-        let lease = GcLease { format: FORMAT, epoch: 2, holder: 3, passed: Some(passed) };
+        let passed = Some(passed);
+        let lease = GcLease { format: FORMAT, epoch: 2, holder: 3, until: 4, ended: 5, passed };
         let lease = lease.counting_itself();
         let len = layout::encode(&lease).len() as u64;
         let usage = &lease.passed.as_ref().unwrap().usage;
@@ -369,7 +406,7 @@ mod tests {
     #[test]
     fn leases_of_other_formats_are_refused() {
         for format in [FORMAT + 1, 8] {
-            let lease = GcLease { format, epoch: 1, holder: 2, passed: None };
+            let lease = GcLease { format, epoch: 1, holder: 2, until: 0, ended: 0, passed: None };
             let refused = Error::Format { branch: Branch { cell: TEST_CELL, id: 0 }, format };
             assert_eq!(GcLease::decode(TEST_CELL, &layout::encode(&lease)), Err(refused));
         }

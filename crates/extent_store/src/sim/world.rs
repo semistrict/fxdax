@@ -1902,23 +1902,32 @@ impl World {
     }
 
     /// Checks that a sweep of the collector that ran alone, the bucket holding `before` as it
-    /// started, reports what it did (TASK-44.1): the objects it deleted, and the moves it wrote.
-    /// fxdax: and no more references gone than it retired, which it sends again for as long as a
-    /// cell is dead, whether or not they are there (TASK-395.4).
+    /// started, the objects' sizes by their keys, reports what it did (TASK-44.1): the objects it
+    /// deleted, and the moves it wrote. fxdax: and no more references gone than it retired, which
+    /// it sends again for as long as a cell is dead, whether or not they are there (TASK-395.4);
+    /// and the bytes of what it deleted, and of what it compacted, as they were (TASK-395.5).
     fn check_report(
         &mut self,
-        before: &BTreeSet<String>,
+        before: &BTreeMap<String, u64>,
         report: Option<Result<collector::Report, Error>>,
     ) {
         let after: BTreeSet<String> = self.bucket.keys().into_iter().collect();
         let moves = |key: &&String| matches!(layout::kind(key), layout::Kind::Moves { .. });
         let reference = |key: &&String| matches!(layout::kind(key), layout::Kind::Reference { .. });
-        let gone = || before.difference(&after);
+        let gone = || before.keys().filter(|key| !after.contains(*key));
+        let made = || after.iter().filter(|key| !before.contains_key(*key));
         let retired = gone().filter(reference).count();
         let expected = |reported: &collector::Report| collector::Report {
             deleted: gone().filter(|key| !reference(key)).count(),
-            compacted: after.difference(before).filter(moves).count(),
+            compacted: made().filter(moves).count(),
             retired: reported.retired.max(retired),
+            deleted_bytes: gone().filter(|key| !reference(key)).map(|key| before[key]).sum(),
+            // Each moves of what was there then, the object it is of.
+            compacted_bytes: (made().filter(moves))
+                .filter_map(|moves| before.get(&layout::moved_from(moves)?))
+                .sum(),
+            // Which passes skipped their cells, unchanged, the bucket can't tell (TASK-395.6).
+            skipped: reported.skipped,
         };
         match report {
             Some(Ok(report)) if report == expected(&report) => {}
@@ -2331,7 +2340,9 @@ impl World {
         let (bucket, options) = (self.bucket.clone(), self.profile.options);
         let reported = Rc::new(RefCell::new(None));
         let report = reported.clone();
-        let before: BTreeSet<String> = self.bucket.keys().into_iter().collect();
+        let listed = block_on(extent_remote::Bucket::list(&Direct(self.bucket.clone()), ""));
+        let before: BTreeMap<String, u64> =
+            listed.unwrap().into_iter().map(|meta| (meta.key, meta.size)).collect();
         self.spawn(async move {
             *report.borrow_mut() = Some(collector::collect(&*bucket, id, &options).await);
         });

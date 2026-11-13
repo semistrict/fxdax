@@ -275,10 +275,10 @@ case ${{FXDAX_FAKE_HOST:-}} in
         ;;
 esac
 """
-HOST_SCRIPTS = ["test", "bench", "bench-ab", "gets", "mutants", "fork-time"]
+HOST_SCRIPTS = ["test", "bench", "bench-ab", "gets", "mutants", "fork-time", "gc-sweep"]
 # The drivers, and what they run, as the origin has them.
 DRIVERS = ["test-host.sh", "bench-host.sh", "bench-ab-host.sh", "gets-host.sh", "mutants-host.sh",
-           "fork-time-host.sh", "migrate-host.sh", "build-commit.sh", "lib/host.sh",
+           "fork-time-host.sh", "gc-sweep-host.sh", "migrate-host.sh", "build-commit.sh", "lib/host.sh",
            "lib/host-remote.sh"]
 # Copied, not linked: they find the tree they keep their results in by where they are.
 COPIED = ["bench-history.py", "bench_results.py"]
@@ -869,6 +869,7 @@ class Names(unittest.TestCase):
         "bench-ab-host.sh": ("ubu1-fs-bench-ab", {"FXDAX_AB_A": "a=HEAD", "FXDAX_AB_B": "b=same"}),
         "gets-host.sh": ("ubu1-gets", {"FXDAX_GETS_URL": "file:///tmp/gets/"}),
         "mutants-host.sh": ("ubu1-mutants", {}),
+        "gc-sweep-host.sh": ("ubu1-gc-sweep", {}),
     }
 
     def test_runs_at_once_have_names_of_their_own(self):
@@ -996,6 +997,21 @@ class Drivers(unittest.TestCase):
                          f"fork-time-linux-host.sh main={trees}/main old={trees}/old")
         self.assertIn("--bench", (fleet.home("ubu1") / "fxjob-calls").read_text())
         self.assertEqual(fleet.run_driver("fork-time-host.sh", str(results))[0], 2)
+
+    def test_gc_sweeps_are_a_measurement(self):
+        fleet = Fleet()
+        results = fleet.directory / "gc"
+        status, _, errors = fleet.run_driver(
+            "gc-sweep-host.sh", str(results), environment={"FXDAX_GC_AT_ONCE": "1 8"})
+        self.assertEqual(status, 0, errors)
+        ran = (results / "ran.txt").read_text().splitlines()
+        # The fake host script says its name, then its arguments: none.
+        self.assertEqual(ran[0], "gc-sweep-linux-host.sh ")
+        self.assertIn("FXDAX_GC_AT_ONCE=1 8", ran)
+        self.assertIn("--bench", (fleet.home("ubu1") / "fxjob-calls").read_text())
+        self.assertEqual((results / "note.md").read_text().splitlines()[0],
+                         "fxdax-gc's sweeps over a bucket of files of many cells (TASK-395.5).")
+        self.assertEqual(fleet.run_driver("gc-sweep-host.sh", "a", "b")[0], 2)
 
     def test_a_migration_restores_on_the_second_run_what_the_first_left(self):
         fleet = Fleet()

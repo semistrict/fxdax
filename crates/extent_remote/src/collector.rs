@@ -10,9 +10,18 @@
 //! Everything it decides by is under the cell's prefix: its branches' objects, their moves, its
 //! lease, and the references of forks of its branches in other cells ([`layout::reference`]). What
 //! its branches inherited from other cells it reads there, and never deletes: those cells keep it,
-//! by the references of the forks that inherited it. A sweep over every cell is a pass over each,
-//! one after another ([`Collector::collect`]); the cells are found by delimiter listings, listing
-//! none of their objects ([`crate::cell::listed`]).
+//! by the references of the forks that inherited it. A sweep over every cell is a pass over each:
+//! one after another ([`Collector::collect`]), or many at once, by processes any number of them
+//! ([`crate::sweep`]); the cells are found by delimiter listings, a page at a time, listing none
+//! of their objects ([`crate::cell::listed`]).
+//!
+//! fxdax: a pass holds its cell by the cell's lease (`<C>gc/lease`, [`passed::GcLease`],
+//! TASK-395.5) for as long as its collector's [`Holding`] says, renewing it as it goes and letting
+//! it go as it ends: another pass, of this process or another, finds the cell held and leaves it,
+//! as it leaves one whose last pass ended since its sweep began, without waiting ([`Error::Left`]).
+//! A pass of a process gone holds its cell until its lease expires: the next sweep after that
+//! takes it, fencing it. The lease's time only spreads the work: a pass that takes a cell another
+//! still works on fences it as before, and the one fenced deletes nothing.
 //!
 //! A pass takes its cell's lease, lists every object of the cell, and only then reads what
 //! branches need. An object written after the listing is no candidate, which is what makes reading
@@ -93,7 +102,7 @@
 use crate::bucket::{self, Bucket, ByteRange, Created, Meta, Version};
 use crate::layout::{self, Branch, Cell, Kind, Location, Marked, Marks, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
-use crate::passed::{self, Decided, Deferred, Listed, Passed, Usage};
+use crate::passed::{self, Decided, Deferred, GcLease, Listed, Passed, Taken, Usage};
 use crate::record::{self, Record};
 use crate::recovery::{self, Checkpoints, Layered, Layers, Recovered, State};
 use crate::{Error, branch, rules};
@@ -129,6 +138,22 @@ pub struct Options {
     pub grace: u64,
 }
 
+/// fxdax: how a collector's passes hold their cells (TASK-395.5): the default holds none, its
+/// passes taking their cells whatever another holds, but a pass holding it for a time, as the
+/// tests' and the simulation's race, the later fencing the earlier.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Holding {
+    /// How long a pass holds its cell, in milliseconds by the store's clock, from when it takes
+    /// the lease or last renews it, which it does between its steps; 0: not at all (its lease's
+    /// `until` 0), a pass after it taking the cell at once. Long enough for the longest step of a pass over the
+    /// largest cell: one that takes longer is taken from, fenced, and deletes nothing.
+    pub lease: u64,
+    /// When its sweep began, by the store's clock, if it is a sweep's: a pass leaves its cell to
+    /// another's that ended since ([`crate::Left::Swept`]), so that processes sweeping at once
+    /// split the cells rather than go over each other's again.
+    pub since: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     /// The objects of the cell it deleted.
@@ -138,6 +163,14 @@ pub struct Report {
     /// (TASK-395.4): deletes sent, each pass over a dead cell sending them again, as it can't tell
     /// those gone from those not without listing other cells.
     pub retired: usize,
+    /// fxdax: the bytes of what it deleted, as listed (TASK-395.5).
+    pub deleted_bytes: u64,
+    /// fxdax: the bytes of what it compacted, as listed: what goes, a grace period after, of the
+    /// objects, less what their moves take.
+    pub compacted_bytes: u64,
+    /// fxdax: the passes that skipped their cells, each unchanged since its last pass, deleting
+    /// only what that pass deferred (TASK-395.6).
+    pub skipped: usize,
 }
 
 impl std::ops::AddAssign for Report {
@@ -145,6 +178,9 @@ impl std::ops::AddAssign for Report {
         self.deleted += other.deleted;
         self.compacted += other.compacted;
         self.retired += other.retired;
+        self.deleted_bytes += other.deleted_bytes;
+        self.compacted_bytes += other.compacted_bytes;
+        self.skipped += other.skipped;
     }
 }
 
@@ -205,6 +241,8 @@ pub async fn collect_cell(
 /// its lease, which any collector process reads (TASK-395.6, [`crate::passed`]).
 pub struct Collector {
     options: Options,
+    /// fxdax: how its passes hold their cells (TASK-395.5).
+    holding: Holding,
 }
 
 /// fxdax: what a pass over a cell keeps as it reads it, and drops with it.
@@ -217,21 +255,27 @@ struct Remembered {
 
 impl Collector {
     pub fn new(options: Options) -> Self {
-        Self { options }
+        Self { options, holding: Holding::default() }
+    }
+
+    /// fxdax: one whose passes hold their cells as `holding` says (TASK-395.5).
+    pub fn holding(self, holding: Holding) -> Self {
+        Self { holding, ..self }
     }
 
     /// fxdax: a pass over every cell of `bucket`, one after another, as `holder`, which must differ
     /// from every other pass's over each ([`Collector::collect_cell`]): the cells found by
-    /// delimiter listings ([`crate::cell::listed`]). A pass that fails stops none of the others;
-    /// the first error is returned once all ran, what they did then unsaid. What it remembers of
-    /// cells no longer there, it forgets.
+    /// delimiter listings, a page at a time ([`crate::cell::listed`]). A pass that fails stops none
+    /// of the others; the first error is returned once all ran, what they did then unsaid. A cell
+    /// another pass holds it leaves ([`Error::Left`]), as no failure.
     pub async fn collect(&mut self, bucket: &impl Bucket, holder: u64) -> Result<Report, Error> {
-        let cells = crate::cell::listed(bucket).await;
+        let mut cells = std::pin::pin!(crate::cell::listed(bucket));
         let mut report = Report::default();
         let mut failed = None;
-        for cell in cells {
+        while let Some(cell) = cells.next().await {
             match self.collect_cell(bucket, cell, holder).await {
                 Ok(done) => report += done,
+                Err(Error::Left(_)) => {}
                 Err(error) => drop(failed.get_or_insert(error)),
             }
         }
@@ -239,46 +283,69 @@ impl Collector {
     }
 
     /// fxdax: one pass over `cell`, as `holder`, which must differ from every other pass's over the
-    /// cell.
+    /// cell: [`Error::Left`] if it leaves the cell to another, as its lease says.
     ///
     /// It takes the cell's lease, reading what the last pass to end recorded there, and lists the
     /// cell. A listing of the digest recorded, its options the same, is decided as it was: the pass
     /// deletes what was deferred to a grace period, once due, and nothing else, recovering nothing
-    /// (TASK-395.6). Otherwise it passes in full, and records what it found.
+    /// (TASK-395.6). Otherwise it passes in full. It records what it found as it lets the lease go,
+    /// in the one write ([`Collector::release`]).
     pub async fn collect_cell(
         &mut self,
         bucket: &impl Bucket,
         cell: Cell,
         holder: u64,
     ) -> Result<Report, Error> {
-        let Some(taken) = take(bucket, cell, holder).await? else {
+        let Some(mut taken) = self.take(bucket, cell, holder).await? else {
             return Ok(Report::default());
         };
-        let epoch = taken.epoch;
+        let recorded = taken.passed.take();
+        let collected = self.collect_held(bucket, cell, &taken, recorded).await;
+        let ended = match &collected {
+            Ok((_, passed)) => PassEnd::Through(passed.clone()),
+            Err(_) => PassEnd::Failed,
+        };
+        self.release(bucket, cell, &taken, ended).await?;
+        collected.map(|(report, _)| report)
+    }
+
+    /// fxdax: a pass over `cell`, which holds its lease as `taken` says, and what the last pass to
+    /// end recorded, `recorded`: what it did, and what it records, if anything.
+    async fn collect_held(
+        &self,
+        bucket: &impl Bucket,
+        cell: Cell,
+        taken: &Taken,
+        recorded: Option<Passed>,
+    ) -> Result<(Report, Option<Passed>), Error> {
         let listed = first_listing(bucket, cell).await;
         if let Some(listed) = &listed
-            && let Some(passed) =
-                taken.passed.filter(|passed| passed.holds_for(listed, &self.options))
+            && let Some(passed) = recorded.filter(|passed| passed.holds_for(listed, &self.options))
         {
-            return skip(bucket, cell, epoch, holder, passed, listed).await;
+            return self.skip(bucket, cell, taken, passed, listed).await;
         }
         let mut remembered = Remembered::default();
-        let Some(pass) = remembered.survey(bucket, cell, epoch, Writes::Some, listed).await? else {
-            return Ok(Report::default());
+        let survey = remembered.survey(bucket, cell, taken.epoch, Writes::Some, listed);
+        let Some(pass) = survey.await? else {
+            return Ok((Report::default(), None));
         };
         let mut report = Report::default();
+        if !self.renew(bucket, cell, taken).await? {
+            return Ok((report, None));
+        }
         let compacted =
             pass.compact(bucket, &self.options, &mut remembered.lengths, &mut report).await?;
         let (doomed, deferred) = pass.fates(bucket, &self.options).await?;
         // A pass a later one took the lease from stops.
-        if fenced(bucket, cell, epoch).await? {
-            return Ok(report);
+        if !self.holds(bucket, cell, taken).await? {
+            return Ok((report, None));
         }
         // Many at once, in batches where the store deletes so, in any order: none of it is what a
         // live branch needs, whatever else goes (TASK-395.5).
         let keys: Vec<&str> = doomed.iter().map(|meta| meta.key.as_str()).collect();
         bucket::delete_all(bucket, &keys).await;
         report.deleted += keys.len();
+        report.deleted_bytes += doomed.iter().map(|meta| meta.size).sum::<u64>();
         let retired = pass.retired();
         bucket::delete_all(bucket, &retired.iter().map(String::as_str).collect::<Vec<_>>()).await;
         report.retired += retired.len();
@@ -288,14 +355,128 @@ impl Collector {
         compacted.iter().for_each(|(key, size)| usage.add(key, *size));
         let decided = Decided::by(&self.options);
         let listing = pass.recording.digest;
-        let passed = Passed { listing, decided, deferred, retired, usage };
-        passed::record(bucket, cell, epoch, holder, passed).await?;
-        Ok(report)
+        Ok((report, Some(Passed { listing, decided, deferred, retired, usage })))
+    }
+
+    /// fxdax: a pass over `cell`, holding its lease as `taken` says, whose listing, `listed`, is
+    /// the one the last pass to end, which recorded `passed`, decided by (TASK-395.6): it decides
+    /// as that one did, everything a pass decides by being under the cell's prefix (doc-7, Passes
+    /// that skip), whatever process that pass was of. It recovers nothing, and deletes what that
+    /// pass deferred to a grace period, once due, as that pass would have, slow; and then records
+    /// that a pass is to decide anew, as what goes once those are gone it never worked out: the
+    /// moves of an object gone among them. A dead cell's, it retires again the references that
+    /// pass retired: one a parent's writer wrote again since, as it may (TASK-395.14), is retired
+    /// as a pass in full would. What it records: nothing new, if it deleted nothing.
+    async fn skip(
+        &self,
+        bucket: &impl Bucket,
+        cell: Cell,
+        taken: &Taken,
+        passed: Passed,
+        listed: &Listed,
+    ) -> Result<(Report, Option<Passed>), Error> {
+        let skipped = Report { skipped: 1, ..Report::default() };
+        let now = bucket.now();
+        let (due, deferred): (Vec<Deferred>, Vec<Deferred>) =
+            passed.deferred.iter().cloned().partition(|deferred| deferred.due <= now);
+        let retired: Vec<&str> = passed.retired.iter().map(String::as_str).collect();
+        if due.is_empty() && retired.is_empty() {
+            return Ok((skipped, None));
+        }
+        if !self.holds(bucket, cell, taken).await? {
+            return Ok((skipped, None));
+        }
+        let keys: Vec<&str> = due.iter().map(|due| due.key.as_str()).collect();
+        bucket::delete_all(bucket, &keys).await;
+        bucket::delete_all(bucket, &retired).await;
+        let mut report = Report { deleted: keys.len(), retired: retired.len(), ..skipped };
+        if keys.is_empty() {
+            return Ok((report, None));
+        }
+        let mut usage = passed.usage.clone();
+        for key in keys.iter().copied() {
+            if let Some(meta) = listed.objects.get(key) {
+                usage.remove(key, meta.size);
+                report.deleted_bytes += meta.size;
+            }
+        }
+        Ok((report, Some(Passed { listing: None, deferred, usage, ..passed })))
+    }
+
+    /// fxdax: takes `cell`'s lease for a pass of `holder`, holding it as the collector's
+    /// [`Holding`] says, at the epoch after the last pass's, fencing that pass, if the cell has
+    /// anything a pass goes by ([`passable`]): asked only where it has no lease yet, as a pass of
+    /// this format that took one asked it then, and the format of a cell's objects never changes
+    /// (AGENTS.md: no migrations). A lease of another format, [`Error::Format`]. Unless another
+    /// holds it, unexpired ([`crate::Left::Held`]), or one ended since the sweep began
+    /// ([`crate::Left::Swept`]): then it leaves the cell to that pass, writing nothing.
+    async fn take(
+        &self,
+        bucket: &impl Bucket,
+        cell: Cell,
+        holder: u64,
+    ) -> Result<Option<Taken>, Error> {
+        let found = passed::found(bucket, cell).await;
+        if found.is_none() && !passable(bucket, cell).await? {
+            return Ok(None);
+        }
+        passed::take(bucket, cell, found, holder, self.holding).await.map(Some)
+    }
+
+    /// fxdax: whether the pass that took `cell`'s lease as `taken` says holds it still, renewing it
+    /// for as long again as a pass holds it, if it does: what a pass checks before it deletes.
+    async fn holds(&self, bucket: &impl Bucket, cell: Cell, taken: &Taken) -> Result<bool, Error> {
+        match self.holding.lease {
+            0 => Ok(!fenced(bucket, cell, taken.epoch).await?),
+            _ => self.renew(bucket, cell, taken).await,
+        }
+    }
+
+    /// fxdax: renews `cell`'s lease for the pass that took it as `taken` says, for as long again as
+    /// a pass holds it, if it holds it still: whether it does. A collector holding cells for no
+    /// time writes nothing, and goes on: it checks before it deletes ([`Collector::holds`]).
+    async fn renew(&self, bucket: &impl Bucket, cell: Cell, taken: &Taken) -> Result<bool, Error> {
+        if self.holding.lease == 0 {
+            return Ok(true);
+        }
+        let until = bucket.now().saturating_add(self.holding.lease);
+        passed::change(bucket, cell, taken, |found| GcLease { until, ..found }).await
+    }
+
+    /// fxdax: lets `cell`'s lease go, which the pass that took it as `taken` says holds, if it
+    /// does, as the pass `ended`: recording what it went through to, if anything, in the same
+    /// write. Other passes take the cell at once after it, and a sweep that began before a pass
+    /// went through leaves the cell to it. A collector holding cells for no time writes only what a
+    /// pass records: its passes hold nothing.
+    async fn release(
+        &self,
+        bucket: &impl Bucket,
+        cell: Cell,
+        taken: &Taken,
+        ended: PassEnd,
+    ) -> Result<(), Error> {
+        let holds = self.holding.lease != 0;
+        let (went_through, passed) = match ended {
+            PassEnd::Through(passed) => (true, passed),
+            PassEnd::Failed => (false, None),
+        };
+        if !holds && passed.is_none() {
+            return Ok(());
+        }
+        let now = bucket.now();
+        let release = |found: GcLease| {
+            let ended = if holds && went_through { now } else { found.ended };
+            let until = if holds { 0 } else { found.until };
+            let passed = passed.clone().or(found.passed);
+            GcLease { until, ended, passed, ..found }
+        };
+        passed::change(bucket, cell, taken, release).await.map(drop)
     }
 
     /// fxdax: one mark-only pass over `cell`, as `holder`, which must differ from every other
     /// pass's over the cell: a pass but for deleting, which writes what it would delete to its
-    /// marks instead (TASK-264), and retires no reference.
+    /// marks instead (TASK-264), and retires no reference. It never skips its cell, nor records
+    /// what it found: what it would delete it writes to its marks.
     ///
     /// It takes the cell's collector lease, as a pass that deletes does (doc-7, Garbage collection,
     /// step 1). Its marks are ordered by it, each pass's epoch its own and later than every pass's
@@ -314,9 +495,22 @@ impl Collector {
         cell: Cell,
         holder: u64,
     ) -> Result<Marking, Error> {
-        let Some(taken) = take(bucket, cell, holder).await? else {
+        let Some(taken) = self.take(bucket, cell, holder).await? else {
             return Ok(Marking::default());
         };
+        let marked = self.mark_held(bucket, cell, &taken).await;
+        let ended = if marked.is_ok() { PassEnd::Through(None) } else { PassEnd::Failed };
+        self.release(bucket, cell, &taken, ended).await?;
+        marked
+    }
+
+    /// fxdax: a mark-only pass over `cell`, which holds its lease as `taken` says.
+    async fn mark_held(
+        &self,
+        bucket: &impl Bucket,
+        cell: Cell,
+        taken: &Taken,
+    ) -> Result<Marking, Error> {
         let epoch = taken.epoch;
         let listed = first_listing(bucket, cell).await;
         let mut remembered = Remembered::default();
@@ -324,9 +518,12 @@ impl Collector {
             return Ok(Marking::default());
         };
         let mut report = Report::default();
+        if !self.renew(bucket, cell, taken).await? {
+            return Ok(Marking::default());
+        }
         pass.compact(bucket, &self.options, &mut remembered.lengths, &mut report).await?;
         let doomed = pass.doomed(bucket, &self.options).await?;
-        if fenced(bucket, cell, epoch).await? {
+        if !self.holds(bucket, cell, taken).await? {
             return Ok(Marking { report, ..Marking::default() });
         }
         let resurrected =
@@ -350,11 +547,7 @@ impl Collector {
     /// Where a pass would give up on a fork of a point deleted, writing its record, it takes the
     /// fork as given up on, as a pass mostly finds it. It goes over the cell in full, whatever the
     /// last pass recorded.
-    pub async fn dry_run_cell(
-        &mut self,
-        bucket: &impl Bucket,
-        cell: Cell,
-    ) -> Result<DryRun, Error> {
+    pub async fn dry_run_cell(&self, bucket: &impl Bucket, cell: Cell) -> Result<DryRun, Error> {
         let epoch = passed::epoch(bucket, cell).await?;
         let listed = first_listing(bucket, cell).await;
         let mut remembered = Remembered::default();
@@ -367,6 +560,15 @@ impl Collector {
         let retired = pass.retired();
         Ok(DryRun { doomed, compactable, retired, fenced: fenced(bucket, cell, epoch).await? })
     }
+}
+
+/// fxdax: how a pass over a cell ended, which its letting go of the cell's lease writes
+/// ([`Collector::release`]).
+enum PassEnd {
+    /// It went through, deleting what it found to, recording this, if anything.
+    Through(Option<Passed>),
+    /// It failed: the next pass decides anew.
+    Failed,
 }
 
 impl Remembered {
@@ -543,63 +745,6 @@ async fn first_listing(bucket: &impl Bucket, cell: Cell) -> Option<Listed> {
         true => Some(passed::list(bucket, cell).await),
         false => None,
     }
-}
-
-/// fxdax: takes the collector lease of `cell` as `holder`, as a pass over the cell does, if the
-/// cell has anything a pass goes by ([`passable`]): asked only where it has no lease yet, as a pass
-/// of this format that took one asked it then, and the format of a cell's objects never changes
-/// (AGENTS.md: no migrations). A lease of another format, [`Error::Format`].
-async fn take(
-    bucket: &impl Bucket,
-    cell: Cell,
-    holder: u64,
-) -> Result<Option<passed::Taken>, Error> {
-    let found = passed::found(bucket, cell).await;
-    if found.is_none() && !passable(bucket, cell).await? {
-        return Ok(None);
-    }
-    passed::take(bucket, cell, found, holder).await.map(Some)
-}
-
-/// fxdax: a pass over `cell` of the lease's `epoch`, taken by `holder`, whose listing, `listed`, is
-/// the one the last pass to end, which recorded `passed`, decided by (TASK-395.6): it decides as
-/// that one did, everything a pass decides by being under the cell's prefix (doc-7, Passes that
-/// skip). It recovers nothing, and deletes what that pass deferred to a grace period, once due,
-/// as that pass would have, slow; and then records that a pass is to decide anew, as what goes once
-/// those are gone it never worked out: the moves of an object gone among them. A dead cell's, it
-/// retires again the references that pass retired: one a parent's writer wrote again since, as it
-/// may, is retired as a pass in full would.
-async fn skip(
-    bucket: &impl Bucket,
-    cell: Cell,
-    epoch: u64,
-    holder: u64,
-    passed: Passed,
-    listed: &Listed,
-) -> Result<Report, Error> {
-    let now = bucket.now();
-    let (due, deferred): (Vec<Deferred>, Vec<Deferred>) =
-        passed.deferred.into_iter().partition(|deferred| deferred.due <= now);
-    let retired: Vec<&str> = passed.retired.iter().map(String::as_str).collect();
-    if (due.is_empty() && retired.is_empty()) || fenced(bucket, cell, epoch).await? {
-        return Ok(Report::default());
-    }
-    let keys: Vec<&str> = due.iter().map(|due| due.key.as_str()).collect();
-    bucket::delete_all(bucket, &keys).await;
-    bucket::delete_all(bucket, &retired).await;
-    let report = Report { deleted: keys.len(), retired: retired.len(), ..Report::default() };
-    if keys.is_empty() {
-        return Ok(report);
-    }
-    let mut usage = passed.usage.clone();
-    for key in keys.iter().copied() {
-        if let Some(meta) = listed.objects.get(key) {
-            usage.remove(key, meta.size);
-        }
-    }
-    let passed = Passed { listing: None, deferred, usage, ..passed };
-    passed::record(bucket, cell, epoch, holder, passed).await?;
-    Ok(report)
 }
 
 /// fxdax: whether a pass writes to the bucket what giving up on forks needs: a dry run writes
@@ -1432,14 +1577,20 @@ impl Pass {
     ) -> Result<Vec<(String, u64)>, Error> {
         let compactable = self.compactable(bucket, options, lengths).await?;
         let compactions = futures::stream::iter(compactable)
-            .map(|(meta, extents)| compact_object(bucket, &meta.key, extents))
+            .map(|(meta, extents)| async move {
+                let moves = compact_object(bucket, &meta.key, extents).await?;
+                Ok::<_, Error>(moves.map(|moves| (moves, meta.size)))
+            })
             .buffer_unordered(COMPACTIONS_AT_ONCE);
         let mut compactions = std::pin::pin!(compactions);
         let mut compacted = Vec::new();
-        while let Some(moves) = compactions.next().await {
-            compacted.extend(moves?);
+        while let Some(done) = compactions.next().await {
+            if let Some((moves, size)) = done? {
+                report.compacted += 1;
+                report.compacted_bytes += size;
+                compacted.push(moves);
+            }
         }
-        report.compacted += compacted.len();
         Ok(compacted)
     }
 
@@ -1618,7 +1769,7 @@ mod tests {
 
             let before = keys(&*bucket).await;
             let report = collect(&*bucket, 1, &KEEP).await.unwrap();
-            assert_eq!(report, Report { deleted: 1, compacted: 0, retired: 0 });
+            assert_eq!(report, Report { deleted: 1, compacted: 0, retired: 0, ..report });
             let left: Vec<_> = before.into_iter().filter(|key| *key != gone).collect();
             assert_eq!(keys(&*bucket).await, left);
             assert!(left.contains(&ahead) && left.contains(&layout::record(test_branch(1))));
@@ -1725,7 +1876,7 @@ mod tests {
             assert!(after.contains(&segment) && after.contains(&layout::moves(&segment).unwrap()));
             assert!(after.contains(&layout::record(test_branch(1))));
             let report = collect(&*bucket, 2, &compacting).await.unwrap();
-            assert_eq!(report, Report { deleted: 0, compacted: 0, retired: 0 });
+            assert_eq!(report, Report::default());
             assert_eq!(keys(&*bucket).await, after);
             let location = writer.location(small).unwrap();
             assert_eq!(crate::read(&bucket, small, &location).await.unwrap(), b"small");
@@ -2480,10 +2631,9 @@ mod tests {
     /// specs/bucket's TLA+ (TASK-165.2), the model BucketPointsDeep.
     #[test]
     fn children_restored_from_points_keep_their_origins_though_their_ids_were_forked_to() {
-        assert_eq!(
-            block_on(pass_as_a_child_is_restored()),
-            Ok(Report { deleted: 2, compacted: 0, retired: 0 })
-        );
+        let report = block_on(pass_as_a_child_is_restored());
+        let counts = report.map(|report| (report.deleted, report.compacted, report.retired));
+        assert_eq!(counts, Ok((2, 0, 0)));
     }
 
     /// A pass recovering each branch once, by its parent's state: it deletes what the restore's
@@ -2567,10 +2717,7 @@ mod tests {
     fn deleted_roots_keep_their_records_from_slow_writers_forking_to_their_ids() {
         let (record, passed) = block_on(record_a_fork_to_a_deleted_root());
         let deleted = Record { deleted: true, ..crate::record::Kind::Root.of(0x21) };
-        assert_eq!(
-            (record, passed),
-            (Some(deleted), Ok(Report { deleted: 0, compacted: 0, retired: 0 }))
-        );
+        assert_eq!((record, passed), (Some(deleted), Ok(Report::default())));
     }
 
     /// The collector dropping a deleted root's record: the slow writer makes it again, a fork's
@@ -2628,8 +2775,7 @@ mod tests {
     #[test]
     fn deletions_at_once_fence_out_forks_landing_between_them() {
         // The first pass, after both deletions' fences, deleted all of the branch.
-        let fenced =
-            (Err(Error::Fenced), None, Ok(Report { deleted: 0, compacted: 0, retired: 0 }));
+        let fenced = (Err(Error::Fenced), None, Ok(Report::default()));
         assert_eq!(block_on(delete_twice_as_a_fork_lands()), fenced);
     }
 
@@ -2847,9 +2993,10 @@ mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
         {
-            self.bucket.list_delimited(prefix)
+            self.bucket.list_delimited(prefix, page)
         }
 
         fn put(
@@ -2969,9 +3116,10 @@ mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
         {
-            self.bucket.list_delimited(prefix)
+            self.bucket.list_delimited(prefix, page)
         }
 
         fn put(
@@ -3169,9 +3317,10 @@ mod tests {
         assert_eq!(counted(&rounds, &whole), [SEGMENTS]);
 
         let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 2));
+        let report = report.unwrap();
         assert_eq!(
-            report.unwrap(),
-            Report { deleted: SEGMENTS as usize, compacted: 0, retired: 0 }
+            report,
+            Report { deleted: SEGMENTS as usize, compacted: 0, retired: 0, ..report }
         );
         // A footer is read by its range, once its trailer, the object's end, says where it is.
         let footers = |asked: &str| {
@@ -3207,7 +3356,10 @@ mod tests {
 
             let (served, stats) = (server.requests(), bucket.stats());
             let report = collector.collect(&*bucket, 2).await.unwrap();
-            assert_eq!(report, Report { deleted: SEGMENTS as usize, compacted: 0, retired: 0 });
+            assert_eq!(
+                report,
+                Report { deleted: SEGMENTS as usize, compacted: 0, retired: 0, ..report }
+            );
             let (served_after, stats_after) = (server.requests(), bucket.stats());
             let served =
                 |kind| served_after.get(kind).unwrap_or(&0) - served.get(kind).unwrap_or(&0);
@@ -3471,8 +3623,9 @@ mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<crate::bucket::Listing, BucketError>> + Send {
-            self.bucket.list_delimited(prefix)
+            self.bucket.list_delimited(prefix, page)
         }
 
         fn put(
@@ -3533,9 +3686,10 @@ mod tests {
         fn list_delimited(
             &self,
             prefix: &str,
+            page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
         {
-            self.bucket.list_delimited(prefix)
+            self.bucket.list_delimited(prefix, page)
         }
 
         fn put(
@@ -3686,7 +3840,7 @@ mod tests {
             done: AtomicBool::new(false),
         };
         let report = block_on(collect(&deleting, 2, &KEEP)).unwrap();
-        assert_eq!(report, Report { deleted: 1, compacted: 0, retired: 0 });
+        assert_eq!(report, Report { deleted: 1, compacted: 0, retired: 0, ..report });
         assert!(!block_on(keys(&deleting)).contains(&stray));
     }
 
@@ -3757,7 +3911,7 @@ mod tests {
             let keys_before = keys(&*bucket).await;
             let now = Options { compact_below: 0.0, grace: 0 };
             let report = collect(&*bucket, 2, &now).await.unwrap();
-            assert_eq!(report, Report { deleted: 2, compacted: 0, retired: 0 });
+            assert_eq!(report, Report { deleted: 2, compacted: 0, retired: 0, ..report });
             let after = keys(&*bucket).await;
             let deleted: Vec<String> =
                 keys_before.into_iter().filter(|key| !after.contains(key)).collect();
@@ -3796,7 +3950,7 @@ mod tests {
             garbage(&bucket).await;
             let before = keys(&*bucket).await;
             let report = collect(&*bucket, 2, &compacting).await.unwrap();
-            assert_eq!(report, Report { deleted: 2, compacted: 1, retired: 0 });
+            assert_eq!(report, Report { deleted: 2, compacted: 1, retired: 0, ..report });
             let after = keys(&*bucket).await;
             before.into_iter().filter(|key| !after.contains(key)).collect::<Vec<_>>()
         });
@@ -3807,7 +3961,10 @@ mod tests {
             let before = held(&*bucket).await;
             let mut collector = Collector::new(compacting);
             let marking = collector.mark_cell(&*bucket, layout::TEST_CELL, 2).await.unwrap();
-            assert_eq!(marking.report, Report { deleted: 0, compacted: 1, retired: 0 });
+            assert_eq!(
+                marking.report,
+                Report { deleted: 0, compacted: 1, retired: 0, ..marking.report }
+            );
             assert_eq!(marking.resurrected, Vec::<String>::new());
             let marks = marking.marks.unwrap();
             let listed: BTreeMap<String, Meta> =
@@ -3839,7 +3996,7 @@ mod tests {
             assert_eq!(left, kept(&before));
 
             let next = collector.mark_cell(&*bucket, layout::TEST_CELL, 3).await.unwrap();
-            assert_eq!(next.report, Report { deleted: 0, compacted: 0, retired: 0 });
+            assert_eq!(next.report, Report::default());
             assert_eq!(next.resurrected, Vec::<String>::new());
             let marked: Vec<String> =
                 next.marks.unwrap().marked.into_iter().map(|marked| marked.key).collect();
@@ -3849,7 +4006,7 @@ mod tests {
             assert_eq!(marked, expected);
 
             let report = collect(&*bucket, 4, &compacting).await.unwrap();
-            assert_eq!(report, Report { deleted: 3, compacted: 0, retired: 0 });
+            assert_eq!(report, Report { deleted: 3, compacted: 0, retired: 0, ..report });
             let marks: Vec<String> = (keys(&*bucket).await.into_iter())
                 .filter(|key| matches!(layout::kind(key), Kind::Marks { .. }))
                 .collect();
@@ -4876,7 +5033,7 @@ mod tests {
             .0;
         let options = Options { compact_below: 0.0, grace: 0 };
         bucket.served(crate::testing::collect_until_quiet(&*bucket, &options)).0.unwrap();
-        let cells = bucket.served(crate::cell::listed(&*bucket)).0;
+        let cells: Vec<Cell> = bucket.served(crate::cell::listed(&*bucket).collect()).0;
         assert_eq!(cells.len(), 6, "{cells:?}");
         let mut collector = Collector::new(options);
         let mut holder = 0x10;
@@ -4979,6 +5136,7 @@ mod tests {
             let (report, asked) = bucket.served(collector.collect_cell(&*bucket, cell, holder));
             (report.unwrap(), asked)
         };
+        let skipped = Report { skipped: 1, ..Report::default() };
         let (report, _) = pass(&mut collector);
         assert_eq!(report.compacted, SEGMENTS as usize);
         // In full, the cell's listing changed by the moves: the segments deferred.
@@ -4986,14 +5144,14 @@ mod tests {
         assert_eq!(report, Report::default());
         assert!(asked.len() > idle(cell).len(), "{asked:#?}");
         let (report, asked) = pass(&mut collector);
-        assert_eq!((report, asked), (Report::default(), idle(cell)));
+        assert_eq!((report, asked), (skipped, idle(cell)));
         bucket.advance(999);
         let (report, asked) = pass(&mut collector);
-        assert_eq!((report, asked), (Report::default(), idle(cell)));
+        assert_eq!((report, asked), (skipped, idle(cell)));
 
         bucket.advance(1);
         let (report, asked) = pass(&mut collector);
-        assert_eq!(report, Report { deleted: SEGMENTS as usize, compacted: 0, retired: 0 });
+        assert_eq!(report, Report { deleted: SEGMENTS as usize, skipped: 1, ..report });
         let lease = layout::gc_lease(cell);
         let mut expected = idle(cell);
         expected.push(format!("get {lease}"));
@@ -5008,7 +5166,7 @@ mod tests {
         assert_eq!(report, Report::default());
         assert!(asked.len() > idle(cell).len(), "{asked:#?}");
         let (report, asked) = pass(&mut collector);
-        assert_eq!((report, asked), (Report::default(), idle(cell)));
+        assert_eq!((report, asked), (skipped, idle(cell)));
     }
 
     /// TASK-395.6: a pass skips nothing it went by more than the cell for. A clone being made in the
@@ -5072,14 +5230,14 @@ mod tests {
             assert_eq!(asked, retiring);
         };
         let (report, asked) = pass(&mut collector, 5);
-        assert_eq!(report, Report { retired: 1, ..Report::default() });
+        assert_eq!(report, Report { retired: 1, skipped: 1, ..Report::default() });
         retiring(asked);
         bucket.served(async {
             let bytes = layout::encode(&layout::Reference::of(0x33));
             bucket::create(&*bucket, &reference, bytes).await;
         });
         let (report, asked) = pass(&mut collector, 6);
-        assert_eq!(report, Report { retired: 1, ..Report::default() });
+        assert_eq!(report, Report { retired: 1, skipped: 1, ..Report::default() });
         retiring(asked);
         assert!(!bucket.keys().contains(&reference));
         let mut other = Collector::new(Options { compact_below: 0.5, grace: 0 });
