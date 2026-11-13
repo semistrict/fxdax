@@ -3,9 +3,11 @@ id: TASK-395
 title: >-
   The collector scales to thousands of tenants, millions of branches and 100M+
   objects: a pass per cell, conservative
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13T08:52:00Z'
+updated_date: '2026-11-13 09:15'
 labels:
   - bucket
   - collector
@@ -39,3 +41,9 @@ The old whole-bucket pass goes when the per-cell one lands: no two collectors si
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Delegated in dependency order. Wave 1 (parallel, no shared files): 395.1 spec (design of record); 395.5 AC #1/#3 (delimiter listing, concurrent footers/compactions, batch deletes); 395.7 minus AC #3 (shared flag, control API, cross-tenant clone refusal). Wave 2 after 395.1: 395.2 layout, 395.3 references, 395.4 per-cell pass, as one batch. Wave 3: 395.5 sweep (AC #2/#4/#5), 395.6 incremental, 395.7 AC #3, 395.8 usage. One ubu1 workspace run per wave, run by the parent, one job at a time.
+<!-- SECTION:PLAN:END -->
