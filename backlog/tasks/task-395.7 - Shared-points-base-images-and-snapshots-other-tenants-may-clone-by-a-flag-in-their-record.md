@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 10:23'
+updated_date: '2026-11-13 11:27'
 labels:
   - bucket
   - collector
@@ -60,4 +60,6 @@ Landed on main as a19ec824a (rebased from 88f81c2d1).
 - Tests: extent_remote record flags (128 combinations, 14 records) and format 7 refused; branch::forks_of_points_into_other_tenants_need_them_shared; fxdax remote::points_fork_into_other_tenants_cells_while_shared (refused EACCES leaving nothing, same tenant unchecked, shared/unshared, then the point deleted and two collector passes: the other tenant's clone still reads all it inherited, so AC #4's third test passes today without references); fxdaxctl points_are_shared_and_unshared_locally; Linux only, not run here: grants.rs tenants_restore_points_given_them_into_cells_of_their_own (restore refused until SharePoint, again after unshare) and bases_made_shared_points_fork_into_other_tenants (ForkStore, shared at making, EINVAL cases).
 - Verified on macOS: clippy (test.sh part and default) clean; scripts/test.sh whole: workspace 2290/2290, sim 55/55, shuttle parts all passed, scripts and go passed, mutants 1 broken (fixed, scripts part re-run: 0 broken). After the rebase onto TASK-395.5's collector/bucket changes: clippy clean, nextest extent_remote+extent_store+fxdax 782/782.
 - Not checked: AC #1 and #2 wait on ubu1's run of the Linux daemon tests (grants.rs); AC #3 needs fork references (TASK-395.3, not built); AC #4 partly (the daemon tests on Linux). Writable cross-tenant forks (tenant-0 public bases forked into tenants' directories) left unchecked: TASK-395.9. Decisions in OPEN_QUESTIONS.md. TASK-395.2's layout is now format 9.
+
+ubu1 run t395w1 on main 09863b785 (a1348601d + a19ec824a, under fxjob): workspace 2563/2563 passed (86 skipped), sim 55/55, the other nextest parts all passed, the grants.rs daemon tests (restore refused until shared, ForkStore with shared points) among them; guest tests exit 0; scripts 307 OK. One failure: crates/fxdax/mutants/forks-take-branches-claimed.patch didn't apply under GNU patch: this task's hand re-anchoring left its first hunk counting 9 of its 10 lines, with 4 lines of context before and 2 after; BSD patch on macOS took it. Fixed in 7ed0b0290. Blind spot: the mutant scripts' check ran on BSD patch on macOS, laxer than GNU's -F0. Class test: 50512c5bf, scripts/lib/patches.sh's patch_well_formed (header counts, even context away from a file's ends) in all four crates' mutant scripts, scripts/tests/test_patches.py; red on the old patch, all 68 committed patches pass. Looked around: guest/sim/lib.sh applies patches only on Linux (GNU patch), not affected.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 10:07'
+updated_date: '2026-11-13 11:27'
 labels:
   - bucket
   - collector
@@ -64,4 +64,6 @@ Landed:
 Bug found: file buckets kept the directories of deleted objects forever, one per deleted branch, and a delimiter listing reported them as prefixes of nothing. Found by the new conformance check. Blind spot: conformance only listed whole prefixes, which skip directories. Fixed with LocalFileSystem's automatic cleanup; creates racing it are safe (a staged upload recreates its directory, and a non-empty directory is never removed). Structure: fine, a one-line setting.
 Tests: conformance (memory, file, simulated, S3 server; RustFS/GCS/Azurite through their ignored runs) lists by delimiter and deletes a batch; faults::requests_fail_as_their_faults_say; store::s3_deletes_in_batches_and_lists_by_delimiter (2,500 deletes in 3 DeleteObjects, 0 DELETE, 1 delimiter listing); collector::passes_delete_in_batches_over_s3 (a pass's 5 deletes in 1 DeleteObjects); collector::passes_compact_and_read_moves_at_once (5 compactions, 5 moves footers and 5 deletes, each in one round).
 Verified: cargo clippy -p extent_remote -p extent_store --all-targets clean for these changes (3 pre-existing warnings elsewhere); cargo nextest run -p extent_remote 240 passed, 9 skipped; scripts/test.sh passed (workspace 2290/2290, sim 55, shuttle 37 and the rest, scripts 307 OK, mutant checks, go). Two fxdax remote tests that listed every request kind were updated. No ubu1 run (the parent batches one). Decisions in OPEN_QUESTIONS.md.
+
+ubu1 run t395w1 on main 09863b785 (a1348601d with TASK-395.7): workspace 2563/2563 passed, sim 55/55, guest tests exit 0. Linux DoD item for this round's code met; the task's remaining ACs wait on the per-cell pass.
 <!-- SECTION:NOTES:END -->
