@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10 23:37'
+updated_date: '2026-11-13 08:20'
 labels:
   - perf
   - extentd
@@ -32,3 +33,9 @@ Found by TASK-330.1's sandboxes run on GitHub's ubuntu-24.04 runner (4 AMD EPYC 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-13 (claude, TASK-330.5's re-run): GitHub's runner, sandboxes short mode on main 4e0bf82f5 (TASK-369/384/382/388 in; run 43390653591): fails only framings, 2 a host past 1 s (host-a 1,363.0 and 1,264.0 ms, host-b 1,416.3 and 1,357.1 ms), every one of them all write phase (own 0.0, write = total): the syncs no longer show at all. 100/97 framings past the logging threshold, sum 20.8/21.3 s; stores 1.20/1.19x; commands <= 117 ms; daemons 1.73/1.78 GB peak RSS, 33.8/33.3 s CPU; VMs 147.9 s. So this task is now what keeps the short mode out of ci.yml on GitHub's 4-CPU runners.
+<!-- SECTION:NOTES:END -->
