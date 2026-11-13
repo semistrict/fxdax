@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 13:49'
+updated_date: '2026-11-13 15:25'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -162,6 +162,7 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `<C>moves/<rest>` | the live extents of the object at `<C><rest>`, compacted, and where in it each is; `<C>moves/moves/<rest>` those moves' (Garbage collection) | create-only, by the collector |
 | `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference of a fork of the cell's branch `parent` to a child of another cell, or a clone's (Garbage collection, References) | create-only, before the child's record; retired by the child's cell's pass |
 | `objectid/<block>` | a block of object IDs taken by one allocator, which gives its IDs out, each once (Object IDs) | create-only; kept for good |
+| `gc/marking` | there while mark-only passes mark the bucket: what readers read, a HEAD a minute, before watching any cell's marks (Garbage collection, Watching before deleting) | created by a mark-only pass; removed by an operator with the marks |
 
 A branch is named by its cell and its ID (`layout::Branch`, displayed `TENANT/CELL/ID`): footers,
 fork children (`Child`) and origins (`Origin`) name branches so, so that recovery and the collector
@@ -778,7 +779,9 @@ origin), as the clone's record names that origin as its own.
   marks the parent deleted (rule `referencesFirst`).
 - **A clone of a point**: the reference first, then the child's record being made (`forking`), then
   the read of the point's record (rule `clonesReferFirst`). A clone that finds the point deleted
-  fails, its record deleted, and leaves its reference to be retired. A clone writes its reference
+  fails, its record deleted, and leaves its reference to be retired. One whose child's ID has a
+  record already, of another origin, or deleted with none, takes its reference back: no record's
+  origin will name it (a host dying first leaves it: TASK-395.10). A clone writes its reference
   **whatever cell it is in**, the origin's too (as no host makes: every restore is a new cell):
   the origin's cell's pass reads its records before the states and its references after, so a
   clone in that cell, made after the records were read, whose point (in another cell) is deleted
@@ -860,7 +863,7 @@ lease, its LISTs, its other GETs and every PUT and DELETE, is under `<C>`):
 | Request | When | How many per pass |
 |---|---|---|
 | LIST | never | 0 |
-| GET of a parent's record, checkpoint or segments (another cell's) | recovering a live branch of `<C>` with no checkpoint of its own, or a fork point whose parent has none at or before it, through its origins until one has | per such branch, its ancestors' reads to their nearest checkpoint; 0 for a branch with a checkpoint |
+| GET of a parent's checkpoint at the fork point, by its key (another cell's) | recovering a live branch of `<C>` with no checkpoint of its own, forked from another cell; or a fork point of `<C>` whose parent has no checkpoint at or before it, and inherits from another cell | one per such branch or fork point; 0 for a branch with a checkpoint |
 | GET of a point's record | a clone in `<C>` still being made | one per such clone (they last one restore) |
 | GET of a child's record | a fork point's state found lost | one per child of that fork point (never, when nothing is lost) |
 | DELETE of a reference under the parent's cell | `<C>` has no live branch and no reference | one per deleted record of `<C>` with an origin elsewhere, until `<C>`'s listing stops changing (TASK-395.6), and none after |
@@ -902,11 +905,26 @@ exact, but a protocol across cells every pass.
 
 **For the code, beyond the model** (TASK-395.3, 395.4):
 
-- **Listings are atomic in the model; a LIST is not**, its pages read one after another. A fork
-  point is missed if a clone's reference is created behind the listing's cursor while the point's
-  own reference ahead of it is retired. So a pass **lists its references twice**, keeping a fork
-  point either listing shows: a reference created during the first is in the second whole, and one
-  created after the first ended came while the point's reference still stood, throughout the first.
+- **Listings are atomic in the model; a LIST is not**, its pages read one after another. A listing
+  of the references whole would miss a fork point whose clone's reference is created behind its
+  cursor while the point's own, ahead of it, is retired. The code lists the fork points' prefixes,
+  by delimiter, once: a clone's reference and its point's own share the prefix
+  `<C>refs/<origin>/<at>/`, the clone's created before the point's is retired, so the prefix holds
+  a key all along, and a listing reaching it shows it. (Listed twice until TASK-395.4's review.) The model's rule `referencesRelisted`, the
+  references listed after the states, is the code's still.
+- **A fork's recovery reads its parent in another cell by the checkpoint at the fork point, by its
+  key** (TASK-395.4's review): a LIST of the parent's checkpoints, to find the newest at or before
+  the fork point, would be a pass's LIST outside its cell. So whoever records a fork across cells
+  (`branch::record_fork`: the fork's writer, the next, the parent's deletion; and a failed fork's
+  live claim) first makes sure the parent has a checkpoint at the fork point
+  (`recovery::checkpoint_at`): the state any reader finds there, created only where none is, its
+  extents named where they were sealed, never further along their moves than a reader names them.
+  Its clones, of a point, read the same, which recording the point wrote; a point in its origin's
+  own cell, which no host makes, has none, and its clones into other cells recover not. A pass over
+  the parent's cell keeps it as the newest checkpoint at or before the fork point, which is what the
+  model's fork point keeps; the checkpoint is a late one, as the model's writers' may land, of a
+  segment acknowledged, so the model needs no change (`StateAt` reads the newest checkpoint up to
+  the fork point, which it is). Gone, what the fork inherited is: kept while a reference names it.
 - **The model's recoveries are atomic; the code's are not.** A clone being made whose recovery fails
   is given up on if its point's record, read again, says deleted, rather than failing the pass.
 - **Several volumes in a cell:** retirement waits for the whole cell, so a deleted volume of a
@@ -920,16 +938,20 @@ exact, but a protocol across cells every pass.
 - **A failed clone's cleanup names its origin** (`Remote::unfork` of a point's copy: a deleted
   forking record), so that its cell's pass retires its reference.
 - **References never retired** (TASK-395.10): a clone's whose host died between its reference and
-  its record, and a writable fork's whose child's ID another branch took between the record's read
-  and its create. Space, never data; the model has them too (`RefPoints`: "a reference left by a
+  its record (one refused by a record there takes its reference back), and a writable fork's whose
+  child's ID another branch took between the record's read and its create. Space, never data; the model has them too (`RefPoints`: "a reference left by a
   fork that failed").
 - **A lost fork point** is recovered again each pass (64 restarts, as any recovery) while a
   reference names it, its children's records read only then.
 - **Retiring is repeated** by every pass over a dead cell, the pass unable to tell the references
   gone from those not without listing other cells: a delete each (sent in batches), counted in
   `Report::retired`, until TASK-395.6 skips the dead cell's unchanged listing.
-- **A pass over a cell its listing finds empty** still takes the cell's lease, which is then the
-  cell's one object (`fxdax-gc --cell` of a cell with nothing).
+- **A pass checks the cell before taking its lease**: the format of its first record, refused
+  before anything is written, and, the cell holding no record, whether it holds anything at all: a
+  pass over a cell of nothing writes nothing.
+- **A collector keeps nothing of a cell from one pass to the next** (TASK-395.4's review): a sweep
+  over every cell holds no more than the cell it passes over; TASK-395.6 is to keep what is worth
+  keeping, under the cell's prefix.
 
 The rest of a pass, unchanged within the cell:
 
@@ -1002,10 +1024,14 @@ operator to see what the collector would do before trusting it with a bucket:
   moves both, and every marks object, until an operator collects for real or removes them. The
   collector never takes `<C>gc/` for a candidate, nor for a branch's.
   - **Readers warn.** Every reader of a bucket reads it through `store::Store` (extentd's remote
-    stores, writers recovering, fxdaxctl, the collector), which holds the newest marks' keys of
-    each cell it reads, read again every 60 s by a listing of the cell's `gc/marks/` (and a read
-    once it changed) alongside one of its reads of the cell, uncounted in its stats, never a round
-    trip a read: a listing a minute for each cell read (TASK-395.2). A GET, ranged GET or HEAD of a marked key logs a `warn`
+    stores, writers recovering, fxdaxctl, the collector). A mark-only pass writes `gc/marking`
+    first, which a reader reads every 60 s, a HEAD, alongside one of its reads; only while it is
+    there does the reader hold the newest marks' keys of each cell it reads, read again every 60 s
+    by a listing of the cell's `gc/marks/` (and a read once it changed) alongside one of its reads
+    of the cell, a cell not read for two minutes forgotten; all uncounted in its stats, never a
+    round trip a read. Unmarked, a bucket costs a reader a HEAD a minute (TASK-395.4's review: a
+    listing a minute for every cell each host reads was thousands a second at a million VMs). An
+    operator removes `gc/marking` with the marks. A GET, ranged GET or HEAD of a marked key logs a `warn`
     with the key, its kind (naming its branch), the request, the marks' epoch and the current span's
     trace and span IDs; in extentd the log names the guest request too (`request_id`). A read costs
     one load with no marks, one set lookup with some. Listings are logged at `debug` only: they name
