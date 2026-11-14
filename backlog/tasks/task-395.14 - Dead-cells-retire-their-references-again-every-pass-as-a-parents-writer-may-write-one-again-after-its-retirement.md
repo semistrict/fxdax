@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13 18:38'
-updated_date: '2026-11-14 12:02'
+updated_date: '2026-11-14 12:53'
 labels:
   - bucket
   - collector
@@ -36,6 +36,16 @@ Found by the simulation (seed 53 of restores) once TASK-395.6 skipped unchanged 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Done together with TASK-395.13 (see its plan).
+1. Model: a recorder finding the child's record live, its own, writes no reference; retirements marked (rule retirementsMarked, mutation NoRetirementsMarked).
+2. Direct test of seed 53's order (recorders_finding_their_childs_record_write_no_reference) and of a None-read stale write after retirement (stale_recorders_references_*).
+3. Code: record_fork's skip; Passed::retired and Collector::skip's re-send dropped.
+4. Tests updated: a skip of a dead cell asks its lease and listing alone.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

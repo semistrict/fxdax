@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-13 18:27'
-updated_date: '2026-11-14 12:02'
+updated_date: '2026-11-14 12:53'
 labels:
   - bucket
   - collector
@@ -36,3 +36,14 @@ Found by TASK-395.10's strict oracle (testing::uncollected flags a reference no 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Done together with TASK-395.14 (both change who writes references and when).
+1. Model first: Bucket.tla splits record_fork's read of the child's record from its write of the reference (writer and deletion); rule retirementsMarked (a retirement or take-back writes a kept mark beside the reference; a pass deletes its cell's references listed marked); invariant ReferencesRetiredMarked; mutation NoRetirementsMarked (TLC fails it).
+2. Direct test of the stale-read-then-crash order (collector::tests::left_by_a_stale_recorder, taken).
+3. Code: layout::retired, branch::retire/take_back mark first, Listed::stale deleted by the pass.
+4. testing::uncollected loses its TASK-395.13 excuse.
+5. Simulation: leak searches for references_taken_back and retirements_marked; re-seed what loses its search.
+<!-- SECTION:PLAN:END -->
