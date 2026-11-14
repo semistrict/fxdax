@@ -28,7 +28,7 @@ use crate::{Error, object, rules};
 use extent_frame::spent::Spent;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use storage_device::ExtentId;
 
@@ -452,6 +452,10 @@ pub(crate) struct Checkpoints<'a, B: Bucket> {
     /// How many of those read it keeps, the last read.
     keep: usize,
     read: Mutex<Read<'a>>,
+    /// fxdax: a listing of the cell, taken before the recoveries began, and the branches whose
+    /// checkpoints it gave a listing of once (TASK-395.16, [`Checkpoints::listed`]).
+    listed: Option<&'a BTreeMap<String, Meta>>,
+    served: Mutex<BTreeSet<Branch>>,
 }
 
 /// The reads of checkpoints [`Checkpoints`] keeps, or that are in flight, by their keys; and the
@@ -468,7 +472,30 @@ type Flight<'a> = Shared<BoxFuture<'a, Result<Option<Arc<State>>, Error>>>;
 impl<'a, B: Bucket> Checkpoints<'a, B> {
     /// Reads checkpoints from `bucket`, keeping the last `keep` read.
     pub(crate) fn new(bucket: &'a B, keep: usize) -> Self {
-        Self { bucket, keep, read: Mutex::default() }
+        Self { bucket, keep, read: Mutex::default(), listed: None, served: Mutex::default() }
+    }
+
+    /// fxdax: these, the first listing of each branch's checkpoints served by `listed`, a listing
+    /// of the cell the collector's pass took before it read anything (TASK-395.16), if it has one:
+    /// a LIST less a branch. A recovery is as right from the newest checkpoint listed then as from
+    /// one listed now: it reads its segments after it, and then lists the checkpoints again,
+    /// starting over if a newer one has come (rule `newest_checkpoint`), or if it finds the one it
+    /// starts from gone; and a recovery starting over lists them anew, from the bucket. Each
+    /// branch's once: what started over may be what the listing shows.
+    pub(crate) fn listed(self, listed: Option<&'a BTreeMap<String, Meta>>) -> Self {
+        Self { listed, ..self }
+    }
+
+    /// fxdax: the checkpoints of `branch`, in the order of their keys: as the listing of its cell
+    /// shows them, the first time it is asked of `branch`, if it has one; listed now otherwise.
+    async fn list(&self, branch: Branch) -> Vec<Meta> {
+        let prefix = layout::checkpoints(branch);
+        match self.listed {
+            Some(listed) if self.served.lock().unwrap().insert(branch) => {
+                bucket::under(listed, &prefix)
+            }
+            _ => bucket::list(self.bucket, &prefix).await,
+        }
     }
 
     /// The state the checkpoint `listed` of `branch` holds, if it is there: read now, or by the
@@ -611,7 +638,7 @@ async fn attempt<B: Bucket>(
 ) -> Result<Recovered<Layers>, Attempt> {
     let bucket = checkpoints.bucket;
     let mut touched = BTreeSet::new();
-    let listed = bucket::list(bucket, &layout::checkpoints(branch)).await;
+    let listed = checkpoints.list(branch).await;
     let (state, checkpoint, checkpointer) = match listed.last() {
         Some(newest) => {
             let Some(state) = checkpoints.read(newest, branch).await? else {
@@ -790,7 +817,7 @@ fn state_at<'a, B: Bucket>(
             touched.insert(key);
             return Ok(state);
         }
-        let listed = bucket::list(bucket, &layout::checkpoints(branch)).await;
+        let listed = checkpoints.list(branch).await;
         let newest = listed.iter().rev().find(|meta| {
             matches!(layout::kind(&meta.key), layout::Kind::Checkpoint { seq, .. } if seq <= at)
         });

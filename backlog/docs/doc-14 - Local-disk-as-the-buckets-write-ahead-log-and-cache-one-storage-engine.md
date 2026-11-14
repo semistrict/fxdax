@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-12 08:12'
+updated_date: '2026-11-14 00:34'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -317,8 +317,10 @@ grace period after its free, which cuts the view off (`CutOff`), as lagging too 
 `file:///dir` (TASK-165.1, `extent_remote::local`) is a bucket on the host's filesystem, for
 development, tests and images. It is `object_store`'s `LocalFileSystem` (fsync on) with conditional
 updates added: `LocalFileSystem` refuses `PutMode::Update`. What replaces or removes an object (an
-update, an overwrite, a delete) holds the bucket's lock, a `flock` of `.fxdax-lock` in its
-directory, each holding opening the file anew, so that it excludes other processes and other
+update, an overwrite, a delete) holds the lock of the object's directory, a `flock` of one of 64
+files `.fxdax-lock.NN` in the bucket's directory (`local::lock_of`, by a hash of the directory's
+path; TASK-395.15: one lock for the bucket made a collector's passes at once wait on each other's
+`fsync`s), each holding opening the file anew, so that it excludes other processes and other
 holdings in its own; an update compares the object's e-tag with the one given (`LocalFileSystem`'s:
 inode, modification time and size), and writes by rename. Creates are `LocalFileSystem`'s, a hard link, which fails where an object is.
 `Store::from_url` takes it like any URL, so stats, probing and the latency throttle apply.

@@ -2,6 +2,12 @@
 
 # Decisions
 
+## A sweep's speed and a pass's LISTs (TASK-395.15, .16, 2026-11-13)
+
+- **File buckets lock a directory's objects, not the bucket** (`local::lock_of`: 64 lock files `.fxdax-lock.NN` in the bucket's directory, by an FNV-1a hash of the object's directory). Profiled on macOS at 16 passes at once: ~12 of the passes' threads waited on the one bucket-wide `flock`, which updates hold over their `fsync` (each pass updates its cell's lease 3-4 times) and deletes over their unlinks; the runtime's thread was 92% idle. Updates and deletes of one object still exclude each other, across processes; a batch of deletes takes one lock per directory (a few). *Caveat:* processes of builds before this one lock `.fxdax-lock` alone, excluding none of the new: don't run both over one file bucket at once. *Instead:* `fsync` the staged file before taking the lock (needs `LocalFileSystem`'s staging reimplemented). *Undo:* `lock_of` returning one name.
+- **fxdax-gc runs on a multi-thread runtime, each pass a task of its own** (`Sweep::spawned`): before, all passes shared the sweep's task on a current-thread runtime, their CPU work (digests, decoding, compaction) on one thread. Tests and in-process sweeps keep `spawned: false`. *Undo:* the field false and `new_current_thread`.
+- **A pass's first listing of its records and of each branch's checkpoints is its listing of the cell** (`bucket::under`, `Checkpoints::listed`): 4 LISTs and 1 by delimiter a pass over a one-branch cell, from 7 and 1. Safe as Bucket.tla's pass reads its records with its candidates (`GcStart`), and a recovery checks the newest checkpoint after its segments (`newestCheckpoint`), starting over with a fresh listing; each branch's listing served once, so a restart lists anew. The relisting of the records after the states no longer lists twice (it took the records read before for new). Spec unchanged. *Not done:* one listing of `<C>` after the states for the records and every branch's check: it lists every segment and reference again (doc-7, The LISTs a pass makes). *Undo:* `listed(None)` and `records(.., None, &BTreeMap::new())`.
+
 ## The per-cell collector, round two: references always named, sweeps, passes that skip, usage (TASK-395.5, .6, .8, .10, .11, 2026-11-13)
 
 Three branches merged into one (t3/395-integrated). Decided without you:

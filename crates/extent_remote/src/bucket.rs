@@ -293,6 +293,17 @@ pub(crate) async fn get_range(
     }
 }
 
+/// fxdax: what `objects`, a listing of a prefix holding `prefix`, by their keys, holds under
+/// `prefix`, in the order of their keys: as a listing of `prefix` alone, made when that one was,
+/// would list it (TASK-395.16).
+pub(crate) fn under(objects: &std::collections::BTreeMap<String, Meta>, prefix: &str) -> Vec<Meta> {
+    use std::ops::Bound;
+    (objects.range::<str, _>((Bound::Included(prefix), Bound::Unbounded)))
+        .take_while(|(key, _)| key.starts_with(prefix))
+        .map(|(_, meta)| meta.clone())
+        .collect()
+}
+
 pub(crate) async fn list(bucket: &impl Bucket, prefix: &str) -> Vec<Meta> {
     let mut failures = 0;
     loop {
@@ -365,13 +376,21 @@ pub(crate) async fn list_delimited(bucket: &impl Bucket, prefix: &str) -> Listin
 /// what is gone is no error (TASK-395.5).
 pub(crate) async fn delete_all(bucket: &impl Bucket, keys: &[&str]) {
     use futures::StreamExt as _;
-    let batches = futures::stream::iter(keys.chunks(DELETE_BATCH)).map(|batch| async move {
-        let mut failures = 0;
-        while bucket.delete_batch(batch).await.is_err() {
-            failed(bucket, &mut failures).await;
-        }
-    });
-    batches.buffer_unordered(BATCHES_AT_ONCE).collect::<()>().await;
+    // The batches' futures made first: a stream mapping them in holds the closure in its type,
+    // which a future awaiting this one is then not seen to be `Send` with.
+    let batches: Vec<_> =
+        keys.chunks(DELETE_BATCH).map(|batch| delete_batch(bucket, batch)).collect();
+    futures::stream::iter(batches).buffer_unordered(BATCHES_AT_ONCE).collect::<()>().await;
+}
+
+/// fxdax: deletes the objects at `keys` in one batch ([`Bucket::delete_batch`]), retried whole
+/// while it fails. A function of its own, not a closure's future, so that a future awaiting
+/// [`delete_all`] is seen to be `Send` (TASK-395.15: a sweep spawning its passes).
+async fn delete_batch(bucket: &impl Bucket, keys: &[&str]) {
+    let mut failures = 0;
+    while bucket.delete_batch(keys).await.is_err() {
+        failed(bucket, &mut failures).await;
+    }
 }
 
 /// fxdax: deletes the object at `key`, retried while it fails: deleting what is gone is no error.

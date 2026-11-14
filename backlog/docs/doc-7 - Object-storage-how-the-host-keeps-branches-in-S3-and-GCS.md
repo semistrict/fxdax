@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-13 22:00'
+updated_date: '2026-11-14 00:34'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -891,6 +891,32 @@ branches and fork points, plus its branches' ancestry where it has no checkpoint
 parent's slow writer re-creates after its retirement is retired again by the dead cell's next pass,
 skipping or not (Passes that skip).
 
+**The LISTs a pass makes** (TASK-395.16), all under `<C>`. A pass in full over a cell of one live
+branch with a checkpoint, as most are, makes 4 LISTs and 1 by delimiter (7 and 1 before: the
+listing of the records once more after reading them, as the pass's first listing of them; each
+branch's checkpoints listed once more, as its recovery's first; and the records listed once more
+after the states, finding the records read before new). `extent_remote::collector`'s test
+`passes_list_their_cell_once_and_what_the_spec_relists` pins them, a branch and several.
+
+| LIST | What for | Why it can't be the cell's listing | How many |
+|---|---|---|---|
+| `<C>`, whole | the candidates, the digest and what the cell takes (step 2); and the first listing of the records (step 3) and of each live branch's checkpoints, as of it | it is that listing | 1 (on S3 a request per 1,000 keys) |
+| `<C>branches/` | the records, listed until a listing finds none new (step 3) | it comes after the reads of the records listed: a deleted branch's children got theirs before it was marked deleted, maybe after the cell's listing (Bucket.tla's `GcRecords`) | 1, and 1 per listing that finds new ones |
+| `<C>checkpoints/<branch>/` | a recovery's check, once it read its branch's segments to the first missing, that no newer checkpoint has come, which may cover that segment, gone (rule `newestCheckpoint`) | it comes after the reads of the segments | 1 per live branch, and 2 per recovery started over (it lists anew) |
+| `<C>branches/` again | the records listed after the states, while one is from a checkpoint (rule `recordsRelisted`), as step 3 again, ending on a listing that finds no record not read before | it comes after the states | 1, and as in step 3 per one finding new ones |
+| `<C>refs/` by delimiter, and `<C>refs/<parent>/` by delimiter for each parent there | the fork points the references name (step 5) | it comes after the states (rule `referencesRelisted`); and a listing of the references whole, as the cell's is, may miss a fork point whose clone's reference lands behind its cursor as the point's own, ahead, is retired (For the code, below) | 1, and 1 per parent with references in other cells |
+
+Rarer: a pass over a cell with no lease yet and no cell object lists `<C>branches/` and `<C>` by
+delimiter before it takes the lease (`passable`); a fork point's state, or a fork's in the cell,
+read from its parent's checkpoints lists them, the cell's listing serving each branch's first
+listing alone; a recovery finding what it inherited lost lists its checkpoints (`newestCheckpoint`,
+TASK-177); a fork point found lost lists its references (`needing`); a mark-only pass lists
+`<C>gc/marks/`. *Not done:* one listing of `<C>` after the states serving the records' relisting
+and every branch's check: it would list every segment and reference of the cell again, a request a
+1,000 keys, where those prefixes hold a few, and move the check out of the recovery it ends. The
+cell's listing holds every reference too (a million for a base cloned a million times), as the
+digest goes by them: TASK-395.6's skipping costs that listing anyway.
+
 **Chains of forks.** A fork of a fork of a fork, each in its own cell (A forks B, B forks C, and so
 on): each cell keeps, for the reference of its child, its own branch's whole state at that fork
 point, and that state names what the branch inherited where the ancestors' cells keep it. A
@@ -996,6 +1022,14 @@ passes), so its memory is bounded by its passes at once times what a pass over t
 takes, whatever the bucket holds. Every listing by delimiter is a page a request: S3, GCS and
 Azure through `object_store`'s paged listings, with continuation tokens; files and memory, which
 can only list a directory whole, cut their pages out of the whole level.
+
+**Passes at once run at once** (TASK-395.15): `fxdax-gc` runs on a runtime of a thread a core, each
+pass a task of its own (`Sweep::spawned`), so that their work between requests (digests, decoding
+checkpoints, compacting) runs on several threads; before, every pass shared the sweep's one task.
+A file bucket locks the objects of a directory, not itself, for what replaces or removes one
+(doc-14, The local-filesystem bucket): before, the passes at once waited on its one lock, which an
+update holds over its `fsync`, and on ubu1 a sweep at 16 at once took 492 s, at 4 320 s (TASK-395.5's
+measurement); on macOS, at 16 at once, a dozen of the passes' threads waited on it at any time.
 
 **A pass holds its cell by its lease** for `--lease` seconds (600 by default), from its taking or
 last renewal, which it makes between its steps (after reading the cell, before deleting), and lets

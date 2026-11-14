@@ -30,7 +30,7 @@ use crate::collector::{Collector, Holding, Marking, Options, Report};
 use crate::layout::Cell;
 use crate::store::Request;
 use crate::{Error, Left};
-use futures::StreamExt as _;
+use futures::{FutureExt as _, StreamExt as _};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,6 +59,11 @@ pub struct Sweep {
     pub lease: u64,
     /// How many of the slowest passes it says ([`Swept::slowest`]).
     pub slowest: usize,
+    /// Whether each pass is a task of its own, spawned on the Tokio runtime the sweep runs in,
+    /// which it must, so that passes' work runs on the runtime's threads at once (TASK-395.15);
+    /// or all of them the sweep's own task's, one at a time between their requests (tests, a
+    /// runtime of one thread).
+    pub spawned: bool,
 }
 
 /// The requests made, of each kind, as a [`crate::store::Store`] counts them: a batch of deletes
@@ -215,7 +220,23 @@ impl Sweep {
         let mut swept = Swept::default();
         // The cells taken only as `buffer_unordered` has room for another pass: a page of them
         // listed as the passes before it end.
-        let passes = cells.map(|cell| self.pass(bucket, cell, since));
+        let passes = cells.map(|cell| {
+            let (sweep, bucket) = (*self, bucket.clone());
+            let pass = async move { sweep.pass(&bucket, cell, since).await };
+            match self.spawned {
+                false => pass.boxed(),
+                true => {
+                    let task = tokio::spawn(pass);
+                    async move {
+                        match task.await {
+                            Ok(ran) => ran,
+                            Err(failed) => std::panic::resume_unwind(failed.into_panic()),
+                        }
+                    }
+                    .boxed()
+                }
+            }
+        });
         let mut passes = std::pin::pin!(passes.buffer_unordered(self.at_once));
         while let Some(passed) = passes.next().await {
             observe(&passed);
@@ -464,7 +485,7 @@ mod tests {
     }
 
     fn sweep(at_once: usize) -> Sweep {
-        Sweep { options: NOW, mode: Mode::Delete, at_once, lease: LEASE, slowest: 3 }
+        Sweep { options: NOW, mode: Mode::Delete, at_once, lease: LEASE, slowest: 3, spawned: false }
     }
 
     /// Two processes sweeping one bucket at once split its cells: each cell passed over once, by
@@ -586,6 +607,118 @@ mod tests {
         }
     }
 
+    /// A bucket that notes, for each request of a cell's, the Tokio task that made it.
+    struct Tasks {
+        bucket: Arc<Store>,
+        tasks: std::sync::Mutex<BTreeSet<(Cell, Option<tokio::task::Id>)>>,
+    }
+
+    impl Tasks {
+        fn note(&self, key: &str) {
+            if let Some(cell) = layout::cell_of(key) {
+                self.tasks.lock().unwrap().insert((cell, tokio::task::try_id()));
+            }
+        }
+    }
+
+    impl Bucket for Tasks {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            self.note(key);
+            self.bucket.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            self.note(key);
+            self.bucket.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            self.note(key);
+            self.bucket.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            self.note(prefix);
+            self.bucket.list(prefix)
+        }
+
+        fn list_delimited(
+            &self,
+            prefix: &str,
+            page: Page<'_>,
+        ) -> impl Future<Output = Result<Listing, BucketError>> + Send {
+            self.note(prefix);
+            self.bucket.list_delimited(prefix, page)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: bytes::Bytes,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            self.note(key);
+            self.bucket.put(key, bytes, mode)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            self.note(key);
+            self.bucket.delete(key)
+        }
+
+        fn delete_batch(
+            &self,
+            keys: &[&str],
+        ) -> impl Future<Output = Result<(), BucketError>> + Send {
+            keys.iter().for_each(|key| self.note(key));
+            self.bucket.delete_batch(keys)
+        }
+
+        fn now(&self) -> u64 {
+            self.bucket.now()
+        }
+    }
+
+    /// TASK-395.15: a sweep spawning its passes runs each as a task of its own, on the runtime's
+    /// threads, and does what one running them all in its own task does: before, all of a sweep's
+    /// passes shared its task, and so one thread, which a sweep at 16 at once could keep busy.
+    #[test]
+    fn spawned_sweeps_run_each_pass_as_a_task_of_its_own() {
+        let cells = cells(10);
+        let runtime =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(4).build().unwrap();
+        let swept = |spawned: bool| {
+            let store = Arc::new(Store::new(Arc::new(object_store::memory::InMemory::new()), ""));
+            let bucket = Arc::new(Tasks { bucket: store.clone(), tasks: Default::default() });
+            runtime.block_on(fill(&store, &cells, false));
+            let sweep = Sweep { spawned, ..sweep(4) };
+            let swept = {
+                let bucket = bucket.clone();
+                runtime.block_on(runtime.spawn(async move { sweep.run(&bucket, |_| {}).await }))
+            };
+            let swept = swept.unwrap();
+            let tasks = std::mem::take(&mut *bucket.tasks.lock().unwrap());
+            (swept.visited, swept.report.deleted, tasks)
+        };
+        let (visited, deleted, tasks) = swept(true);
+        assert_eq!((visited, deleted), (10, 20));
+        let by_cell: BTreeSet<Cell> = tasks.iter().map(|&(cell, _)| cell).collect();
+        let by_task: BTreeSet<Option<tokio::task::Id>> = tasks.iter().map(|&(_, id)| id).collect();
+        assert_eq!((by_cell.len(), by_task.len(), tasks.len()), (10, 10, 10), "{tasks:?}");
+        assert!(by_task.iter().all(Option::is_some));
+        let (visited, deleted, tasks) = swept(false);
+        assert_eq!((visited, deleted), (10, 20));
+        let by_task: BTreeSet<Option<tokio::task::Id>> = tasks.iter().map(|&(_, id)| id).collect();
+        assert_eq!((tasks.len(), by_task.len()), (10, 1), "{tasks:?}");
+    }
+
     /// A process gone mid-sweep leaves the cells its passes held: the next sweep leaves them to
     /// those passes until their leases expire, and the one after takes them and collects them.
     #[test]
@@ -633,7 +766,7 @@ mod tests {
         let counted = bucket.stats();
         let compacting = Options { compact_below: 0.5, grace: 0 };
         let sweep =
-            Sweep { options: compacting, mode: Mode::Delete, at_once: 4, lease: LEASE, slowest: 3 };
+            Sweep { options: compacting, at_once: 4, ..sweep(1) };
         let mut passes = Vec::new();
         let swept = block_on(sweep.run(&bucket, |passed| passes.push(passed.clone())));
         let stats = bucket.stats();

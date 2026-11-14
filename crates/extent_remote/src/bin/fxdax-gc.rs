@@ -395,6 +395,8 @@ async fn collect(
         at_once: run.at_once,
         lease: run.lease,
         slowest: SLOWEST,
+        // Each pass on the runtime's threads (TASK-395.15).
+        spawned: true,
     };
     let mut sweeps = 0;
     loop {
@@ -783,7 +785,8 @@ fn main() -> Result<(), String> {
     log::set_logger(&Stderr).map_err(|err| format!("a log: {err}"))?;
     log::set_max_level(log::LevelFilter::Warn);
     let bucket = Arc::new(Store::from_url(&url)?);
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    // Of a thread a core: a sweep's passes run on them at once (TASK-395.15).
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|err| format!("a runtime: {err}"))?;

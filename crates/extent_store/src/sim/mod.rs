@@ -344,15 +344,20 @@ test_holds!(branches_deleted_twice_while_forking, deleted_forking());
 // The seeds that find it move with every change of the collector's requests: 32,625 and others
 // once a pass read its cell before taking its lease (TASK-395.4's review), 8,363 once record_fork
 // read the child's record again (TASK-395.10), and 113,765 alone of 0..120,000 once passes skipped
-// unchanged cells and held them for a time (TASK-395.5, .6). Searched from 110,000: seeds 36,924,
-// 76,898 and 99,084 fail without the rule as with it, a store's log found diverged, TASK-403's
-// bug, which says nothing of this rule (TASK-403 names them).
-test_needs!(deletions_need_fences, deletions_fence, deleted_forking(), 110_000..120_000);
+// unchanged cells and held them for a time (TASK-395.5, .6), and 122,627 once a pass's listing of
+// its cell served its first of the records and of each branch's checkpoints (TASK-395.16; none
+// of 110,000..120,000 nor 130,000..150,000; it holds with the rule). Searched from 110,000: seeds
+// 36,924, 76,898 and 99,084 fail without the rule as with it, a store's log found diverged,
+// TASK-403's bug, which says nothing of this rule (TASK-403 names them).
+test_needs!(deletions_need_fences, deletions_fence, deleted_forking(), 120_000..130_000);
 
 // A deletion begun as another marks the branch deleted, recovering once a pass deleted that one's
 // fence and a writer's segment of a fork, taken over, landed where it was: the fork's child,
 // recorded, names the extents the segment stores on their own, which the pass deleted (TASK-380).
-test_needs!(deletions_need_records_reread, deletions_reread, deleted_forking());
+// Its seeds of 0..20,000 went once a pass's listing of its cell served its first of the records
+// and of each branch's checkpoints (TASK-395.16): none of 20,000..69,807; 69,807 fails with the rule
+// as without it, a store's log found diverged (TASK-403); 83,552 the first after that holds with it.
+test_needs!(deletions_need_records_reread, deletions_reread, deleted_forking(), 80_000..90_000);
 
 /// Case 3: forks racing collection and compaction.
 fn collected() -> Profile {

@@ -265,10 +265,13 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
             swept(2, bytes, 1, "1/1 T s")
         )
     );
-    let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
-    // The bucket's lock, no object, then the objects, the collector's under the cell's prefix.
+    // The bucket's locks, no objects, aside (TASK-395.15: one a directory's, local.rs's tests);
+    // the objects, the collector's under the cell's prefix.
+    let names: Vec<String> = (files().into_iter())
+        .map(|(name, _)| name)
+        .filter(|name| !name.starts_with(extent_remote::local::LOCK))
+        .collect();
     let kept = [
-        extent_remote::local::LOCK.to_owned(),
         // The word that the bucket is marked, which an operator removes with the marks.
         extent_remote::layout::MARKING.to_owned(),
         format!("{at}/branches/{branch}"),

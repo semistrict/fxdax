@@ -592,8 +592,11 @@ impl Remembered {
             true => None,
             false => Some(referenced(bucket, cell).await),
         };
-        let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
-        let mut records = self.records(bucket, cell).await?;
+        // What the listing of the cell holds serves the first listing of the records, and of each
+        // branch's checkpoints, that the pass makes (TASK-395.16).
+        let objects = listed.as_ref().map(|listed| &listed.objects);
+        let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT).listed(objects);
+        let mut records = self.records(bucket, cell, objects, &BTreeMap::new()).await?;
         let mut live = Live::default();
         let read =
             match self.read(bucket, cell, &checkpoints, &mut records, &mut live, writes).await {
@@ -621,6 +624,7 @@ impl Remembered {
             }
             Err(error) => return Err(error),
         };
+        drop(checkpoints);
         // What a pass listing the cell as it did decides as it did, unless it went by more than the
         // cell: a point of another cell's record, read for a clone being made.
         let forking_elsewhere = (records.iter()).any(|(_, record)| {
@@ -660,7 +664,7 @@ impl Remembered {
             if !checkpointed || !rules().records_relisted {
                 return Ok(());
             }
-            let again = self.records(bucket, cell).await?;
+            let again = self.records(bucket, cell, None, records).await?;
             let found = again.keys().any(|branch| !records.contains_key(branch));
             records.extend(again);
             if !found {
@@ -670,16 +674,28 @@ impl Remembered {
     }
 
     /// The records of `cell`'s branches, read many at once, but those read before at the versions
-    /// listed. A deleted branch's children got theirs before it was marked deleted, so listing
-    /// them again after reading them finds those of any it read deleted.
+    /// listed: listed until a listing finds none of a branch not in `before`, the records the pass
+    /// read before, nor any not read by the listings before it. A deleted branch's children got
+    /// theirs before it was marked deleted, so listing them again after reading them finds those of
+    /// any it read deleted. fxdax: the first listing is `listed`, the pass's listing of the whole
+    /// cell, if it has one, taken before it read anything (TASK-395.16): a LIST less, as the model's
+    /// pass reads its records as it lists its candidates (Bucket.tla, `GcStart`); the listings
+    /// after are of the records alone.
     async fn records(
         &mut self,
         bucket: &impl Bucket,
         cell: Cell,
+        listed: Option<&BTreeMap<String, Meta>>,
+        before: &BTreeMap<Branch, Record>,
     ) -> Result<BTreeMap<Branch, Record>, Error> {
         let mut records = BTreeMap::new();
+        let mut first = listed.map(|objects| bucket::under(objects, &layout::records(cell)));
         loop {
-            let listed = (bucket::list(bucket, &layout::records(cell)).await.into_iter())
+            let listing = match first.take() {
+                Some(listed) => listed,
+                None => bucket::list(bucket, &layout::records(cell)).await,
+            };
+            let listed = (listing.into_iter())
                 .filter_map(|meta| match layout::kind(&meta.key) {
                     Kind::Record { branch } if !records.contains_key(&branch) => {
                         Some((branch, meta))
@@ -702,7 +718,7 @@ impl Remembered {
                     None => self.records.remove(&key),
                 };
                 records.insert(branch, record);
-                new = true;
+                new |= !before.contains_key(&branch);
             }
             if !new {
                 // Those gone, which the collector deleted, it forgets.
@@ -1334,9 +1350,11 @@ impl Lengths {
     /// Learns the lengths of the data of the objects `metas` list, those not known yet, from their
     /// trailers, many at once.
     async fn learn(&mut self, bucket: &impl Bucket, metas: &[&Meta]) -> Result<(), Error> {
-        let unknown = metas.iter().filter(|meta| self.known(meta).is_none());
-        let reads = futures::stream::iter(unknown)
-            .map(|meta| async move { (meta, trailer_len(bucket, meta).await) })
+        // The reads' futures made first, as in `bucket::delete_all`.
+        let unknown: Vec<&Meta> =
+            metas.iter().copied().filter(|meta| self.known(meta).is_none()).collect();
+        let reads: Vec<_> = unknown.into_iter().map(|meta| learned(bucket, meta)).collect();
+        let reads = futures::stream::iter(reads)
             .buffer_unordered(TRAILERS_AT_ONCE)
             .collect::<Vec<_>>()
             .await;
@@ -1354,6 +1372,14 @@ impl Lengths {
             objects.get(key).is_some_and(|meta| meta.version == *version && meta.size == *size)
         });
     }
+}
+
+/// `meta`, and the length of the data of the object it lists ([`trailer_len`]).
+async fn learned<'a>(
+    bucket: &impl Bucket,
+    meta: &'a Meta,
+) -> (&'a Meta, Result<Option<u64>, Error>) {
+    (meta, trailer_len(bucket, meta).await)
 }
 
 /// The length of the data of the object `meta` lists, as its trailer says, if it is still there.
@@ -1402,6 +1428,18 @@ async fn compact_object(
         Created::Exists(stood) => stood.meta.size,
     };
     Ok(Some((moves, size)))
+}
+
+/// fxdax: compacts the object `meta` lists, as [`compact_object`] does: its moves' key and size,
+/// and the object's size as listed, if it did. A function of its own, not a closure's future, so that a
+/// pass's future is seen to be `Send` (TASK-395.15: a sweep spawning its passes).
+async fn compact_listed(
+    bucket: &impl Bucket,
+    meta: &Meta,
+    extents: &BTreeMap<ExtentId, Location>,
+) -> Result<Option<((String, u64), u64)>, Error> {
+    let moves = compact_object(bucket, &meta.key, extents).await?;
+    Ok(moves.map(|moves| (moves, meta.size)))
 }
 
 /// What becomes of an object a pass listed ([`Pass::fates`]).
@@ -1576,12 +1614,11 @@ impl Pass {
         report: &mut Report,
     ) -> Result<Vec<(String, u64)>, Error> {
         let compactable = self.compactable(bucket, options, lengths).await?;
-        let compactions = futures::stream::iter(compactable)
-            .map(|(meta, extents)| async move {
-                let moves = compact_object(bucket, &meta.key, extents).await?;
-                Ok::<_, Error>(moves.map(|moves| (moves, meta.size)))
-            })
-            .buffer_unordered(COMPACTIONS_AT_ONCE);
+        // The compactions' futures made first, as in `bucket::delete_all`.
+        let compactions: Vec<_> = (compactable.into_iter())
+            .map(|(meta, extents)| compact_listed(bucket, meta, extents))
+            .collect();
+        let compactions = futures::stream::iter(compactions).buffer_unordered(COMPACTIONS_AT_ONCE);
         let mut compactions = std::pin::pin!(compactions);
         let mut compacted = Vec::new();
         while let Some(done) = compactions.next().await {
@@ -4530,6 +4567,61 @@ mod tests {
         assert_eq!(many.len(), asked.len(), "{asked:#?}\n{many:#?}");
     }
 
+    /// TASK-395.16: the LISTs of a pass in full over a cell, as doc-7 accounts for them (A pass
+    /// over a cell, The LISTs a pass makes): the cell once, whose listing serves the first of the
+    /// records and of each branch's checkpoints; the records once more after reading them (until
+    /// none new); each branch's checkpoints once its segments are read (`newest_checkpoint`); the
+    /// records after the states (`records_relisted`); the references by delimiter last
+    /// (`references_relisted`). Before: 7 LISTs a branch, the records listed twice more and each
+    /// branch's checkpoints once more. The passes counted are the second over each cell, in full
+    /// as the first deleted, holding its lease, so that what the first asks before taking the
+    /// lease, finding none (`passable`), is no part of them.
+    #[test]
+    fn passes_list_their_cell_once_and_what_the_spec_relists() {
+        let bucket = SimBucket::new();
+        let (one, three) = (celled(0x100, 0x100).cell, celled(0x200, 0x201).cell);
+        bucket.served(async {
+            garbage_cells(&bucket, 1).await;
+            for id in 0x201..=0x203 {
+                let branch = celled(0x200, id);
+                branch::create(&*bucket, branch, 0).await.unwrap();
+                let writer = Writer::open(bucket.clone(), branch, 10, 0).await.unwrap();
+                let extent = ExtentId::new(id, writer.chain().next_sequence());
+                let extents = vec![(extent, b"garbage".to_vec())];
+                commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+                commit(&writer, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
+                writer.checkpoint().await.unwrap();
+            }
+        });
+        let options = Options { compact_below: 0.0, grace: 0 };
+        let lists = |cell: Cell| -> Vec<String> {
+            let (first, _) = bucket.served(collect_cell(&*bucket, cell, 1, &options));
+            assert!(first.unwrap().deleted > 0, "the first pass deletes, changing the cell");
+            let (second, asked) = bucket.served(collect_cell(&*bucket, cell, 2, &options));
+            assert_eq!(second.unwrap().skipped, 0, "{asked:#?}");
+            asked.into_iter().filter(|asked| asked.starts_with("list")).collect()
+        };
+        let listed = |cell: Cell, checkpoints: &[u64]| -> Vec<String> {
+            let mut listed = vec![
+                format!("list {}", cell.prefix()),
+                format!("list {}", layout::records(cell)),
+            ];
+            listed.extend(checkpoints.iter().map(|&id| {
+                format!("list {}", layout::checkpoints(Branch { cell, id }))
+            }));
+            listed.push(format!("list {}", layout::records(cell)));
+            listed.push(format!("list-delimited {}", layout::references(cell)));
+            listed
+        };
+        assert_eq!(lists(one), listed(one, &[0x100]));
+        // The branches' recoveries at once, their checkpoints listed in any order between the
+        // records' listings.
+        let mut asked = lists(three);
+        assert_eq!(asked.len(), 7, "{asked:#?}");
+        asked[2..5].sort();
+        assert_eq!(asked, listed(three, &[0x201, 0x202, 0x203]));
+    }
+
     /// TASK-395.4's AC #2: a fork point many references name, a point cloned many times, is
     /// recovered once a pass: the pass over its cell asks the same, its references listed by
     /// delimiter, however many clones there are.
@@ -5332,3 +5424,4 @@ mod tests {
         });
     }
 }
+
