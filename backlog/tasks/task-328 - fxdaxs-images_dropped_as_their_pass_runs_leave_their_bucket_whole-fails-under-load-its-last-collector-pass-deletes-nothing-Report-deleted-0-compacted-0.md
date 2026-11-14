@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10 13:14'
-updated_date: '2026-11-13 19:22'
+updated_date: '2026-11-14 00:35'
 labels:
   - testing
   - flaky
@@ -40,4 +40,6 @@ Seen 2026-11-10 on ubu1 (TASK-320's branch at c8e4ff56, scripts/test.sh workspac
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-13 (TASK-395.6/.8 batch, branch t3/395-incremental-usage): fails 3 of 6 runs alone on the macOS laptop (cargo nextest run -p fxdax images_dropped_as_their_pass_runs), also with the new skipping of unchanged cells turned off by hand, so not that change; once in scripts/test.sh's workspace part, passing in two runs before.
+
+2026-11-13 (TASK-395.15/.16 batch, file bucket locks per directory, fxdax-gc passes spawned): failed once in cargo nextest -p extent_remote -p fxdax, and 1 of 3 runs alone on the macOS laptop; same symptom (Report all 0), as before the batch.
 <!-- SECTION:NOTES:END -->

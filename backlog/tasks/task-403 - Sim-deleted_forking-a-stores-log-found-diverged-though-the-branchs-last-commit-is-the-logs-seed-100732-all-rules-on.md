@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-13 18:54'
-updated_date: '2026-11-13 21:48'
+updated_date: '2026-11-14 00:59'
 labels:
   - bug
   - bucket
@@ -38,4 +38,6 @@ Found by TASK-395.10's seed search for deletions_need_fences (rules all on): SIM
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-13 (t3/395-integrated, the merge of TASK-395.5, .6, .8, .10, .11): seeds 36924, 76898 and 99084 of deleted_forking fail the same way with all rules on ("branch 2's log diverged, though the branch's last commit, Some(10000000001) / None, is the log's"), found by the seed search for deletions_need_fences (rule deletions_fence off), whose range now starts at 110,000 to steer clear of them (crates/extent_store/src/sim/mod.rs names this task). Reproduce: SIM_PROFILE=deleted_forking SIM_SEED=36924 cargo nextest run --cargo-profile sim -p extent_store --run-ignored only -E 'test(=sim::one)'.
+
+2026-11-13 (TASK-395.16, the collector's first listing of a cell serving its records' and checkpoints' first): seed 69,807 of the deleted_forking profile fails with every rule on: "branch 2's log diverged, though the branch's last commit, None, is the log's" (SIM_PROFILE=deleted_forking SIM_SEED=69807, test sim::one).
 <!-- SECTION:NOTES:END -->
