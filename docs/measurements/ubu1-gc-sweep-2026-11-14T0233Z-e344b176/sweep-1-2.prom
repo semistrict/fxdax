@@ -1,0 +1,66 @@
+# HELP fxdax_gc_sweeps_total Sweeps the process ran.
+# TYPE fxdax_gc_sweeps_total counter
+fxdax_gc_sweeps_total 1
+# HELP fxdax_gc_sweep_end_timestamp_seconds When its last sweep ended.
+# TYPE fxdax_gc_sweep_end_timestamp_seconds gauge
+fxdax_gc_sweep_end_timestamp_seconds 1794624621.126
+# HELP fxdax_gc_sweep_seconds How long its last sweep took.
+# TYPE fxdax_gc_sweep_seconds gauge
+fxdax_gc_sweep_seconds 281.232735
+# HELP fxdax_gc_sweep_cells The cells of its last sweep, by what came of each.
+# TYPE fxdax_gc_sweep_cells gauge
+fxdax_gc_sweep_cells{outcome="passed"} 10000
+fxdax_gc_sweep_cells{outcome="skipped"} 0
+fxdax_gc_sweep_cells{outcome="failed"} 0
+fxdax_gc_sweep_cells{outcome="held"} 0
+fxdax_gc_sweep_cells{outcome="swept"} 0
+# HELP fxdax_gc_sweep_objects What its last sweep's passes did, in objects.
+# TYPE fxdax_gc_sweep_objects gauge
+fxdax_gc_sweep_objects{action="deleted"} 470427
+fxdax_gc_sweep_objects{action="compacted"} 0
+fxdax_gc_sweep_objects{action="marked"} 0
+# HELP fxdax_gc_sweep_bytes What its last sweep's passes did, in bytes, as listed.
+# TYPE fxdax_gc_sweep_bytes gauge
+fxdax_gc_sweep_bytes{action="deleted"} 306718404
+fxdax_gc_sweep_bytes{action="compacted"} 0
+fxdax_gc_sweep_bytes{action="marked"} 0
+# HELP fxdax_gc_sweep_retired_references The references its last sweep's passes retired.
+# TYPE fxdax_gc_sweep_retired_references gauge
+fxdax_gc_sweep_retired_references 0
+# HELP fxdax_gc_sweep_resurrected_objects What its last sweep's mark-only passes found kept that the marks before named.
+# TYPE fxdax_gc_sweep_resurrected_objects gauge
+fxdax_gc_sweep_resurrected_objects 0
+# HELP fxdax_gc_sweep_requests The requests its last sweep made, by kind.
+# TYPE fxdax_gc_sweep_requests gauge
+fxdax_gc_sweep_requests{request="get"} 70000
+fxdax_gc_sweep_requests{request="get-range"} 1431281
+fxdax_gc_sweep_requests{request="head"} 0
+fxdax_gc_sweep_requests{request="list"} 40000
+fxdax_gc_sweep_requests{request="create"} 0
+fxdax_gc_sweep_requests{request="update"} 40000
+fxdax_gc_sweep_requests{request="overwrite"} 0
+fxdax_gc_sweep_requests{request="delete"} 0
+fxdax_gc_sweep_requests{request="list-delimited"} 10101
+fxdax_gc_sweep_requests{request="delete-batch"} 10000
+# HELP fxdax_gc_pass_seconds How long its last sweep's passes took.
+# TYPE fxdax_gc_pass_seconds histogram
+fxdax_gc_pass_seconds_bucket{le="0.001"} 0
+fxdax_gc_pass_seconds_bucket{le="0.01"} 0
+fxdax_gc_pass_seconds_bucket{le="0.1"} 9872
+fxdax_gc_pass_seconds_bucket{le="1"} 10000
+fxdax_gc_pass_seconds_bucket{le="10"} 10000
+fxdax_gc_pass_seconds_bucket{le="60"} 10000
+fxdax_gc_pass_seconds_bucket{le="600"} 10000
+fxdax_gc_pass_seconds_bucket{le="+Inf"} 10000
+fxdax_gc_pass_seconds_sum 280.395578
+fxdax_gc_pass_seconds_count 10000
+# HELP fxdax_gc_slowest_pass_seconds Its last sweep's slowest passes, by cell.
+# TYPE fxdax_gc_slowest_pass_seconds gauge
+fxdax_gc_slowest_pass_seconds{cell="3c/32"} 0.321852
+fxdax_gc_slowest_pass_seconds{cell="41/d"} 0.293179
+fxdax_gc_slowest_pass_seconds{cell="41/c"} 0.260036
+fxdax_gc_slowest_pass_seconds{cell="41/e"} 0.219010
+fxdax_gc_slowest_pass_seconds{cell="41/a"} 0.216870
+# HELP fxdax_gc_peak_resident_bytes The most memory the process held so far.
+# TYPE fxdax_gc_peak_resident_bytes gauge
+fxdax_gc_peak_resident_bytes 31989760

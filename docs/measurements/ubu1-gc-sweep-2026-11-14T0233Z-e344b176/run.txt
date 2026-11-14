@@ -1,0 +1,3 @@
+run run-t395sweep2-20261114T023353Z-e344b176
+host ubu1
+directory /mnt/fxdax-scratch/fxdax-host/run-t395sweep2-20261114T023353Z-e344b176

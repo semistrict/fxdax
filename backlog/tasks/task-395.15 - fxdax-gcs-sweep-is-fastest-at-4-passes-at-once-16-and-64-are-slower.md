@@ -1,11 +1,11 @@
 ---
 id: TASK-395.15
 title: 'fxdax-gc''s sweep is fastest at 4 passes at once: 16 and 64 are slower'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13 23:50'
-updated_date: '2026-11-14 01:12'
+updated_date: '2026-11-14 03:12'
 labels:
   - collector
   - performance
@@ -23,15 +23,15 @@ ubu1 run t395sweep on main 22602dbd1 (docs/measurements/ubu1-gc-sweep-2026-11-13
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A profile of the 16-at-once sweep names where its time goes
-- [ ] #2 Sweeps get faster up to at least 16 passes at once on ubu1's file bucket, measured with scripts/gc-sweep-host.sh
+- [x] #1 A profile of the 16-at-once sweep names where its time goes
+- [x] #2 Sweeps get faster up to at least 16 passes at once on ubu1's file bucket, measured with scripts/gc-sweep-host.sh
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ Tests: local::objects_of_a_directory_share_their_lock (pins the hash: <C>gc/leas
 Verified: see TASK-395.16's notes (same batch; scripts/test.sh parts all pass, Linux cross-check clean).
 To measure on ubu1 (AC #2), from a clean tree: FXDAX_HOST_RUN=<run> FXDAX_HOST_COMMIT=286f4cb43 FXDAX_BENCH_NOTE='TASK-395.15/.16: lock per directory, passes spawned, 4 LISTs a pass' scripts/gc-sweep-host.sh
 To confirm the profile there (AC #1), under the same fxjob --bench job, after the fill: a 16-at-once sweep of a copy run as 'perf trace -s -o trace.txt -- fxdax-gc file://COPY/ --grace 0 --at-once 16' (syscall time by thread: flock and fsync before, fsync/unlink after) and 'perf record -F 499 -g -o perf.data' of the same for on-CPU time of the runtime's threads; with the build before (c9b5ba549) for the A/B.
+
+AC #1 by the delegate's macOS profile at 16 at once (passes blocked on the file bucket's one lock, held across each update's fsync and each delete batch; the runtime thread 92% idle). AC #2: ubu1 sweep t395sweep2 on 79c8249e1, first sweeps 602/559/190/112 s at 1/4/16/64 at once against 629/320/492/395 s before; second sweeps 281/178/92/53 s; peak 23-95 MiB. 4 at once slower than before, one run each: TASK-395.17. ubu1 run t395w6 on 79c8249e1 (workspace 2627/2627, sim 61/61, Firecracker 30/30 and 31/31, mutants 0 broken, guests pass); macOS scripts/test.sh passed; scripts/upstream-changes.py --check passes. On main as 79c8249e1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The sweep was bound by the file bucket's single lock, held across fsyncs, not CPU: the file bucket now locks per directory (64 stripes), and fxdax-gc runs each pass as its own task on a multi-thread runtime. On ubu1 over 1M objects in 10k cells, first sweeps at 16 and 64 at once went from 492 and 395 s to 190 and 112 s. Old and new builds must not write one file bucket at once (OPEN_QUESTIONS.md). Follow-up TASK-395.17 (4 at once slower, to re-measure). ubu1 run t395w6 on 79c8249e1 (workspace 2627/2627, sim 61/61, Firecracker 30/30 and 31/31, mutants 0 broken, guests pass); macOS scripts/test.sh passed; scripts/upstream-changes.py --check passes. On main as 79c8249e1.
+<!-- SECTION:FINAL_SUMMARY:END -->
