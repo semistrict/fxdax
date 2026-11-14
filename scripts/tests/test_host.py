@@ -1013,6 +1013,24 @@ class Drivers(unittest.TestCase):
                          "fxdax-gc's sweeps over a bucket of files of many cells (TASK-395.5).")
         self.assertEqual(fleet.run_driver("gc-sweep-host.sh", "a", "b")[0], 2)
 
+    def test_gc_sweeps_of_sides_measure_each_commit_in_one_job(self):
+        """TASK-395.17: an A/B of commits' sweeps, each side a worktree of its own, measured in the
+        run's one job, by the run's scripts."""
+        fleet = Fleet()
+        results = fleet.directory / "gc-ab"
+        status, _, errors = fleet.run_driver("gc-sweep-host.sh", str(results), "old=HEAD",
+                                             "new=HEAD")
+        self.assertEqual(status, 0, errors)
+        run = (results / "run.txt").read_text().split()[1]
+        trees = f"{fleet.scratch}/{run}/trees"
+        self.assertEqual((results / "ran.txt").read_text().splitlines()[0],
+                         f"gc-sweep-linux-host.sh old={trees}/old new={trees}/new")
+        self.assertTrue((results / "old" / "source.txt").is_file())
+        self.assertEqual((fleet.home("ubu1") / "fxjob-calls").read_text().count("--bench"), 1)
+        # Sides come after the results, which a side can't stand for.
+        self.assertEqual(fleet.run_driver("gc-sweep-host.sh", "old=HEAD")[0], 2)
+        self.assertEqual(fleet.run_driver("gc-sweep-host.sh", str(results), "old")[0], 2)
+
     def test_a_migration_restores_on_the_second_run_what_the_first_left(self):
         fleet = Fleet()
         results = fleet.directory / "migrated"

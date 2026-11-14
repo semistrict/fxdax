@@ -11,12 +11,17 @@
 # measured go to docs/measurements/HOST-gc-sweep-<time>-<mark>, the run's mark, unless named, with
 # what the run was for (note.md).
 #
-#   scripts/gc-sweep-host.sh [RESULTS]
+# Each SIDE=COMMIT, a commit origin has, is a worktree there whose fxdax-gc this tree's scripts
+# build and measure beside the others', in one job, the sides' sweeps in turn (scripts/gc-sweep.sh),
+# for an A/B (TASK-395.17); each's record in RESULTS/SIDE/source.txt. With none, the run's commit's
+# (scripts/lib/host.sh's FXDAX_HOST_COMMIT).
+#
+#   scripts/gc-sweep-host.sh [RESULTS [SIDE=COMMIT...]]
 #   scripts/gc-sweep-host.sh resume RUN RESULTS | cancel RUN
 #
-# FXDAX_GC_TENANTS, FXDAX_GC_CELLS, FXDAX_GC_SEGMENTS, FXDAX_GC_LARGEST and FXDAX_GC_AT_ONCE shape
-# the bucket and the sweeps (scripts/gc-sweep.sh), and reach the host, as every other FXDAX_*
-# does. FXDAX_BENCH_NOTE says what the run is for; FXDAX_HOST_LIMIT caps it (default 3h).
+# FXDAX_GC_TENANTS, FXDAX_GC_CELLS, FXDAX_GC_SEGMENTS, FXDAX_GC_LARGEST, FXDAX_GC_AT_ONCE,
+# FXDAX_GC_SWEEPS and FXDAX_GC_ROUNDS shape the bucket and the sweeps (scripts/gc-sweep.sh), and
+# reach the host, as every other FXDAX_* does. FXDAX_BENCH_NOTE says what the run is for; FXDAX_HOST_LIMIT caps it (default 3h).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo/scripts/lib/host.sh"
@@ -37,13 +42,22 @@ finish() {
 }
 host_after=finish
 host_actions "$@"
-(( $# <= 1 )) || { echo "Usage: $0 [RESULTS] | resume RUN RESULTS | cancel RUN" >&2; exit 2; }
+usage="Usage: $0 [RESULTS [SIDE=COMMIT...]] | resume RUN RESULTS | cancel RUN"
+[[ ${1:-} != *=* ]] || { echo "$usage" >&2; exit 2; }
 results=${1:-$repo/docs/measurements/$(host_label)-gc-sweep-$(date -u +%Y-%m-%dT%H%MZ)-$host_mark}
+shift $(( $# > 0 ))
+pairs=("$@")
+trees=()
+for pair in ${pairs[@]+"${pairs[@]}"}; do
+    [[ $pair == *=* ]] || { echo "$usage" >&2; exit 2; }
+    trees+=("${pair%%=*}=$host_dir/trees/${pair%%=*}")
+done
 
 status=0
-host_start
+host_start ${pairs[@]+"${pairs[@]}"}
 echo "Results: $results" >&2
-host_job gc-sweep-linux-host.sh > "$results/remote.log" 2>&1 || status=$?
+host_job gc-sweep-linux-host.sh ${trees[@]+"${trees[@]}"} > "$results/remote.log" 2>&1 ||
+    status=$?
 if [[ $host_state == ended ]]; then
     host_fetch || status=$?
 fi
