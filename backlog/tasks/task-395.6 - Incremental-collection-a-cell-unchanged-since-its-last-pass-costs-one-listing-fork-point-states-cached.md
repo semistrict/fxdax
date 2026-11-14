@@ -3,11 +3,11 @@ id: TASK-395.6
 title: >-
   Incremental collection: a cell unchanged since its last pass costs one
   listing, fork-point states cached
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 23:00'
+updated_date: '2026-11-14 15:31'
 labels:
   - bucket
   - collector
@@ -26,16 +26,16 @@ Most cells are idle between sweeps: a stopped VM, a base image, a snapshot. With
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A pass over a cell whose listing matches the one its last pass recorded makes no request beyond the listing and its lease, deleting what that pass deferred to a grace period once due
-- [ ] #2 What a pass records to skip by (the listing's digest, deferred deletes, cached fork-point states) is kept under the cell's prefix, so that any collector process can use it, and is never itself a candidate
+- [x] #1 A pass over a cell whose listing matches the one its last pass recorded makes no request beyond the listing and its lease, deleting what that pass deferred to a grace period once due
+- [x] #2 What a pass records to skip by (the listing's digest, deferred deletes, cached fork-point states) is kept under the cell's prefix, so that any collector process can use it, and is never itself a candidate
 - [x] #3 A test shows a sweep over many idle cells making one LIST per cell, and a write to any of them (a segment, a reference, a record) making the next pass recover it
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -73,4 +73,12 @@ Integration (@claude, 2026-11-13, branch t3/395-integrated, with TASK-395.5's sw
 Verified on t3/395-integrated (macOS): cargo clippy --workspace --tests (nothing new); cargo nextest -p extent_remote 296/296 (with the 2 new tests); scripts/test.sh: clippy gate, workspace 2352/2352, sim 61/61 (deletions_need_fences re-seeded, see TASK-403), Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; TLA+ specs/bucket models but BucketForks/Overlap/Strays/Takeovers hold (16) and all 72 mutations fail as expected. Flake TASK-404 filed (commits_reopen_from_their_logs under load, unrelated). Not run: ubu1.
 
 ubu1 runs t395w4 (ba19ced7f: workspace 2623/2623, sim 61/61, every other nextest part, mutants 0 broken) and t395w5 (22602dbd1, the lock fixed: Firecracker 30/30 and 31/31, scripts 313 OK, guest tests pass); macOS scripts/test.sh passed on the integration (workspace 2352/2352, sim 61/61); scripts/upstream-changes.py --check passes. On main as 22602dbd1. ACs #1 and #2 wait on TASK-395.14 and TASK-395.12's decision.
+
+ACs #1, #2 (@claude, 2026-11-14): #1 met since TASK-395.14 (e511114ab): Passed::retired and its re-send are gone, an unchanged dead cell's pass makes its lease GET/PUT and one LIST. #2: what a pass records (digest, deferred deletes) is under <C>gc/, read by any process, never a candidate; fork-point states are not cached by decision (OPEN_QUESTIONS.md, TASK-395.6), TASK-395.12 tracks a cache. upstream-changes.py --check passed on e511114ab.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A pass over a cell whose listing matches its last pass's record (<C>gc/lease) makes only its lease requests and one LIST, deleting deferred deletes once due; any process skips by any other's records. Dead cells cost the same since TASK-395.14. Fork-point states are not cached (TASK-395.12).
+<!-- SECTION:FINAL_SUMMARY:END -->

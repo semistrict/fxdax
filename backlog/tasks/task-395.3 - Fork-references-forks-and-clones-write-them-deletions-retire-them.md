@@ -1,11 +1,11 @@
 ---
 id: TASK-395.3
 title: 'Fork references: forks and clones write them, deletions retire them'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13T08:53:00Z'
-updated_date: '2026-11-13 20:33'
+updated_date: '2026-11-14 15:31'
 labels:
   - bucket
   - collector
@@ -28,14 +28,14 @@ A per-cell collector keeps what forks in other cells inherited only if it can se
 - [x] #1 A writable fork's child record, by whoever writes it (the fork's host, the parent's writers recovering, the parent's deletion), is preceded by its reference, of bytes unique to the fork (its owner) so that every writer writes the same
 - [x] #2 A clone of a point writes its reference before its forking record, and before reading the point's record
 - [x] #3 A deleted child's reference is removed by its cell's collector pass only once the child's cell holds no references itself
-- [ ] #4 The simulation (extent_remote sim) and crash rounds cover a host dying between each pair of steps: no live branch loses data, and a reference without a child is retired
+- [x] #4 The simulation (extent_remote sim) and crash rounds cover a host dying between each pair of steps: no live branch loses data, and a reference without a child is retired
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -73,4 +73,12 @@ AC #4 left unchecked: the simulation and the fault rounds cover a host dying at 
 Review round (@claude, 2026-11-13; a6cc31ba1, 0de908c63): a clone refused by a record of its child's ID (Deleted, IdTaken) deletes the reference it wrote, test clones_refused_by_records_there_take_their_references_back; TASK-395.10's description has the case. fork_faults/restore_faults excuse exactly what a left reference keeps (testing::fork_point_keeps). record_fork re-puts the reference of a child recorded already (as the model), skipping the checkpoint's recovery; a child whose fork point's state is gone is recorded deleted with no reference (TASK-395.11).
 
 ubu1 run t395w3 on bb07304a6 (under fxjob): workspace 2596/2596 passed (90 skipped), sim 59/59, the other nextest parts all passed, mutant checks 0 broken, guest tests exit 0. Merged to main as 1c1174bb4 (rebased over backlog-only commits).
+
+AC #4 (@claude, 2026-11-14): met since TASK-395.13 (e511114ab): restore_faults retires every reference, its child recorded or not, with no excuse; testing::uncollected excuses none. Verified there: macOS scripts/test.sh (workspace 2359/2360, the one TASK-328's flake, sim 63/63), ubu1 t39513a (workspace 2632/2632, sim 63/63, guest and e2e), upstream-changes.py --check.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Writable forks' references precede their children's records; clones write theirs before their records and before reading the point's; a dead child's reference is retired by its cell's pass once that cell holds none; retirements are marked so a stale recorder's late write is deleted too (TASK-395.10, .13). Sim and restore_faults cover a host dying at each step, losing nothing and leaking no reference.
+<!-- SECTION:FINAL_SUMMARY:END -->
