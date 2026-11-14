@@ -54,6 +54,13 @@
 //!   `fxdax_extentd_upload_memory_bytes`: the bytes of objects the stores' uploads hold in memory,
 //!   every store's together, now and at most, and their budget, `FXDAX_EXTENTD_UPLOAD_MEMORY`
 //!   (`crate::remote::upload_memory`, TASK-317).
+//! - fxdax: `fxdax_extentd_part_cache_bytes` and `fxdax_extentd_part_cache_capacity_bytes`: what
+//!   the host's part cache keeps, once a store opened it, and its budget,
+//!   `FXDAX_EXTENTD_CACHE_BYTES` (TASK-406.1).
+//! - fxdax: `fxdax_extentd_peer_parts_total{outcome}`: the parts the stores' fetchers asked the
+//!   peers that own them for, by what came of it (`given`, `missing`, `failed`), and
+//!   `fxdax_extentd_peer_served_parts_total{outcome}`, those the daemon's peers asked it for
+//!   (`served`, `missing`), if it serves peers (TASK-406.2).
 //! - fxdax: `fxdax_extentd_process_cpu_seconds_total`, the daemon's CPU time;
 //!   `fxdax_extentd_process_anon_bytes` and `fxdax_extentd_process_anon_max_bytes`, its anonymous
 //!   memory, as last sampled and at most; `fxdax_extentd_process_anon_budget_bytes`, what its
@@ -338,6 +345,44 @@ pub fn render() -> String {
         let _ = writeln!(out, "# HELP {name} {help}");
         let _ = writeln!(out, "# TYPE {name} gauge");
         let _ = writeln!(out, "{name} {value}");
+    }
+
+    // fxdax: what the part cache keeps, and its budget (TASK-406.1).
+    if let Some(cache) = super::stores::opened_cache() {
+        for (name, help, value) in [
+            (
+                "fxdax_extentd_part_cache_bytes",
+                "Bytes of objects the host's part cache keeps.",
+                cache.bytes(),
+            ),
+            (
+                "fxdax_extentd_part_cache_capacity_bytes",
+                "The most bytes of objects the host's part cache keeps.",
+                cache.capacity(),
+            ),
+        ] {
+            let _ = writeln!(out, "# HELP {name} {help}");
+            let _ = writeln!(out, "# TYPE {name} gauge");
+            let _ = writeln!(out, "{name} {value}");
+        }
+    }
+
+    // fxdax: the parts asked of peers, and served them (TASK-406.2).
+    if let Some((counts, served, served_missing)) = super::peers::counts() {
+        let name = "fxdax_extentd_peer_parts_total";
+        let _ = writeln!(out, "# HELP {name} Parts asked of the peers that own them, by outcome.");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for (outcome, value) in
+            [("given", counts.given), ("missing", counts.missing), ("failed", counts.failed)]
+        {
+            let _ = writeln!(out, "{name}{{outcome=\"{outcome}\"}} {value}");
+        }
+        let name = "fxdax_extentd_peer_served_parts_total";
+        let _ = writeln!(out, "# HELP {name} Parts the daemon's peers asked it for, by outcome.");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for (outcome, value) in [("served", served), ("missing", served_missing)] {
+            let _ = writeln!(out, "{name}{{outcome=\"{outcome}\"}} {value}");
+        }
     }
 
     // fxdax: what the process holds and spent, against its budget (TASK-330.2).

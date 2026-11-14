@@ -539,6 +539,11 @@ impl Cache {
         self.evict(Vec::from_iter(evicted))
     }
 
+    /// The most bytes of objects it keeps.
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
+
     /// How many bytes of objects are kept.
     pub fn bytes(&self) -> u64 {
         self.kept.lock().unwrap().bytes

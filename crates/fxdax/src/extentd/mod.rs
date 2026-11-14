@@ -102,6 +102,7 @@ pub mod logging;
 pub mod memory;
 pub mod metrics;
 pub mod otel;
+pub mod peers;
 mod pool;
 pub mod process;
 pub(crate) mod server;
@@ -117,6 +118,7 @@ pub use control::serve_control;
 pub use device::RemoteDevice;
 pub use metrics::serve_metrics;
 pub use server::{Tenant, serve, serve_tenant};
+pub use stores::cache_config;
 
 /// Whether the daemon accepts VM processes' connections ([`serve`]): what the control API's health
 /// service reports (TASK-48). Not as it starts, nor once it is told to stop ([`stop_serving`]).

@@ -128,6 +128,7 @@ const (
 	Extentd_ShrinkMemory_FullMethodName    = "/fxdax.extentd.v1.Extentd/ShrinkMemory"
 	Extentd_SetDiskLimit_FullMethodName    = "/fxdax.extentd.v1.Extentd/SetDiskLimit"
 	Extentd_GetTenantDisk_FullMethodName   = "/fxdax.extentd.v1.Extentd/GetTenantDisk"
+	Extentd_SetPeers_FullMethodName        = "/fxdax.extentd.v1.Extentd/SetPeers"
 )
 
 // ExtentdClient is the client API for Extentd service.
@@ -235,6 +236,13 @@ type ExtentdClient interface {
 	SetDiskLimit(ctx context.Context, in *SetDiskLimitRequest, opts ...grpc.CallOption) (*SetDiskLimitResponse, error)
 	// What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
 	GetTenantDisk(ctx context.Context, in *GetTenantDiskRequest, opts ...grpc.CallOption) (*GetTenantDiskResponse, error)
+	// Has the hosts sharing the daemon's bucket be these (TASK-406.2): its stores' fetchers ask the
+	// host that owns a part, by rendezvous hashing of the object's key and the part's number over
+	// them, for it before the bucket, and it serves them the parts it owns. Those it had are kept,
+	// down or not. FAILED_PRECONDITION (ENOTSUP) if the daemon serves no peers (it was started
+	// without FXDAX_EXTENTD_PEER_ADDRESS); INVALID_ARGUMENT (EINVAL) for an address that is no
+	// HOST:PORT.
+	SetPeers(ctx context.Context, in *SetPeersRequest, opts ...grpc.CallOption) (*SetPeersResponse, error)
 }
 
 type extentdClient struct {
@@ -475,6 +483,16 @@ func (c *extentdClient) GetTenantDisk(ctx context.Context, in *GetTenantDiskRequ
 	return out, nil
 }
 
+func (c *extentdClient) SetPeers(ctx context.Context, in *SetPeersRequest, opts ...grpc.CallOption) (*SetPeersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetPeersResponse)
+	err := c.cc.Invoke(ctx, Extentd_SetPeers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ExtentdServer is the server API for Extentd service.
 // All implementations must embed UnimplementedExtentdServer
 // for forward compatibility.
@@ -580,6 +598,13 @@ type ExtentdServer interface {
 	SetDiskLimit(context.Context, *SetDiskLimitRequest) (*SetDiskLimitResponse, error)
 	// What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
 	GetTenantDisk(context.Context, *GetTenantDiskRequest) (*GetTenantDiskResponse, error)
+	// Has the hosts sharing the daemon's bucket be these (TASK-406.2): its stores' fetchers ask the
+	// host that owns a part, by rendezvous hashing of the object's key and the part's number over
+	// them, for it before the bucket, and it serves them the parts it owns. Those it had are kept,
+	// down or not. FAILED_PRECONDITION (ENOTSUP) if the daemon serves no peers (it was started
+	// without FXDAX_EXTENTD_PEER_ADDRESS); INVALID_ARGUMENT (EINVAL) for an address that is no
+	// HOST:PORT.
+	SetPeers(context.Context, *SetPeersRequest) (*SetPeersResponse, error)
 	mustEmbedUnimplementedExtentdServer()
 }
 
@@ -658,6 +683,9 @@ func (UnimplementedExtentdServer) SetDiskLimit(context.Context, *SetDiskLimitReq
 }
 func (UnimplementedExtentdServer) GetTenantDisk(context.Context, *GetTenantDiskRequest) (*GetTenantDiskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTenantDisk not implemented")
+}
+func (UnimplementedExtentdServer) SetPeers(context.Context, *SetPeersRequest) (*SetPeersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetPeers not implemented")
 }
 func (UnimplementedExtentdServer) mustEmbedUnimplementedExtentdServer() {}
 func (UnimplementedExtentdServer) testEmbeddedByValue()                 {}
@@ -1094,6 +1122,24 @@ func _Extentd_GetTenantDisk_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Extentd_SetPeers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPeersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).SetPeers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_SetPeers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).SetPeers(ctx, req.(*SetPeersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Extentd_ServiceDesc is the grpc.ServiceDesc for Extentd service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1192,6 +1238,10 @@ var Extentd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTenantDisk",
 			Handler:    _Extentd_GetTenantDisk_Handler,
+		},
+		{
+			MethodName: "SetPeers",
+			Handler:    _Extentd_SetPeers_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

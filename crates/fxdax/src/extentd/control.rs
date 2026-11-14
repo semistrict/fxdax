@@ -638,6 +638,14 @@ impl Extentd for Control {
         let response = |(bytes, limit_bytes)| GetTenantDiskResponse { bytes, limit_bytes };
         reply(counted.await.map(response))
     }
+
+    async fn set_peers(
+        &self,
+        request: Request<SetPeersRequest>,
+    ) -> Result<Response<SetPeersResponse>, Status> {
+        let SetPeersRequest { addresses } = request.into_inner();
+        reply(super::peers::set(addresses).map(|()| SetPeersResponse {}))
+    }
 }
 
 /// A client of a daemon's control API that blocks, for callers without a runtime of their own:
@@ -916,6 +924,15 @@ impl Client {
         let request = SetDiskLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
         let what = format!("limiting the disk of {}", tenant.unwrap_or("every tenant"));
         self.call(what, |mut c| async move { c.set_disk_limit(request).await }).map(drop)
+    }
+
+    /// fxdax: has the hosts sharing the daemon's bucket be those at `addresses`, each `HOST:PORT`
+    /// (`SetPeers`, TASK-406.2).
+    pub fn set_peers(&self, addresses: &[&str]) -> Result<(), crate::Error> {
+        let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
+        let request = SetPeersRequest { addresses };
+        let what = "setting the daemon's peers".to_owned();
+        self.call(what, |mut c| async move { c.set_peers(request).await }).map(drop)
     }
 
     /// fxdax: what the disk of the tenant `tenant`, or of every tenant without one, takes, counted

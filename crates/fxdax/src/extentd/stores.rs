@@ -1292,6 +1292,8 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
                     daemon_line(),
                     super::metrics::requests_line(),
                     uploads_line(),
+                    cache_line(),
+                    super::peers::line().unwrap_or_else(|| "peers: none".to_owned()),
                     super::process::line(),
                 ];
                 // fxdax: the process's line, its CPU time changing each poll, every
@@ -1323,6 +1325,19 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
 fn uploads_line() -> String {
     let memory = crate::remote::upload_memory();
     format!("uploads: held={} max-held={} budget={}", memory.held, memory.max_held, memory.budget)
+}
+
+/// fxdax: the daemon's part cache, if it opened one ([`remote_cache`]): opening none.
+pub(super) fn opened_cache() -> Option<Arc<Cache>> {
+    CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().flatten()
+}
+
+/// fxdax: what the daemon's part cache keeps, in bytes, and the most it may (TASK-406.1).
+fn cache_line() -> String {
+    match opened_cache() {
+        Some(cache) => format!("cache: bytes={} capacity={}", cache.bytes(), cache.capacity()),
+        None => "cache: none".to_owned(),
+    }
 }
 
 /// fxdax: what serving the stores cost the daemon (`crate::stats::Stats::named`), as a line of
@@ -1445,26 +1460,60 @@ static STATS_WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// fxdax: how much of its filesystem the cache leaves free.
 const CACHE_FLOOR: u64 = 4 << 30;
 
-/// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one (empty, it names
-/// none), where what the stores opened read from their bucket is kept. Opened once, by the first
-/// store to open, those opening meanwhile waiting for it: a cache holds its directory locked, and
-/// two opened at once, as a daemon's VMs booting at once open their stores, failed the second
-/// (TASK-67). A failure is the caller's, and the next tries again.
-fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
-    static CACHE: std::sync::Mutex<Option<Option<Arc<Cache>>>> = std::sync::Mutex::new(None);
+/// fxdax: where the daemon keeps its part cache, and how much it may keep there, as the environment
+/// says: the directory `FXDAX_EXTENTD_CACHE` names, if it names one (empty, it names none); the
+/// bytes of objects `FXDAX_EXTENTD_CACHE_BYTES` gives, a budget, as a host whose cache shares its
+/// disk with its stores needs (TASK-406.1), or, unset, as many as leave [`CACHE_FLOOR`] free. Read
+/// at the daemon's start, to refuse what it can't use, and again by its first store to open.
+pub fn cache_config() -> Result<Option<(std::path::PathBuf, u64)>, String> {
+    let set = |var| std::env::var_os(var).filter(|value| !value.is_empty());
+    let dir = set("FXDAX_EXTENTD_CACHE");
+    let capacity = match set("FXDAX_EXTENTD_CACHE_BYTES") {
+        None => u64::MAX,
+        Some(_) if dir.is_none() => {
+            return Err("FXDAX_EXTENTD_CACHE_BYTES is set, but FXDAX_EXTENTD_CACHE names no \
+                        directory for the cache"
+                .to_owned());
+        }
+        Some(bytes) => match bytes.to_str().and_then(|bytes| bytes.parse().ok()) {
+            Some(0) | None => {
+                return Err(format!(
+                    "FXDAX_EXTENTD_CACHE_BYTES must be a positive number of bytes: {bytes:?}"
+                ));
+            }
+            Some(bytes) => bytes,
+        },
+    };
+    Ok(dir.map(|dir| (dir.into(), capacity)))
+}
+
+/// fxdax: the daemon's part cache, once its first store opened it, if it keeps one
+/// ([`remote_cache`]).
+static CACHE: std::sync::Mutex<Option<Option<Arc<Cache>>>> = std::sync::Mutex::new(None);
+
+/// fxdax: the cache the environment configures ([`cache_config`]), if it does, where what the
+/// stores opened read from their bucket is kept. Opened once, by the first store to open, those
+/// opening meanwhile waiting for it: a cache holds its directory locked, and two opened at once, as
+/// a daemon's VMs booting at once open their stores, failed the second (TASK-67). A failure is the
+/// caller's, and the next tries again.
+pub(super) fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
     let mut opened = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(cache) = &*opened {
         return Ok(cache.clone());
     }
-    let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
-        Some(dir) if !dir.is_empty() => match Cache::open(dir.as_ref(), u64::MAX, CACHE_FLOOR) {
+    let config = cache_config().map_err(|err| {
+        log::error!("extentd: {err}");
+        Errno::EINVAL
+    })?;
+    let cache = match config {
+        Some((dir, capacity)) => match Cache::open(&dir, capacity, CACHE_FLOOR) {
             Ok(cache) => Some(Arc::new(cache)),
             Err(err) => {
                 log::error!("extentd: FXDAX_EXTENTD_CACHE: {err}");
                 return Err(Errno::EIO);
             }
         },
-        _ => None,
+        None => None,
     };
     Ok(opened.insert(cache).clone())
 }
@@ -1500,5 +1549,51 @@ mod tests {
             let cache = cache.expect("a cache").expect("FXDAX_EXTENTD_CACHE's");
             assert!(Arc::ptr_eq(&cache, &first), "two caches of one directory");
         }
+        assert_eq!(first.capacity(), u64::MAX, "a cache with no budget");
+    }
+
+    /// TASK-406.1: the daemon's cache keeps no more than `FXDAX_EXTENTD_CACHE_BYTES`, as a host
+    /// whose cache shares its disk with its stores needs.
+    #[test]
+    fn the_cache_takes_its_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe {
+            std::env::set_var("FXDAX_EXTENTD_CACHE", dir.path());
+            std::env::set_var("FXDAX_EXTENTD_CACHE_BYTES", "268435456");
+        }
+        let cache = remote_cache().expect("a cache").expect("FXDAX_EXTENTD_CACHE's");
+        assert_eq!(cache.capacity(), 256 << 20);
+    }
+
+    /// TASK-406.1: a budget the cache can't take stops the daemon at its start, naming the
+    /// variable: none, not a number, or with no cache to take it.
+    #[test]
+    fn budgets_the_cache_cant_take_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("FXDAX_EXTENTD_CACHE") };
+        let set = |bytes: &str| unsafe { std::env::set_var("FXDAX_EXTENTD_CACHE_BYTES", bytes) };
+        set("1");
+        assert_eq!(
+            cache_config(),
+            Err("FXDAX_EXTENTD_CACHE_BYTES is set, but FXDAX_EXTENTD_CACHE names no directory \
+                 for the cache"
+                .to_owned())
+        );
+        // SAFETY: as above.
+        unsafe { std::env::set_var("FXDAX_EXTENTD_CACHE", dir.path()) };
+        for bytes in ["0", "-1", "1G", "x"] {
+            set(bytes);
+            assert_eq!(
+                cache_config(),
+                Err(format!(
+                    "FXDAX_EXTENTD_CACHE_BYTES must be a positive number of bytes: {bytes:?}"
+                ))
+            );
+        }
+        set("");
+        assert_eq!(cache_config(), Ok(Some((dir.path().to_owned(), u64::MAX))));
     }
 }

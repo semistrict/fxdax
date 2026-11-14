@@ -60,7 +60,19 @@
 //! credentials from the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables: durable commits are uploaded behind them, within a second. With
 //! `FXDAX_EXTENTD_CACHE` naming a directory too, what stores read from the bucket is kept there,
 //! sparse, leaving 4 GiB of its filesystem free, and kept across the daemon's restarts: one daemon
-//! at a time has the directory.
+//! at a time has the directory. `FXDAX_EXTENTD_CACHE_BYTES` caps what it keeps there, in bytes, as
+//! a host whose cache shares a disk with its stores needs (TASK-406.1): those read least recently
+//! go first.
+//!
+//! With `FXDAX_EXTENTD_PEER_ADDRESS` naming this host's `HOST:PORT` among the hosts sharing its
+//! bucket, and `FXDAX_EXTENTD_CACHE` a cache, the daemon serves them parts of the bucket's objects
+//! there, over gRPC (`proto/fxdax/peer/v1/peer.proto`), and its stores' fetchers ask the host that
+//! owns a part, by rendezvous hashing over them, before the bucket (TASK-406.2): a part many hosts
+//! read comes from the bucket about once for them all. `FXDAX_EXTENTD_PEERS` names them at start,
+//! comma-separated, each spelled as it names itself; the control API's `SetPeers` replaces them.
+//! The network is trusted: peers are unauthenticated, as every host reads the whole bucket anyway,
+//! and what a peer gives is checked against the CRCs of the asker's own tail of the object; on any
+//! failure a part comes from the bucket, and the peer is asked nothing for 30 seconds.
 //! However far behind the bucket its stores fall, what waits for it is on the host's disk, each
 //! store's write-ahead log, bounded by its lag (backlog doc-7, Uploads); what of it the daemon
 //! holds in memory is what it uploads at once, `FXDAX_EXTENTD_UPLOAD_MEMORY` bytes at most (512 MiB
@@ -105,6 +117,21 @@ fn main() -> anyhow::Result<()> {
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
+    // fxdax: its part cache's directory and budget, if it keeps one (TASK-406.1).
+    fxdax::extentd::cache_config().map_err(anyhow::Error::msg)?;
+    // fxdax: the hosts sharing its bucket, which it serves parts and asks for theirs (TASK-406.2).
+    let set = |var| std::env::var(var).ok().filter(|value| !value.is_empty());
+    let peers = set("FXDAX_EXTENTD_PEERS");
+    if let Some(address) = set("FXDAX_EXTENTD_PEER_ADDRESS") {
+        let listener = std::net::TcpListener::bind(&address)
+            .with_context(|| format!("serving peers at {address}"))?;
+        let peers = peers.iter().flat_map(|peers| peers.split(',')).filter(|peer| !peer.is_empty());
+        fxdax::extentd::peers::start(&address, listener, peers).map_err(anyhow::Error::msg)?;
+    } else if peers.is_some() {
+        anyhow::bail!(
+            "FXDAX_EXTENTD_PEERS is set, but FXDAX_EXTENTD_PEER_ADDRESS names no address"
+        );
+    }
     // fxdax: what its uploads may hold at once (TASK-317).
     if let Some(bytes) = std::env::var_os("FXDAX_EXTENTD_UPLOAD_MEMORY").filter(|b| !b.is_empty()) {
         let bytes = bytes.to_str().and_then(|bytes| bytes.parse().ok());

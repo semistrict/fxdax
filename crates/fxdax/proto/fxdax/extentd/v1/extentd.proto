@@ -192,6 +192,13 @@ service Extentd {
   rpc SetDiskLimit(SetDiskLimitRequest) returns (SetDiskLimitResponse);
   // What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
   rpc GetTenantDisk(GetTenantDiskRequest) returns (GetTenantDiskResponse);
+  // Has the hosts sharing the daemon's bucket be these (TASK-406.2): its stores' fetchers ask the
+  // host that owns a part, by rendezvous hashing of the object's key and the part's number over
+  // them, for it before the bucket, and it serves them the parts it owns. Those it had are kept,
+  // down or not. FAILED_PRECONDITION (ENOTSUP) if the daemon serves no peers (it was started
+  // without FXDAX_EXTENTD_PEER_ADDRESS); INVALID_ARGUMENT (EINVAL) for an address that is no
+  // HOST:PORT.
+  rpc SetPeers(SetPeersRequest) returns (SetPeersResponse);
 }
 
 // Makes an empty store.
@@ -689,6 +696,16 @@ message SetDiskLimitRequest {
 
 // The limit is set.
 message SetDiskLimitResponse {}
+
+// The hosts sharing the daemon's bucket.
+message SetPeersRequest {
+  // Each `HOST:PORT`, as it serves its peers (its FXDAX_EXTENTD_PEER_ADDRESS), spelled as every
+  // host spells it: this host's among them or not.
+  repeated string addresses = 1;
+}
+
+// The peers are set.
+message SetPeersResponse {}
 
 // Asks what a tenant's disk takes.
 message GetTenantDiskRequest {

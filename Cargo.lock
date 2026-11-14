@@ -1415,6 +1415,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shuttle",
+ "siphasher",
  "storage_device",
  "tar",
  "tempfile",

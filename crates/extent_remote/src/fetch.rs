@@ -36,6 +36,7 @@ use crate::checkpoint::Table;
 use crate::layout::{self, Footer, Kind, Location, Moves, PART};
 use crate::moves::MOVES;
 use crate::object::{self, TAIL};
+use crate::peer::{Peer, Peers};
 use crate::{Error, rules};
 use futures::channel::oneshot;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
@@ -469,8 +470,10 @@ struct Parts {
 /// number, and where and how the tail it goes by says the part is stored. A read joins only a GET
 /// of the part as its own tail says it is stored, which the CRC its tail gives checks: never one
 /// by the tail of another object at the key, as one deleted and one recreated there are, whose
-/// part it would read by its own footer (TASK-92.43).
-type Flown = (String, u64, extent_frame::Stored);
+/// part it would read by its own footer (TASK-92.43). fxdax: and whether it asks the part's owner
+/// first (TASK-406.2): a read a peer asked for asks no other, so that hosts that disagree on its
+/// owner, as peers being added and removed do for a while, never ask each other round in a ring.
+type Flown = (String, u64, extent_frame::Stored, bool);
 
 struct Waited {
     /// The budget it has its place in, the fetcher's that sent it, and its place there.
@@ -527,6 +530,9 @@ struct Fetching<B: Bucket> {
     memory: Arc<Memory>,
     /// Where it keeps the parts it fetches, as stored, and their objects' tails, if it does.
     cache: Option<Arc<Cache>>,
+    /// fxdax: the hosts sharing its bucket, which it asks for the parts they own before the
+    /// bucket, if it does (TASK-406.2).
+    peers: Option<Arc<dyn Peers>>,
 }
 
 impl<B: Bucket> Fetcher<B> {
@@ -538,8 +544,15 @@ impl<B: Bucket> Fetcher<B> {
         memory: Arc<Memory>,
         cache: Option<Arc<Cache>>,
     ) -> Self {
-        let shared = Arc::new(Fetching { bucket, budget, memory, cache });
+        let shared = Arc::new(Fetching { bucket, budget, memory, cache, peers: None });
         Self { shared, streams: Arc::default(), spawn: None }
+    }
+
+    /// fxdax: asks `peers`, the hosts sharing its bucket, for the parts another of them owns
+    /// before the bucket (TASK-406.2, [`crate::peer`]).
+    pub fn asking(mut self, peers: Arc<dyn Peers>) -> Self {
+        Arc::get_mut(&mut self.shared).expect("a fetcher not cloned yet").peers = Some(peers);
+        self
     }
 
     /// Reads ahead of reads that wait for their data, by `spawn`, into the cache: with none, it
@@ -722,11 +735,38 @@ impl<B: Bucket> Fetcher<B> {
         }));
     }
 
+    /// fxdax: the stored bytes of part `part` of the object at `key`, as `stored` says a peer that
+    /// asks for it has it stored (TASK-406.2): if this host's tail of the object says so too, kept
+    /// in its memory or its cache, or fetched from the bucket by one GET, however many ask at once,
+    /// and kept then, never asking another peer. None if the object is gone, or this host has
+    /// another of it at its key: older or newer, as the asker's tail and the CRCs it gives say.
+    pub async fn stored_part(
+        &self,
+        key: &str,
+        part: u64,
+        stored: &extent_frame::Stored,
+    ) -> Result<Option<Arc<[u8]>>, Error> {
+        let Some(tail) = self.shared.tail(key).await? else { return Ok(None) };
+        if tail.stored(key, part).ok().is_none_or(|(ours, _)| ours != *stored) {
+            return Ok(None);
+        }
+        if let Some(fetched) = self.shared.recent_part(key, part, stored) {
+            return Ok(Some(fetched.bytes.clone()));
+        }
+        match self.flight(key, part, &tail, Priority::Demand, None).await? {
+            Part::Data(fetched) => Ok(Some(fetched.bytes.clone())),
+            Part::Gone => Ok(None),
+            Part::Changed => {
+                self.shared.forget(key, &tail);
+                Ok(None)
+            }
+        }
+    }
+
     /// Part `part` of the object at `key`, whose tail is `tail`: kept in the host's memory, which
     /// needs no GET, nor the lock of those in flight, which the host's fetchers share; or the GET
-    /// for it in flight, this fetcher's or another of the host's, by a tail that says it is stored
-    /// as `tail` does ([`Flown`]), or a new one. The GET goes, and gives up its place in the
-    /// budget, once no read waits for it.
+    /// for it in flight ([`Fetcher::flight`]), which asks the host that owns it first, if another
+    /// does (TASK-406.2).
     async fn part(
         &self,
         key: &str,
@@ -735,12 +775,27 @@ impl<B: Bucket> Fetcher<B> {
         priority: Priority,
     ) -> Result<Part, Error> {
         let stored = tail.stored(key, part)?.0;
-        if let Some(fetched) =
-            self.shared.recent().and_then(|mut recent| recent.get(key, part, &stored))
-        {
+        if let Some(fetched) = self.shared.recent_part(key, part, &stored) {
             return Ok(Part::Data(fetched));
         }
-        let id: Flown = (key.to_owned(), part, stored);
+        let owner = self.shared.peers.as_ref().and_then(|peers| peers.owner(key, part));
+        self.flight(key, part, tail, priority, owner).await
+    }
+
+    /// Part `part` of the object at `key`, whose tail is `tail`, by the GET for it in flight, this
+    /// fetcher's or another of the host's, by a tail that says it is stored as `tail` does, asking
+    /// `owner` first or not as it does ([`Flown`]), or a new one. The GET goes, and gives up its
+    /// place in the budget, once no read waits for it.
+    async fn flight(
+        &self,
+        key: &str,
+        part: u64,
+        tail: &Arc<Tail>,
+        priority: Priority,
+        owner: Option<Arc<dyn Peer>>,
+    ) -> Result<Part, Error> {
+        let stored = tail.stored(key, part)?.0;
+        let id: Flown = (key.to_owned(), part, stored, owner.is_some());
         let parts = &self.shared.memory.parts;
         let flight = {
             let mut parts = parts.lock().unwrap();
@@ -748,7 +803,7 @@ impl<B: Bucket> Fetcher<B> {
                 let budget = self.shared.budget.clone();
                 let (ticket, granted) = budget.enter(priority, PART);
                 let (shared, tail, key) = (self.shared.clone(), tail.clone(), key.to_owned());
-                let flight = async move { shared.part(&key, part, &tail, granted).await };
+                let flight = async move { shared.part(&key, part, &tail, granted, owner).await };
                 Waited { budget, ticket, readers: 0, flight: flight.boxed().shared() }
             });
             if priority == Priority::Demand {
@@ -795,34 +850,31 @@ impl Drop for Reading<'_> {
 impl<B: Bucket> Fetching<B> {
     /// Part `part` of the object at `key`, whose tail is `tail`, checked against the CRC the tail
     /// gives: kept, in memory, as one fetched since its first reader looked there is, or in the
-    /// cache; or fetched once `granted` lets its GET go, and kept then; unpacked only once a read
-    /// wants it ([`Fetched`]).
+    /// cache; or fetched once `granted` lets its GET go, from `owner`, the host that owns it, if
+    /// another does, or from the bucket ([`Fetching::fetch`]), and kept then; unpacked only once a
+    /// read wants it ([`Fetched`]).
     async fn part(
         self: &Arc<Self>,
         key: &str,
         part: u64,
         tail: &Tail,
         granted: impl Future<Output = Grant>,
+        owner: Option<Arc<dyn Peer>>,
     ) -> Result<Part, Error> {
         let (stored, len) = tail.stored(key, part)?;
-        if let Some(fetched) = self.recent().and_then(|mut recent| recent.get(key, part, &stored)) {
+        if let Some(fetched) = self.recent_part(key, part, &stored) {
             return Ok(Part::Data(fetched));
         }
         let bytes = match self.kept(key, part, &stored) {
             Some(bytes) => bytes,
             None => {
                 let grant = granted.await;
-                let range = ByteRange::Bounded(stored.range());
-                let fetched = bucket::get_range(&*self.bucket, key, range).await;
+                let fetched = self.fetch(key, part, &stored, owner).await;
                 drop(grant);
                 let fetched = match fetched {
-                    Ok(Some(fetched)) => fetched,
-                    Ok(None) => return Ok(Part::Gone),
-                    Err(bucket::Past { .. }) => return Ok(Part::Changed),
+                    Ok(fetched) => fetched,
+                    Err(missing) => return Ok(missing),
                 };
-                if stored.check(&fetched).is_err() {
-                    return Ok(Part::Changed);
-                }
                 self.keep(key, tail, part, &fetched);
                 fetched
             }
@@ -832,6 +884,45 @@ impl<B: Bucket> Fetching<B> {
             recent.put(key, part, fetched.clone());
         }
         Ok(Part::Data(fetched))
+    }
+
+    /// The stored bytes of part `part` of the object at `key`, stored as `stored` says, checked
+    /// against its CRC: from `owner`, the host that owns it, if another does and gives them; else
+    /// by a GET of the bucket's. Or what the bucket has instead ([`Part::Gone`],
+    /// [`Part::Changed`]).
+    async fn fetch(
+        &self,
+        key: &str,
+        part: u64,
+        stored: &extent_frame::Stored,
+        owner: Option<Arc<dyn Peer>>,
+    ) -> Result<Vec<u8>, Part> {
+        if let Some(owner) = owner
+            && let Some(bytes) = owner.part(key, part, *stored).await
+        {
+            if bytes.len() as u64 == stored.len && stored.check(&bytes).is_ok() {
+                return Ok(bytes);
+            }
+            log::warn!("fxdax: part {part} of {key}, from its owner, fails its CRC");
+            owner.failed();
+        }
+        let range = ByteRange::Bounded(stored.range());
+        match bucket::get_range(&*self.bucket, key, range).await {
+            Ok(Some(fetched)) if stored.check(&fetched).is_ok() => Ok(fetched),
+            Ok(None) => Err(Part::Gone),
+            Ok(Some(_)) | Err(bucket::Past { .. }) => Err(Part::Changed),
+        }
+    }
+
+    /// Part `part` of the object at `key`, stored as `stored` says, if fetched last and kept in the
+    /// host's memory.
+    fn recent_part(
+        &self,
+        key: &str,
+        part: u64,
+        stored: &extent_frame::Stored,
+    ) -> Option<Arc<Fetched>> {
+        self.recent()?.get(key, part, stored)
     }
 
     /// The parts fetched last, in the host's memory, if it keeps the parts it fetches.
@@ -2423,5 +2514,147 @@ mod tests {
         assert_eq!(streams(), STREAMS);
         fetcher.read_ahead(&key(STREAMS), 0, 0);
         assert_eq!(streams(), 1);
+    }
+
+    /// fxdax: a host that owns every part, another's fetcher, which serves them as a peer is served
+    /// ([`Fetcher::stored_part`]); or one that gives wrong bytes, of the right length.
+    struct Owner {
+        fetcher: Option<Arc<Fetcher<SimBucket>>>,
+        asked: std::sync::atomic::AtomicUsize,
+        failed: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Owner {
+        fn of(fetcher: Option<Arc<Fetcher<SimBucket>>>) -> Arc<Self> {
+            Arc::new(Self { fetcher, asked: Default::default(), failed: Default::default() })
+        }
+
+        fn counts(&self) -> (usize, usize) {
+            use std::sync::atomic::Ordering::Relaxed;
+            (self.asked.load(Relaxed), self.failed.load(Relaxed))
+        }
+    }
+
+    impl Peers for Arc<Owner> {
+        fn owner(&self, _: &str, _: u64) -> Option<Arc<dyn Peer>> {
+            Some(self.clone())
+        }
+    }
+
+    impl Peer for Owner {
+        fn part(
+            &self,
+            key: &str,
+            part: u64,
+            stored: extent_frame::Stored,
+        ) -> BoxFuture<'static, Option<Vec<u8>>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(fetcher) = self.fetcher.clone() else {
+                return futures::future::ready(Some(vec![0xa5; stored.len as usize])).boxed();
+            };
+            let key = key.to_owned();
+            async move {
+                let served = fetcher.stored_part(&key, part, &stored).await;
+                Some(served.unwrap()?.to_vec())
+            }
+            .boxed()
+        }
+
+        fn failed(&self) {
+            self.failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// fxdax: a host that asks no peer, as one serving them asks none.
+    struct Alone;
+
+    impl Peers for Alone {
+        fn owner(&self, key: &str, part: u64) -> Option<Arc<dyn Peer>> {
+            panic!("part {part} of {key}, asked of a peer by a fetcher serving it");
+        }
+    }
+
+    /// TASK-406.2: parts another host owns are fetched from it, which fetches each from the bucket
+    /// once, keeps it, and asks no peer for it; a third host's read of them fetches nothing of them
+    /// from the bucket. Only tails are each host's own GETs.
+    #[test]
+    fn parts_another_host_owns_come_from_it() {
+        let data = noise(2 * PART);
+        let bucket = bucket(&data);
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let cache = |at: usize| Some(Arc::new(Cache::open(dirs[at].path(), 8 * PART, 0).unwrap()));
+        let owning = Arc::new(
+            Fetcher::new(bucket.clone(), limits(8), Memory::new(), cache(0))
+                .asking(Arc::new(Alone)),
+        );
+        let owner = Owner::of(Some(owning));
+        let asker = |at: usize| {
+            let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), cache(at));
+            Rc::new(fetcher.asking(Arc::new(owner.clone())))
+        };
+        let mut reads = Reads::new();
+        let (tail, parts) = (
+            format!("get {KEY} last {TAIL}"),
+            [0, 1].map(|part| format!("get {KEY} {}..{}", part * PART, (part + 1) * PART)),
+        );
+
+        let read = reads.read(&asker(1), location(2 * PART), 0, 2 * PART, Priority::Demand);
+        let mut completed = complete_all(&bucket, &mut reads);
+        completed.sort();
+        let mut want = vec![parts[0].clone(), parts[1].clone(), tail.clone(), tail.clone()];
+        want.sort();
+        assert_eq!(completed, want, "the asker's tail, the owner's, and each part once");
+        assert_eq!(reads.result(read), Some(Ok(data.clone())));
+        assert_eq!(owner.counts(), (2, 0));
+
+        let read = reads.read(&asker(2), location(2 * PART), 0, 2 * PART, Priority::Demand);
+        assert_eq!(complete_all(&bucket, &mut reads), [tail], "the third host's tail alone");
+        assert_eq!(reads.result(read), Some(Ok(data)));
+        assert_eq!(owner.counts(), (4, 0));
+    }
+
+    /// TASK-406.2: a part its owner gives wrong, failing the CRC the asker's tail gives it, is
+    /// fetched from the bucket, and its owner told it failed.
+    #[test]
+    fn parts_their_owner_gives_wrong_come_from_the_bucket() {
+        let data = noise(2 * PART);
+        let bucket = bucket(&data);
+        let owner = Owner::of(None);
+        let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), None);
+        let fetcher = Rc::new(fetcher.asking(Arc::new(owner.clone())));
+        let mut reads = Reads::new();
+        let read = reads.read(&fetcher, location(2 * PART), 0, 2 * PART, Priority::Demand);
+        assert_eq!(complete_all(&bucket, &mut reads).len(), 3, "the tail, and each part");
+        assert_eq!(reads.result(read), Some(Ok(data)));
+        assert_eq!(owner.counts(), (2, 2));
+    }
+
+    /// TASK-406.2: a peer asks for a part as its own tail says it is stored: one stored otherwise
+    /// by this host's tail, of another object at the key, it isn't given.
+    #[test]
+    fn peers_are_given_only_the_part_they_ask_for() {
+        let data = noise(2 * PART);
+        let bucket = bucket(&data);
+        let fetcher = Arc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
+        let mut pool = LocalPool::new();
+        let (_, stored) = extent_frame::Parts::of(&whole(&data)).unwrap().part(1).unwrap();
+        let mut other = stored;
+        other.crc ^= 1;
+        let spawner = pool.spawner();
+        let serving = |stored| {
+            let fetcher = fetcher.clone();
+            spawner
+                .spawn_local_with_handle(async move { fetcher.stored_part(KEY, 1, &stored).await })
+                .unwrap()
+        };
+        let served = serving(other);
+        pool.run_until_stalled();
+        bucket.complete(0, Fault::None);
+        assert_eq!(pool.run_until(served), Ok(None));
+        let served = serving(stored);
+        pool.run_until_stalled();
+        bucket.complete(0, Fault::None);
+        let served = pool.run_until(served).unwrap().expect("the part");
+        assert_eq!(&*served, &whole(&data)[stored.range().start as usize..][..stored.len as usize]);
     }
 }

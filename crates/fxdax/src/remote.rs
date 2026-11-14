@@ -202,7 +202,12 @@ impl Fetcher {
         let spawn: fetch::Spawn = Arc::new(move |future| {
             drop(runs.spawn(crate::request::within(crate::request::current(), future)))
         });
+        let peers = PEERS.get().filter(|(theirs, _)| Arc::ptr_eq(theirs, &bucket));
         let parts = fetch::Fetcher::new(bucket, BUDGET.clone(), MEMORY.clone(), cache);
+        let parts = match peers {
+            Some((_, peers)) => parts.asking(peers.clone()),
+            None => parts,
+        };
         Arc::new(Self { runtime, parts: Arc::new(parts.reading_ahead(spawn)) })
     }
 
@@ -225,6 +230,53 @@ impl Fetcher {
         async move { read.await.map_err(|err| Failure::local(err, "fetching"))? }
     }
 }
+
+/// fxdax: the hosts sharing the host's bucket, the one they share, which its stores' fetchers of it
+/// ask for parts before it, if it has any ([`ask_peers`], TASK-406.2).
+static PEERS: std::sync::OnceLock<(Arc<Bucket>, Arc<peers::Peers>)> = std::sync::OnceLock::new();
+
+/// fxdax: has the fetchers of `bucket`, the host's, made from now on ask `peers`, the hosts sharing
+/// it, for the parts they own before it (TASK-406.2): before any store opens. Once.
+pub fn ask_peers(bucket: Arc<Bucket>, peers: Arc<peers::Peers>) -> Result<(), String> {
+    PEERS.set((bucket, peers)).map_err(|_| "the host's peers are set already".to_owned())
+}
+
+/// fxdax: the hosts sharing the host's bucket, if it asks them for parts ([`ask_peers`]).
+pub fn peers() -> Option<Arc<peers::Peers>> {
+    PEERS.get().map(|(_, peers)| peers.clone())
+}
+
+/// fxdax: what serves the hosts sharing `bucket`, the host's, the parts they ask it for, as stored
+/// (TASK-406.2): a fetcher of it, keeping what it fetches in `cache`, the host's, as its stores'
+/// fetchers do, with them, under the host's budget, and asking no peer.
+pub fn serving_peers(bucket: Arc<Bucket>, cache: Arc<Cache>) -> Serving {
+    Serving {
+        runtime: RUNTIME.handle().clone(),
+        parts: Arc::new(fetch::Fetcher::new(bucket, BUDGET.clone(), MEMORY.clone(), Some(cache))),
+    }
+}
+
+/// fxdax: what serves the host's peers the parts they ask for ([`serving_peers`]).
+#[derive(Clone)]
+pub struct Serving {
+    runtime: tokio::runtime::Handle,
+    parts: Arc<fetch::Fetcher<Bucket>>,
+}
+
+impl Serving {
+    /// The stored bytes of the part `asked` names, if the host has it as stored so: kept, or
+    /// fetched from the bucket once, however many ask, on the remotes' runtime.
+    pub async fn part(&self, asked: peers::Asked) -> Result<Option<Arc<[u8]>>, Failure> {
+        let parts = self.parts.clone();
+        let serving = self.runtime.spawn(async move {
+            let peers::Asked { key, part, stored } = asked;
+            Ok(parts.stored_part(&key, part, &stored).await?)
+        });
+        serving.await.map_err(|err| Failure::local(err, "serving a peer"))?
+    }
+}
+
+pub mod peers;
 
 #[cfg(test)]
 mod fork_faults;

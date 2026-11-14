@@ -1,0 +1,59 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// What the extent daemons of hosts sharing a bucket serve each other (TASK-406.2): parts of the
+// bucket's objects, each owned by one of them, which a host asks its owner for before the bucket,
+// so that a part many hosts read comes from the bucket about once for them all. Served over TCP at
+// each daemon's FXDAX_EXTENTD_PEER_ADDRESS, unauthenticated, on a network only the hosts reach:
+// every host can read the whole bucket already. The asker checks each part against the CRC its own
+// tail of the object gives it, and fetches it from the bucket on any failure.
+
+syntax = "proto3";
+
+package fxdax.peer.v1;
+
+option go_package = "github.com/semistrict/fxdax/go/peer/v1;peerv1";
+
+service Peer {
+  // The stored bytes of a part of an object of the bucket, as the asker's tail of the object says
+  // it is stored: from this host's memory or part cache, or fetched from the bucket once, however
+  // many hosts ask at once, and kept. NOT_FOUND if this host has no such part: the object gone, or
+  // another at its key, as its own tail says. INVALID_ARGUMENT for an object whose parts are not
+  // served (a branch's record, a lease, a cell's object, a reference), or a part stored as nothing
+  // is; FAILED_PRECONDITION if the asker's bucket is not this host's; UNAVAILABLE if fetching it
+  // failed.
+  rpc GetPart(GetPartRequest) returns (GetPartResponse);
+}
+
+// How a part is stored.
+enum Encoding {
+  // As it is.
+  ENCODING_RAW = 0;
+  // Compressed with zstd.
+  ENCODING_ZSTD = 1;
+}
+
+// A part asked for.
+message GetPartRequest {
+  // The URL of the bucket, as the asker names it (FXDAX_EXTENTD_REMOTE): this host's.
+  string bucket = 1;
+  // The object's key.
+  string key = 2;
+  // The part's number, from 0.
+  uint64 part = 3;
+  // Where its stored bytes are in the object, as the asker's tail says.
+  uint64 offset = 4;
+  // How many they are.
+  uint64 len = 5;
+  // Their CRC, as the asker's tail gives it.
+  uint32 crc = 6;
+  // How they are stored.
+  Encoding encoding = 7;
+}
+
+// A part's stored bytes, as asked for.
+message GetPartResponse {
+  // Its stored bytes.
+  bytes bytes = 1;
+}

@@ -1405,6 +1405,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "siphasher",
  "storage_device",
  "tar",
  "thiserror 2.0.21",
