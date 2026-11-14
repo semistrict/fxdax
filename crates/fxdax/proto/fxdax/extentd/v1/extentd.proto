@@ -49,7 +49,9 @@
 // A restore, or a ForkStore, of a point of another tenant's that isn't shared fails with
 // PERMISSION_DENIED (EACCES), making nothing; each fork reads whether the point is shared, in the
 // bucket, as it is made, so that unsharing it stops new forks on every host, and those made live
-// on.
+// on. A store with a writer forks into cells of other tenants' only if it is tenant 0's, as the
+// daemon's own stores and public bases are (TASK-395.9): a ForkStore of another tenant's into
+// another tenant's directory fails with PERMISSION_DENIED (EACCES), making nothing.
 //
 // A fork of anything but a point is a commit of its branch, which takes its branch's writer: a
 // store forks on one host at a time. A base, or any store, forked on several hosts is made a point

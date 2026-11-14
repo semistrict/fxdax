@@ -2322,6 +2322,69 @@ mod tests {
         assert!(data == pattern(1, BLOCK), "the fork reads other bytes");
     }
 
+    /// TASK-395.9: a store with a writer forks into a cell of another tenant's only if it is the
+    /// common tenant's (0). Another tenant's store is refused with `EACCES` by every kind of fork,
+    /// into any other tenant's cell, the common tenant's too, leaving nothing at the fork's path
+    /// nor in the bucket; into its own tenant's it forks. A store of the common tenant's, as public
+    /// bases are, forks into two tenants' cells, each reading what it holds.
+    #[test]
+    fn stores_with_writers_fork_into_other_tenants_cells_from_the_common_tenant_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let of = |tenant| crate::Branch {
+            cell: crate::host_store::new_cell(tenant),
+            id: rand::random::<u64>().max(1),
+        };
+        let cell = |tenant| crate::host_store::new_cell(tenant);
+        let listed = || {
+            let listed = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""));
+            listed.unwrap()
+        };
+        let store = |name: &str, tenant| {
+            let store =
+                kept_in(dir.path().join(name), (1 << 30, Some(of(tenant))), &bucket, idle());
+            let store = store.unwrap();
+            write(&store, 1, &pattern(tenant as u8, BLOCK));
+            store.commit(Some(name.as_bytes())).unwrap();
+            store.wait_uploaded().unwrap();
+            store
+        };
+
+        let acme = store("acme", 1);
+        let before = listed();
+        let errno = |forked: Result<(), crate::Error>| forked.map_err(|err| err.errno());
+        for tenant in [2, crate::host_store::NO_TENANT] {
+            let to = dir.path().join(format!("refused-{tenant}"));
+            let refused = [
+                ("fork", errno(acme.fork(&to, cell(tenant)).map(drop))),
+                ("fork_quiescent", errno(acme.fork_quiescent(&to, cell(tenant)).map(drop))),
+                ("point", errno(acme.point(&to, cell(tenant)).map(drop))),
+                ("fork_to", errno(acme.fork_to(&to, of(tenant)))),
+                ("point_to", errno(acme.point_to(&to, of(tenant)))),
+            ];
+            for (how, refused) in refused {
+                assert_eq!(refused, Err(Some(crate::Errno::EACCES)), "{how} to tenant {tenant}");
+                assert!(!to.exists(), "{how} to tenant {tenant} made a store");
+            }
+        }
+        assert_eq!(listed(), before, "a refused fork wrote to the bucket");
+        let ours = dir.path().join("ours");
+        assert_eq!(acme.fork(&ours, cell(1)).unwrap().cell.tenant, 1);
+        assert_eq!(reopened(&ours, idle()).unwrap().root().unwrap(), b"acme");
+
+        let base = store("base", crate::host_store::NO_TENANT);
+        for tenant in [1, 2] {
+            let to = dir.path().join(format!("base-{tenant}"));
+            assert_eq!(base.fork(&to, cell(tenant)).unwrap().cell.tenant, tenant);
+            let fork = reopened(&to, idle()).unwrap();
+            assert_eq!(fork.root().unwrap(), b"base");
+            let mut data = vec![0; BLOCK];
+            let extent = ExtentId { branch: base.branch().id, sequence: 1 };
+            fork.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+            assert!(data == pattern(0, BLOCK), "tenant {tenant}'s fork reads other bytes");
+        }
+    }
+
     #[test]
     fn forks_inherit_their_parents_extents() {
         let dir = tempfile::tempdir().unwrap();

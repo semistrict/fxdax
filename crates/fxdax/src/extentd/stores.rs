@@ -852,7 +852,9 @@ async fn point(from: &Path, capacity: u64) -> Result<(Arc<HeldStore>, Opened), E
 /// ([`share`]): if sharing it fails, the point stands, not shared. It is the one volume of a new
 /// cell of `tenant`'s, if given: the granted tenant's whose directory `to` is in; or of `from`'s
 /// tenant's; its ID the bucket's to give (TASK-364). A point not shared forks to no cell of another
-/// tenant's than its own (`EACCES`, TASK-395.7). Only a point is shared (`EINVAL`).
+/// tenant's than its own (`EACCES`, TASK-395.7); nor does a store with a writer, unless it is the
+/// common tenant's, as the daemon's own stores and public bases are (`EACCES`, TASK-395.9),
+/// refused before anything is made. Only a point is shared (`EINVAL`).
 pub(super) async fn fork(
     from: PathBuf,
     to: PathBuf,

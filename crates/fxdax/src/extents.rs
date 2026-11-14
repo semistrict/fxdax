@@ -947,9 +947,12 @@ impl ExtentStore {
     }
 
     /// fxdax: a fork's child, a new branch of `cell` of the store's bucket's. A follower's uploader
-    /// is its writer's, which forks nothing of it (`EROFS`).
+    /// is its writer's, which forks nothing of it (`EROFS`). A store with a writer forks to no cell
+    /// of another tenant's than its own unless it is the common tenant's (`EACCES`,
+    /// `host_store::may_fork_into`, TASK-395.9): refused before the bucket gives an ID.
     fn new_child(&self, cell: Cell) -> Result<Branch, Error> {
         let remote = self.remote.as_ref().ok_or(Errno::EROFS)?;
+        host_store::may_fork_into(self.branch(), remote, cell)?;
         Ok(host_store::new_branch(remote.bucket(), cell).map_err(remote_errno)?)
     }
 

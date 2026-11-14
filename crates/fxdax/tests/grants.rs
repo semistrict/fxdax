@@ -214,6 +214,35 @@ fn bases_made_shared_points_fork_into_other_tenants() {
     assert_eq!(failure(here.daemon.share(&base, true)), (Code::InvalidArgument, Errno::EINVAL));
 }
 
+/// TASK-395.9: a tenant's store with a writer forks into no other tenant's directory, a fork nor a
+/// point (ForkStore), refused with EACCES, making nothing; into its own tenant's it forks. A store
+/// of the common tenant's (0) forks into both tenants' directories, a cell of each's.
+#[test]
+fn tenants_stores_with_writers_fork_into_no_other_tenants_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut here = Host::new(dir.path(), "here");
+    let globex = dir.path().join("here/globex");
+    std::fs::create_dir(&globex).unwrap();
+    here.daemon.grant("globex", 2, &globex, None).unwrap();
+    let vm = here.acme.join("vm");
+    write(&RemoteExtentStore::connect(&here.socket, &vm, CAPACITY).unwrap(), &pattern(9), b"vm");
+
+    for (point, shared) in [(false, false), (true, false), (true, true)] {
+        let refused = globex.join("refused");
+        let forked = here.daemon.fork_store(&vm, &refused, (point, shared));
+        assert_eq!(failure(forked), (Code::PermissionDenied, Errno::EACCES), "point {point}");
+        assert!(!refused.exists(), "a refused fork made a store");
+    }
+    assert_eq!(here.daemon.fork(&vm, &here.acme.join("ours")).unwrap().cell.tenant, 1);
+
+    let base = dir.path().join("here/base");
+    let new = fxdax::Branch { cell: fxdax::Cell { tenant: 0, id: 0 }, id: 0 };
+    assert_eq!(here.daemon.create(&base, new, None).unwrap().cell.tenant, 0);
+    for (to, tenant) in [(here.acme.join("base"), 1), (globex.join("base"), 2)] {
+        assert_eq!(here.daemon.fork(&base, &to).unwrap().cell.tenant, tenant);
+    }
+}
+
 /// A revoked tenant's socket goes, and takes no more connections, while its VM processes
 /// connected keep their stores; granted again, its VM processes open its stores again.
 #[test]

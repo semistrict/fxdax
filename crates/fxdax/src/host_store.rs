@@ -40,8 +40,9 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 /// extent cache (`crate::cache`) caches their pages already.
 const DIRECT: bool = true;
 
-/// The tenant of stores made for no tenant of the host's (TASK-364): the fxdax CLI's images, an
-/// ungranted caller's stores, tests'.
+/// The tenant of stores made for no tenant of the host's (TASK-364), the common tenant: the fxdax
+/// CLI's images, an ungranted caller's stores, public bases, tests'. Its stores with writers alone
+/// fork into other tenants' cells ([`may_fork_into`], TASK-395.9).
 pub(crate) const NO_TENANT: u64 = 0;
 
 /// A new cell of `tenant`'s, for a store made alone or a fork (TASK-364): random, so that cells
@@ -53,6 +54,29 @@ pub fn new_cell(tenant: u64) -> Cell {
 /// The cell of a fork of `parent`, a new one of its tenant's, whose one volume the fork is.
 pub(crate) fn fork_cell(parent: Branch) -> Cell {
     new_cell(parent.cell.tenant)
+}
+
+/// fxdax: whether a fork of `parent`, whose uploader is `remote`, may make a branch of `cell`
+/// (TASK-395.9): `EACCES` if `parent` has a writer and `cell` is another tenant's than its own,
+/// unless its own is the common tenant's ([`NO_TENANT`]), as the daemon's own stores and public
+/// bases are. Inheritance across tenants is the common tenant's and shared points' alone: a fork of
+/// a point is checked at the read of the point's record its child's making makes instead
+/// (`branch::finish_point_fork`, TASK-395.7).
+pub(crate) fn may_fork_into(
+    parent: Branch,
+    remote: &Remote<HostDir>,
+    cell: Cell,
+) -> Result<(), Error> {
+    let tenant = parent.cell.tenant;
+    if remote.is_point() || tenant == NO_TENANT || tenant == cell.tenant {
+        return Ok(());
+    }
+    let refused = format!(
+        "forking branch {parent} to a cell of tenant {}: a branch with a writer forks to another \
+         tenant's cell only from the common tenant's",
+        cell.tenant
+    );
+    Err(Error::new(anyhow::Error::new(Errno::EACCES).context(refused)))
 }
 
 /// A new branch of `cell`, of `bucket`: its ID one no other branch of the bucket has, nor will
@@ -374,7 +398,9 @@ pub(crate) fn unmade(path: &Path) -> bool {
 ///
 /// A fork of a point commits nothing: its child's record is the fork, which fails with `ENOENT`
 /// once the point is deleted (`Remote::forked`), and with `EACCES` if the child is of another
-/// tenant's cell than the point, which isn't shared (`branch::finish_point_fork`, TASK-395.7).
+/// tenant's cell than the point, which isn't shared (`branch::finish_point_fork`, TASK-395.7). A
+/// fork of a store with a writer to another tenant's cell fails with `EACCES` before anything is
+/// made, unless the store is the common tenant's ([`may_fork_into`], TASK-395.9).
 pub(crate) fn fork<H>(
     store: &Store<HostDir>,
     remote: &Remote<HostDir>,
@@ -383,6 +409,7 @@ pub(crate) fn fork<H>(
     prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
     held: H,
 ) -> Result<(), Error> {
+    may_fork_into(store.description().branch, remote, child.branch.cell)?;
     std::fs::create_dir(path).map_err(|err| match err.kind() {
         std::io::ErrorKind::AlreadyExists => {
             Error::new(anyhow::Error::new(err).context(Errno::EEXIST))
