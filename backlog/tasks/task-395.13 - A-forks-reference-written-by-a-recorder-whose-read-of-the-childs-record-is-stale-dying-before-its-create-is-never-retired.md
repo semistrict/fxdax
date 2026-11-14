@@ -3,9 +3,11 @@ id: TASK-395.13
 title: >-
   A fork's reference written by a recorder whose read of the child's record is
   stale, dying before its create, is never retired
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13 18:27'
+updated_date: '2026-11-14 12:02'
 labels:
   - bucket
   - collector

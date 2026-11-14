@@ -3,10 +3,11 @@ id: TASK-395.14
 title: >-
   Dead cells retire their references again every pass, as a parent's writer may
   write one again after its retirement
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-13 18:38'
-updated_date: '2026-11-13 21:55'
+updated_date: '2026-11-14 12:02'
 labels:
   - bucket
   - collector

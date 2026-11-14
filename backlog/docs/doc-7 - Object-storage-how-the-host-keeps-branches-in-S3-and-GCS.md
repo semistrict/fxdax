@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-14 12:42'
+updated_date: '2026-11-14 12:50'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -162,7 +162,8 @@ Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 | `<C>gc/lease` | the collector's epoch over the cell, which its passes take, and what the last pass over the cell to end recorded: its listing's digest, what it deferred, what the cell takes (Garbage collection, Passes that skip; TASK-395.2, TASK-395.6, TASK-395.8) | likewise |
 | `<C>gc/marks/<epoch>` | what the cell's mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
 | `<C>moves/<rest>` | the live extents of the object at `<C><rest>`, compacted, and where in it each is; `<C>moves/moves/<rest>` those moves' (Garbage collection) | create-only, by the collector |
-| `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference of a fork of the cell's branch `parent` to a child of another cell, or a clone's (Garbage collection, References) | create-only, before the child's record; retired by the child's cell's pass |
+| `<C>refs/<parent>/<at>/<tenant>.<cell>.<child>` | a reference of a fork of the cell's branch `parent` to a child of another cell, or a clone's (Garbage collection, References) | create-only, before the child's record; retired by the child's cell's pass, marked first; deleted by the cell's pass where listed marked |
+| `<C>retired/<parent>/<at>/<tenant>.<cell>.<child>` | the mark of that reference, retired or taken back, which no record will ever name again (References, Marked; TASK-395.13, TASK-395.14) | create-only, before the reference is deleted; kept for good |
 | `objectid/<block>` | a block of object IDs taken by one allocator, which gives its IDs out, each once (Object IDs) | create-only; kept for good |
 | `gc/marking` | there while mark-only passes mark the bucket: what readers read, a HEAD a minute, before watching any cell's marks (Garbage collection, Watching before deleting) | created by a mark-only pass; removed by an operator with the marks |
 
@@ -820,8 +821,8 @@ origin), as the clone's record names that origin as its own.
 - **A failed fork's claim** writes none: nothing must recover a claim (one that can't be is given
   up on). Writing one would be harmless.
 - **Taken back** (rule `referencesTakenBack`, TASK-395.10): whoever finds the record of a fork's
-  child naming another origin, or none, deletes the fork's reference, which no record will ever
-  name (records are kept, and their origins never change): a writable fork's writer whose read of
+  child naming another origin, or none, deletes the fork's reference, marked first (below), which no
+  record will ever name (records are kept, and their origins never change): a writable fork's writer whose read of
   the child's record, or whose create of it, finds another branch's, or a deletion's naming no
   origin; the parent's next writer and its deletion, which record every fork in the parent's
   state again before any checkpoint drops it, so that a writer dying between its refused create
@@ -831,8 +832,28 @@ origin), as the clone's record names that origin as its own.
   of its own** (rule `referencesHeld`): then nothing anywhere inherits from its children, as a fork
   of one of them in the cell has a record there, and one in another cell a reference there. The pass
   deletes, for each of its cell's deleted records with an origin in another cell, the reference that
-  origin gives. A reference whose child's record names another origin, or none, is taken back by
-  the fork's writers (above), never left for a pass.
+  origin gives, marked first (below), once: passes that skip the cell, dead and unchanged, send
+  nothing (TASK-395.14). A reference whose child's record names another origin, or none, is taken
+  back by the fork's writers (above), never left for a pass.
+- **Marked** (rule `retirementsMarked`, TASK-395.13, TASK-395.14): a reference retired or taken back
+  gets a mark first, `<C>retired/<parent>/<at>/<child>` under the same cell, outside `<C>refs/`,
+  kept for good; a pass over the parent's cell deletes the references it lists beside their marks.
+  For a writer whose read of the child's record came before the retirement writes the reference
+  after it: one that read no record, the child then deleted or its ID taken and the reference taken
+  back by another recorder, dying before its own create (TASK-395.13); or one that read none, the
+  fork then recorded by another, the child deleted and its cell's passes retiring it, which skip the
+  dead cell from then on (TASK-395.14). Nothing else would look at that reference again: no record
+  names it, the fork is recorded, and the child's cell's listing shows nothing. Its write changes
+  the parent's cell's listing, so that cell's next pass goes in full and finds it marked. A writer
+  that reads the child's record live, its own, writes no reference at all: its maker wrote it first
+  (`referencesFirst`), and it stands. *Not:* the mark at the reference's own key (an emptied
+  reference, which a stale create-only write would find there): the parent's pass lists fork points
+  by their prefixes, not references, and every dead fork point would keep a key under it, and its
+  state, for good (dead-ends/reference-tombstones-in-place.md). *Not:* a marker per fork in the
+  child's cell before the reference (TASK-395.13's first candidate): a PUT per fork across cells,
+  and a pass it wakes may run before the reference lands. *Not:* writable forks' records first,
+  pending, as clones' (its second): a writer reading the pending record stale writes after its
+  retirement as well, and it changes writers, hosts, claims, deletions and the collector.
 - *Decided (TASK-395.1):* retiring is the **one delete a pass makes outside its cell**, a key it
   computes from its own records, never lists. Whether a reference may go is a fact of the child's
   cell (its records, its references), which only that cell's pass lists; the reference must be
@@ -877,7 +898,9 @@ origin), as the clone's record names that origin as its own.
 6. **Marks, compacts and deletes** within the cell as the whole-bucket pass did (steps below), its
    live branches' states and the fork points' together. A cell with no live branch and no reference
    is reclaimed whole but its records and its cell object.
-7. **Retires** its deleted children's references, if the cell has no live branch and no reference.
+7. **Retires** its deleted children's references, if the cell has no live branch and no reference,
+   marking each first; and deletes its own references listed beside their marks, written again
+   since their retirements (References, Marked).
 
 Why each ordering, as the model checks it (each rule's mutation in `specs/bucket/mutations` loses
 an acknowledged commit's data: `NothingNeededGone`):
@@ -907,12 +930,12 @@ lease, its LISTs, its other GETs and every PUT and DELETE, is under `<C>`):
 | GET of a parent's checkpoint at the fork point, by its key (another cell's) | recovering a live branch of `<C>` with no checkpoint of its own, forked from another cell; or a fork point of `<C>` whose parent has no checkpoint at or before it, and inherits from another cell | one per such branch or fork point; 0 for a branch with a checkpoint |
 | GET of a point's record | a clone in `<C>` still being made | one per such clone (they last one restore) |
 | GET of a child's record | a fork point's state found lost | one per child of that fork point (never, when nothing is lost) |
-| DELETE of a reference under the parent's cell | `<C>` has no live branch and no reference | one per deleted record of `<C>` with an origin elsewhere, every pass, those that skip the cell too (TASK-395.6, Passes that skip; TASK-395.14) |
+| PUT of a mark, then DELETE of a reference, under the parent's cell | `<C>` has no live branch and no reference | one each per deleted record of `<C>` with an origin elsewhere, each pass in full; none when it skips the cell (TASK-395.6, Passes that skip; TASK-395.14) |
 
 None of them scales with another cell's size: what a pass costs grows with its own cell's objects,
 branches and fork points, plus its branches' ancestry where it has no checkpoint. A reference a
-parent's slow writer re-creates after its retirement is retired again by the dead cell's next pass,
-skipping or not (Passes that skip).
+parent's slow writer re-creates after its retirement is deleted by the parent's cell's next pass,
+by its mark (References, Marked).
 
 **The LISTs a pass makes** (TASK-395.16), all under `<C>`. A pass in full over a cell of one live
 branch with a checkpoint, as most are, makes 4 LISTs and 1 by delimiter (7 and 1 before: the
@@ -1007,27 +1030,28 @@ exact, but a protocol across cells every pass.
   deleted, or another's, gets no reference, as nothing inherits through it and nothing would retire
   it, the record naming no such fork (a fork deleted before its host learned its origin, recorded as
   a branch of its own, among them); another's taken back. The record is read again after the
-  checkpoint at the fork point. The model reads and writes in one step (TASK-395.10): the code's
-  requests let a writer that read no record, the child then deleted with none (or its ID taken)
-  and the reference taken back by another recorder, write it after, and, dying before its own
-  create, leave it: space only (TASK-395.13).
+  checkpoint at the fork point. The model reads and writes in two steps, as the code does
+  (TASK-395.13): a writer that read no record writes the reference after a retirement or a
+  take-back that came between, which its mark has the parent's next pass delete. One that read the
+  record live, its own, writes none (TASK-395.14).
   Without
   the rule `references_first`, the reference comes after the record, and the deletion's after it
   marks the parent deleted, as the model's mutation has it.
 - **A failed clone's cleanup names its origin** (`Remote::unfork` of a point's copy: a deleted
   forking record), so that its cell's pass retires its reference.
-- **References never retired**: since TASK-395.10, only the stale recorder's above (TASK-395.13). A clone's
-  record comes before its reference, and a reference whose child's record names another origin is
-  taken back. *Instead:* a pass retiring unnamed references a grace period old, by their
+- **References never retired**: none since TASK-395.13: a stale recorder's goes by its mark. A
+  clone's record comes before its reference, and a reference whose child's record names another
+  origin is taken back. *Instead:* a pass retiring unnamed references a grace period old, by their
   last-modified time against the longest a clone takes: a pass lists fork points by delimiter, not
   references, so it would list every reference (a million for a base cloned a million times) and
   GET each child's record, every pass.
 - **A lost fork point** is recovered again each pass (64 restarts, as any recovery) while a
   reference names it, its children's records read only then.
-- **Retiring is repeated** by every pass over a dead cell, the pass unable to tell the references
-  gone from those not without listing other cells: a delete each (sent in batches), counted in
-  `Report::retired`; passes that skip the cell send them again too, reading nothing (Passes that
-  skip): a parent's writer may write a reference again after its retirement.
+- **Retiring is repeated** by every pass in full over a dead cell, the pass unable to tell the
+  references gone from those not without listing other cells: a mark and a delete each (the deletes
+  sent in batches), counted in `Report::retired`, with the stale references it deleted. Passes that
+  skip the cell send none (TASK-395.14): a reference written again after its retirement goes by its
+  mark.
 - **A pass checks the cell before taking its lease**: the format of its first record, refused
   before anything is written, and, the cell holding no record, whether it holds anything at all: a
   pass over a cell of nothing writes nothing. Only the first: one finding the lease there, of this
@@ -1190,8 +1214,6 @@ goes by; every taking of the lease reads it and carries it to the next:
 - **what it deferred**: what it found no live branch needs but for the time since an object was
   written (a compacted object whose moves are too recent; moves of an object gone, or compacted in
   turn, too recent), each with when it may go;
-- **what it retired**, its cell dead: the references of its deleted children under their parents'
-  cells;
 - **what the cell takes** (TASK-395.8): its objects and bytes by kind, as of its listing, and when
   that began by the store's clock, less what the pass deleted and with the moves it compacted to,
   the lease counting itself as written.
@@ -1199,11 +1221,10 @@ goes by; every taking of the lease reads it and carries it to the next:
 A pass takes the lease, a GET and a conditional PUT, and lists the cell. If its listing has the
 digest recorded, of the same options, it **skips**: it recovers and reads nothing, and deletes what
 was deferred once due (after its check of the lease, as every pass), then records that the next
-pass goes in full, as what goes once those are gone (moves of an object deleted) none worked out;
-and retires again what was retired. Otherwise it passes in full. An idle cell costs a pass three
-requests: the lease's GET and PUT, and one LIST; holding it for a time (`--lease`, Sweeps), the
-letting go of the lease, a GET and a PUT, more; a dead one with children in other cells, a check of
-the lease (a GET, and a PUT if held for a time) and a DELETE more. Mark-only passes and dry runs
+pass goes in full, as what goes once those are gone (moves of an object deleted) none worked out.
+Otherwise it passes in full. An idle cell, dead or not, costs a pass three requests: the lease's
+GET and PUT, and one LIST; holding it for a time (`--lease`, Sweeps), the letting go of the lease,
+a GET and a PUT, more. Mark-only passes and dry runs
 never skip, and record nothing.
 
 **Whoever passed meanwhile.** The record is the cell's, not a process's: any collector process
@@ -1250,15 +1271,13 @@ digest while a clone is being made, which a pass may give up on. So Bucket.tla n
 pass that skips is the tail of the pass it goes by.
 
 *What it costs:* a pass that deleted or compacted anything changed its cell's listing, so the next
-goes in full too, and finds the cell settled. A dead cell's passes, skipping or not, retire its
-references again, every pass: `branch::record_fork`, having read a child's record live, writes its
-reference again, which may come after the child's deletion and the reference's retirement, and
-which nothing of the dead cell's shows; kept, it would hold the parent's state at the fork point
-for good (the simulation's restores, seed 53, found it once passes first skipped dead cells).
-TASK-395.10's second read of the record changes nothing here: it is made only when the first found
-none. TASK-395.14 is to make the write impossible (a record found naming the fork's origin had its
-reference written before it, so the writer has no need to write it again), so that dead cells cost
-their lease and listing alone. A
+goes in full too, and finds the cell settled. A dead cell's passes that skip it retire nothing
+again (TASK-395.14): a reference written after its retirement, which nothing of the dead cell's
+shows, kept, would hold the parent's state at the fork point for good (the simulation's restores,
+seed 53, found one once passes first skipped dead cells, written by a recorder that read the
+child's record live). A recorder finding the record live, its own, writes no reference now; one
+that read none before writes it after, and the parent's cell's next pass, which its write makes go
+in full, deletes it by its mark (References, Marked). A
 cell with a reference at a fork point found lost (a clone's left by its host dying, TASK-395.10)
 never skips.
 
