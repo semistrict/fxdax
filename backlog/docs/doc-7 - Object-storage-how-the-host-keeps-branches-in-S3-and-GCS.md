@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-14 00:34'
+updated_date: '2026-11-14 12:42'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -66,8 +66,10 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
 - **Reading** (TASK-28.9): by 1 MiB parts of objects, each checked against the CRC its object
   carries; one GET per part however many reads want it; a host's GETs bounded (64 requests,
   64 MiB), demand before read-ahead; parts kept in the host's part cache
-  (`FXDAX_EXTENTD_CACHE`), across restarts, read least recently evicted first by punching holes,
-  with a floor of free space; read-ahead doubling along sequential reads, to 16 parts (Reading).
+  (`FXDAX_EXTENTD_CACHE`, within `FXDAX_EXTENTD_CACHE_BYTES`), across restarts, read least
+  recently evicted first by punching holes, with a floor of free space; read-ahead doubling along
+  sequential reads, to 16 parts; a part another host owns asked of it before the bucket
+  (Reading).
 - **Compression** (TASK-29, settled with the user on 2026-10-17): every object holding data, a
   WAL segment or extent and every object in the bucket alike, is framed by `extent_frame` in parts
   of 1 MiB, each compressed with zstd (level 1) on its own, or raw where that is no smaller, at
@@ -711,10 +713,31 @@ points are shared or not as any other's. Forks of branches with writers into ano
   files moved in whole (`Cache::adopt`), and emptied by punching holes. It keeps no index file:
   opening it rebuilds what it keeps from its files' tails, each checked, so a host's restart
   refetches nothing it had (TASK-165.4). The parts read least recently go first (a clock of uses,
-  `by_use`), an object's tail with its last part, to keep within its capacity (extentd: unbounded)
-  and a floor of the filesystem's space free (extentd: 4 GiB, `CACHE_FLOOR`). It holds copies of
+  `by_use`), an object's tail with its last part, to keep within its capacity (extentd:
+  `FXDAX_EXTENTD_CACHE_BYTES`, unbounded if unset, TASK-406.1) and a floor of the filesystem's
+  space free (extentd: 4 GiB, `CACHE_FLOOR`). It holds copies of
   what the bucket has, never data the bucket lacks. Without a cache (`FXDAX_EXTENTD_CACHE` empty),
   every page-in of an extent in the bucket is a GET.
+- **Peers** (TASK-406.2, `extent_remote::peer`, `fxdax::remote::peers`, `fxdax::extentd::peers`):
+  hosts sharing a bucket serve each other parts, so that a part many hosts read, as a popular base
+  booting on many cold hosts is, comes from the bucket about once for them all, not once each.
+  Each part has one owner, by rendezvous hashing (SipHash-1-3 of fixed keys) of each host's
+  `HOST:PORT` with the object's key and the part's number; a host asks the owner, under its own
+  GET budget, before the bucket, unless it is the owner. The owner serves it from its memory or
+  part cache, or by one GET however many ask, keeping it (`Fetcher::stored_part`), and never asks
+  another peer for it: a flight keys on whether it asks, so hosts that disagree on an owner for a
+  while never ask round in a ring. It serves a part only as the asker's tail says it is stored,
+  which its own must say too (NOT_FOUND otherwise, no failure), and only of framed objects
+  (segments, extents, checkpoints, moves), never records, leases, cells or references. The asker
+  checks what it is given against its tail's CRC and length; a part that fails, an error, or a
+  peer past its deadline (1 s to connect, 5 s a request) falls back to the bucket and puts the
+  peer down for 30 s, its parts going to the bucket meanwhile, never to another peer. Tails are
+  always the bucket's: a stale one from a peer would have a reader of an object recreated at its
+  key fail it twice, as corrupt. gRPC over TCP, unauthenticated, on the hosts' own network
+  (`proto/fxdax/peer/v1/peer.proto`): every host reads the whole bucket anyway. extentd:
+  `FXDAX_EXTENTD_PEER_ADDRESS` (this host's address, listened at), `FXDAX_EXTENTD_PEERS` (the
+  list at start, comma-separated), `SetPeers` (the list at any time); it needs a part cache. The
+  stats file's `peers:` line counts what was asked, given, missing, failed and served.
 - **Read-ahead** follows each object's reads (1,024 objects at most): along sequential reads its
   window doubles, from 1 part to 16 (`fetch::AHEAD`), and a read out of sequence starts it again at
   1; the parts read ahead go into the cache, and are read only where a cache is. Profiles of what

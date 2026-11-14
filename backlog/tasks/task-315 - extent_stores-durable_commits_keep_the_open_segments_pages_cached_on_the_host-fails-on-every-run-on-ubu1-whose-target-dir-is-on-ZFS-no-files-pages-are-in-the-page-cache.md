@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10 08:58'
+updated_date: '2026-11-14 14:03'
 labels: []
 dependencies: []
 priority: medium
@@ -32,3 +33,9 @@ On ubu1 (Ubuntu 26.04, kernel 7.0.0-43, home on ZFS rpool/USERDATA) tests/store.
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-14 (TASK-406 runs on ubu1): fails at main 123a2cbb4 too, and with TMPDIR on the ext4 scratch disk (/mnt/fxdax-scratch), so the test's temporary directory's filesystem isn't the cause; only the target dir was on ZFS then. Panics at crates/extent_store/tests/store.rs:2241: '0 of the open segment's 8 pages cached'.
+<!-- SECTION:NOTES:END -->
