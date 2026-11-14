@@ -551,8 +551,9 @@ pub const SWEEPS: u64 = 32;
 /// children hold of it; a reference is garbage once its child is deleted, of that origin, in
 /// another cell holding no live branch and no reference; one whose child has no record is
 /// garbage at once, but a live branch's fork's, whose writers record it yet: no pass would ever
-/// retire it (TASK-395.10); one whose child's record names another origin, or none, is excused,
-/// a stale recorder's perhaps (TASK-395.13); the collector's leases and marks stay.
+/// retire it (TASK-395.10); so is one whose child's record names another origin, or none, and one
+/// marked retired, which its parent's cell's pass deletes (TASK-395.13); the collector's leases and
+/// marks stay, and references' marks.
 pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String> {
     use crate::layout::{Location, Origin};
     use crate::record::{Kind as Made, Record};
@@ -664,13 +665,12 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
         let named = records.get(&child).is_some_and(|record| record.origin() == Some(origin));
         let retired =
             named && records[&child].deleted && child.cell != parent.cell && dead(child.cell);
-        // TASK-395.13: one whose child's record names no origin or another may be a stale
-        // recorder's, written after the take-back, which no pass retires yet: excused, with what
-        // it keeps; one whose child has no record is garbage.
-        let stale = records.contains_key(&child);
+        // Marked, retired or taken back before: a stale writer's, written after, garbage
+        // (TASK-395.13, TASK-395.14).
+        let marked = keys.contains(&layout::retired(parent, at, child));
         if retired {
             retirable.insert(key.clone());
-        } else if named || stale || pending.contains(&(parent, at, child)) {
+        } else if !marked && (named || pending.contains(&(parent, at, child))) {
             points.insert(origin);
         } else {
             unnamed.insert(key.clone());
@@ -714,7 +714,8 @@ pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String
             | Kind::ObjectIds { .. }
             | Kind::GcLease { .. }
             | Kind::Marks { .. }
-            | Kind::Marking => true,
+            | Kind::Marking
+            | Kind::Retired { .. } => true,
             Kind::Reference { .. } => !retirable.contains(key) && !unnamed.contains(key),
             _ => false,
         };

@@ -16,6 +16,7 @@ use crate::layout::{self, Branch, Cell, Child, Kind as Key, Lease, Origin};
 use crate::record::{Kind, Record};
 use crate::recovery::{self, Recovered, State, recover};
 use crate::{Error, rules};
+use futures::StreamExt as _;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -160,17 +161,54 @@ pub(crate) async fn refer_fork(bucket: &impl Bucket, child: Child, origin: Origi
     }
 }
 
-/// fxdax: deletes the reference of the fork of `origin` to `child`, whose record, `found`, names
+/// fxdax: retires the references at `keys` ([`layout::reference`]), garbage for good, under any
+/// cells: marks each ([`layout::retired`]), then deletes them, many at once (TASK-395.13,
+/// TASK-395.14). One a writer whose read of its child's record came before writes again after, the
+/// pass over its parent's cell deletes, by its mark. Without the rule, as a test shows it needed,
+/// deleted alone.
+pub(crate) async fn retire(bucket: &impl Bucket, keys: &[&str]) {
+    if rules().retirements_marked {
+        let marks: Vec<String> = keys.iter().filter_map(|key| layout::retired_of(key)).collect();
+        // The creates' futures made first, as `bucket::delete_all`'s batches are: a stream mapping
+        // them in holds the closure in its type, which a future awaiting this one is then not seen
+        // to be `Send` with.
+        let marking: Vec<_> = marks.iter().map(|mark| mark_retired(bucket, mark)).collect();
+        futures::stream::iter(marking).buffer_unordered(MARKS_AT_ONCE).collect::<()>().await;
+    }
+    bucket::delete_all(bucket, keys).await;
+}
+
+/// How many references' marks [`retire`] writes at once.
+const MARKS_AT_ONCE: usize = 16;
+
+/// Writes the mark `key` ([`layout::retired`]): there already, it stands, its bytes everyone's.
+async fn mark_retired(bucket: &impl Bucket, key: &str) {
+    bucket::create(bucket, key, layout::encode(&layout::Retired::NOW)).await;
+}
+
+/// [`retire`]s the reference at `key` alone, a request a step, with no stream of batches, so that a
+/// writer's future, which the uploader's runtime needs `Send`, may await it (TASK-395.10).
+async fn retire_one(bucket: &impl Bucket, key: &str) {
+    if rules().retirements_marked
+        && let Some(mark) = layout::retired_of(key)
+    {
+        mark_retired(bucket, &mark).await;
+    }
+    bucket::delete(bucket, key).await;
+}
+
+/// fxdax: retires the reference of the fork of `origin` to `child`, whose record, `found`, names
 /// another origin than the fork's, or none (TASK-395.10): the fork made no branch, and no record
 /// will name it, records being kept and their origins never changed, so that no pass would retire
 /// it ([`crate::collector`] retires a reference by the origin its child's deleted record names).
 /// Whoever finds it so takes it back: every writer of the child's record, and of a clone's; one
 /// dying first leaves it to the next, the parent's next writer or its deletion recording the fork
 /// again. One whose record names the fork's origin, another making's of the same fork, a clone of
-/// a point there, stays: its retirement is that record's.
+/// a point there, stays: its retirement is that record's. Marked ([`retire`]): a writer that read
+/// no record before the take-back writes it after, and may die before its own (TASK-395.13).
 async fn take_back(bucket: &impl Bucket, origin: Origin, child: Branch, found: &Record) {
     if rules().references && rules().references_taken_back && found.origin() != Some(origin) {
-        bucket::delete(bucket, &layout::reference(origin.parent, origin.at, child)).await;
+        retire_one(bucket, &layout::reference(origin.parent, origin.at, child)).await;
     }
 }
 
@@ -189,8 +227,13 @@ async fn take_back(bucket: &impl Bucket, origin: Origin, child: Branch, found: &
 /// origin than the fork's, or none (a fork deleted before its host learned its origin,
 /// `Kind::Own`), has the reference taken back ([`take_back`], TASK-395.10), by this writer of the
 /// record or, it dying first, the next, which reads it so. The read costs a request a fork across
-/// cells, each of its writers; a child recorded already, ours, gets its reference again, as the
-/// model has it, but not the checkpoint, which came first.
+/// cells, each of its writers. A child recorded already, ours, live, gets neither the checkpoint
+/// nor its reference again: whoever recorded it wrote both first (TASK-395.14), and the reference
+/// written again might land after the child's deletion and its cell's pass retiring it, which that
+/// cell's passes, skipping it, dead and unchanged, would never retire again. A writer that read no
+/// record still may, the fork recorded since by another, and the child deleted; or after another
+/// took it back, the child's ID taken (TASK-395.13): every retirement is marked, and the pass over
+/// the parent's cell, whose listing the write changes, deletes it ([`retire`]).
 ///
 /// fxdax: before both, for a child of another cell, the parent's checkpoint at the fork point
 /// ([`recovery::checkpoint_at`]): what the child's recovery reads of its parent by its key alone,
@@ -244,7 +287,8 @@ pub async fn record_fork(bucket: &impl Bucket, child: Child, origin: Origin) -> 
             // again may find its segments gone, a checkpoint since covering them.
             Some(_) | None => {}
         }
-        if rules().references_first {
+        // None read, the reference is written; one read, ours, live, its recorder wrote it.
+        if rules().references_first && found.is_none() {
             refer_fork(bucket, child, origin).await;
         }
         failpoint!("branch::referred");

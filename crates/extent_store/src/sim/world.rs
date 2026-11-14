@@ -1903,9 +1903,9 @@ impl World {
 
     /// Checks that a sweep of the collector that ran alone, the bucket holding `before` as it
     /// started, the objects' sizes by their keys, reports what it did (TASK-44.1): the objects it
-    /// deleted, and the moves it wrote. fxdax: and no more references gone than it retired, which
-    /// it sends again for as long as a cell is dead, whether or not they are there (TASK-395.4);
-    /// and the bytes of what it deleted, and of what it compacted, as they were (TASK-395.5).
+    /// deleted, and the moves it wrote. fxdax: and no more references gone than it retired, whether
+    /// or not they were there (TASK-395.4), and deleted marked (TASK-395.13); and the bytes of what
+    /// it deleted, and of what it compacted, as they were (TASK-395.5).
     fn check_report(
         &mut self,
         before: &BTreeMap<String, u64>,

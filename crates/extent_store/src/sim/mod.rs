@@ -214,6 +214,7 @@ fn one() {
             "clones_refer_first" => rules.clones_refer_first = false,
             "clones_record_first" => rules.clones_record_first = false,
             "references_taken_back" => rules.references_taken_back = false,
+            "retirements_marked" => rules.retirements_marked = false,
             "references_held" => rules.references_held = false,
             "references_relisted" => rules.references_relisted = false,
             "fork_points_kept" => rules.fork_points_kept = false,
@@ -713,8 +714,17 @@ test_holds!(restores_forgotten_leave_nothing_behind, forgotten_restores());
 // Written first, a reference whose record never landed stays for ever.
 test_leaks!(forgotten_restores_need_clones_record_first, clones_record_first, forgotten_restores());
 
-// `references_taken_back` leaves what `uncollected` excuses (TASK-395.13): its direct test is
-// extent_remote's `forks_whose_childrens_ids_are_taken_need_references_taken_back`.
+// A reference whose child's ID another branch took stays for ever, no record naming it, when no
+// recorder takes it back (TASK-395.10); `uncollected` excused one until retirements were marked
+// (TASK-395.13). Its direct test is extent_remote's
+// `forks_whose_childrens_ids_are_taken_need_references_taken_back`.
+test_leaks!(restores_need_references_taken_back, references_taken_back, restores());
+
+// A stale recorder's reference, written after its take-back or its retirement, stays for ever
+// unmarked: no recorder, nor pass of its child's cell, skipping it, looks at it again
+// (TASK-395.13, TASK-395.14). Its direct test is extent_remote's
+// `stale_recorders_references_need_retirements_marked`.
+test_leaks!(restores_need_retirements_marked, retirements_marked, restores());
 
 /// Restores as [`restores`] makes them, fewer and among more forks, so that more take the IDs of
 /// forks' children whose segments are not yet acknowledged, as guests may name any: whichever's

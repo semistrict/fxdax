@@ -417,8 +417,12 @@ impl Hosts {
                         record.is_some_and(|record| !record.deleted)
                     })
                 }
-                // fxdax: a block of object IDs taken stays for good (TASK-364).
-                Kind::GcLease { .. } | Kind::Marks { .. } | Kind::ObjectIds { .. } => false,
+                // fxdax: a block of object IDs taken stays for good (TASK-364), and a reference's
+                // mark, retired or taken back (TASK-395.13).
+                Kind::GcLease { .. }
+                | Kind::Marks { .. }
+                | Kind::ObjectIds { .. }
+                | Kind::Retired { .. } => false,
                 _ => true,
             })
             .collect();

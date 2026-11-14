@@ -443,10 +443,12 @@ impl World {
                             .record(branch)
                             .is_some_and(|record| record.deleted && !record.may_drop())
                 }
-                // A cell's object stays, as its records do (TASK-364).
+                // A cell's object stays, as its records do (TASK-364); so do references' marks,
+                // retired or taken back (TASK-395.13).
                 Kind::GcLease { .. }
                 | Kind::Marks { .. }
                 | Kind::Marking
+                | Kind::Retired { .. }
                 | Kind::Cell { .. }
                 | Kind::ObjectIds { .. } => false,
                 Kind::Moves { .. } | Kind::Unknown => true,

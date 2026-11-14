@@ -160,8 +160,8 @@ pub struct Report {
     pub deleted: usize,
     pub compacted: usize,
     /// fxdax: the references of the cell's deleted children it retired, under their parents' cells
-    /// (TASK-395.4): deletes sent, each pass over a dead cell sending them again, as it can't tell
-    /// those gone from those not without listing other cells.
+    /// (TASK-395.4), once, whether there or not, as it can't tell without listing other cells; and
+    /// those of its own it deleted, marked, written again since their retirements (TASK-395.13).
     pub retired: usize,
     /// fxdax: the bytes of what it deleted, as listed (TASK-395.5).
     pub deleted_bytes: u64,
@@ -346,16 +346,21 @@ impl Collector {
         bucket::delete_all(bucket, &keys).await;
         report.deleted += keys.len();
         report.deleted_bytes += doomed.iter().map(|meta| meta.size).sum::<u64>();
+        // Retired for good, marked first, once: its cell, dead, changes no more, and its next
+        // passes skip it (TASK-395.14). The cell's own references listed marked, written again
+        // since their retirements, deleted (TASK-395.13).
         let retired = pass.retired();
-        bucket::delete_all(bucket, &retired.iter().map(String::as_str).collect::<Vec<_>>()).await;
-        report.retired += retired.len();
+        branch::retire(bucket, &retired.iter().map(String::as_str).collect::<Vec<_>>()).await;
+        let stale: Vec<&str> = pass.recording.stale.iter().map(String::as_str).collect();
+        bucket::delete_all(bucket, &stale).await;
+        report.retired += retired.len() + stale.len();
         // What the cell takes now: as listed, less what went, with what it compacted to.
         let mut usage = pass.recording.usage.clone();
         doomed.iter().for_each(|meta| usage.remove(&meta.key, meta.size));
         compacted.iter().for_each(|(key, size)| usage.add(key, *size));
         let decided = Decided::by(&self.options);
         let listing = pass.recording.digest;
-        Ok((report, Some(Passed { listing, decided, deferred, retired, usage })))
+        Ok((report, Some(Passed { listing, decided, deferred, usage })))
     }
 
     /// fxdax: a pass over `cell`, holding its lease as `taken` says, whose listing, `listed`, is
@@ -364,9 +369,10 @@ impl Collector {
     /// that skip), whatever process that pass was of. It recovers nothing, and deletes what that
     /// pass deferred to a grace period, once due, as that pass would have, slow; and then records
     /// that a pass is to decide anew, as what goes once those are gone it never worked out: the
-    /// moves of an object gone among them. A dead cell's, it retires again the references that
-    /// pass retired: one a parent's writer wrote again since, as it may (TASK-395.14), is retired
-    /// as a pass in full would. What it records: nothing new, if it deleted nothing.
+    /// moves of an object gone among them. It retires no reference again: that pass's retirements
+    /// were marked, and one a writer whose read of the child's record came before writes again
+    /// after, the pass over its parent's cell deletes (TASK-395.14). An unchanged dead cell costs
+    /// a pass its lease and its listing. What it records: nothing new, if it deleted nothing.
     async fn skip(
         &self,
         bucket: &impl Bucket,
@@ -379,8 +385,7 @@ impl Collector {
         let now = bucket.now();
         let (due, deferred): (Vec<Deferred>, Vec<Deferred>) =
             passed.deferred.iter().cloned().partition(|deferred| deferred.due <= now);
-        let retired: Vec<&str> = passed.retired.iter().map(String::as_str).collect();
-        if due.is_empty() && retired.is_empty() {
+        if due.is_empty() {
             return Ok((skipped, None));
         }
         if !self.holds(bucket, cell, taken).await? {
@@ -388,11 +393,7 @@ impl Collector {
         }
         let keys: Vec<&str> = due.iter().map(|due| due.key.as_str()).collect();
         bucket::delete_all(bucket, &keys).await;
-        bucket::delete_all(bucket, &retired).await;
-        let mut report = Report { deleted: keys.len(), retired: retired.len(), ..skipped };
-        if keys.is_empty() {
-            return Ok((report, None));
-        }
+        let mut report = Report { deleted: keys.len(), ..skipped };
         let mut usage = passed.usage.clone();
         for key in keys.iter().copied() {
             if let Some(meta) = listed.objects.get(key) {
@@ -557,7 +558,8 @@ impl Collector {
         let doomed = pass.doomed(bucket, &self.options).await?.into_iter().cloned().collect();
         let compactable = pass.compactable(bucket, &self.options, &mut remembered.lengths).await?;
         let compactable = compactable.into_iter().map(|(meta, _)| meta.clone()).collect();
-        let retired = pass.retired();
+        let mut retired = pass.retired();
+        retired.extend(pass.recording.stale.iter().cloned());
         Ok(DryRun { doomed, compactable, retired, fenced: fenced(bucket, cell, epoch).await? })
     }
 }
@@ -635,9 +637,9 @@ impl Remembered {
             Some(listed) => listed,
             None => passed::list(bucket, cell).await,
         };
-        let Listed { objects, digest, usage } = listed;
+        let Listed { objects, digest, usage, stale } = listed;
         self.lengths.retain(&objects);
-        let recording = Recording { digest: settled.then_some(digest), usage };
+        let recording = Recording { digest: settled.then_some(digest), usage, stale };
         Ok(Some(Pass::new(bucket, cell, objects, records, live, referenced, recording).await?))
     }
 
@@ -1487,6 +1489,8 @@ struct Recording {
     digest: Option<[u8; 32]>,
     /// What the cell took, as listed.
     usage: Usage,
+    /// The cell's own references listed marked ([`Listed::stale`]).
+    stale: Vec<String>,
 }
 
 impl Pass {
@@ -1699,13 +1703,14 @@ impl Pass {
                 }
                 // The collector's own: its lease, and its marks, which a mark-only pass never
                 // deletes, and an operator removes (TASK-264); and references, which the passes of
-                // their children's cells retire (TASK-395.4). fxdax: a cell's object, which says
-                // who holds it, stays as its records do, and a block of object IDs taken for good
-                // (TASK-364).
+                // their children's cells retire (TASK-395.4), and their marks, kept for good
+                // (TASK-395.13). fxdax: a cell's object, which says who holds it, stays as its
+                // records do, and a block of object IDs taken for good (TASK-364).
                 Kind::GcLease { .. }
                 | Kind::Marks { .. }
                 | Kind::Marking
                 | Kind::Reference { .. }
+                | Kind::Retired { .. }
                 | Kind::Cell { .. }
                 | Kind::ObjectIds { .. }
                 | Kind::Unknown => Fate::Stays,
@@ -3069,6 +3074,10 @@ mod tests {
         /// How many gets of [`Hook::Getting`]'s key, or listings of [`Hook::Listing`]'s prefix, it
         /// answered with `then` set.
         asked: Mutex<usize>,
+        /// The key whose put, once sent, is the last request it answers: its client dies then,
+        /// every request after it never answered.
+        dies_after: Mutex<Option<String>>,
+        dead: AtomicBool,
     }
 
     /// Where [`Hooked`] runs what it runs.
@@ -3079,6 +3088,8 @@ mod tests {
         Getting(String, usize),
         /// After the first get of the object at this key, before it is answered.
         Got(String),
+        /// After the get of the object at this key of this number, from 1, before it is answered.
+        Gotten(String, usize),
         /// Before the listing of this prefix of this number, from 1.
         Listing(String, usize),
         /// Before the put of a key under this prefix of this number, from 1.
@@ -3087,7 +3098,28 @@ mod tests {
 
     impl Hooked {
         fn new(bucket: Arc<Direct>, hook: Hook) -> Self {
-            Self { bucket, hook, then: Mutex::default(), asked: Mutex::default() }
+            Self {
+                bucket,
+                hook,
+                then: Mutex::default(),
+                asked: Mutex::default(),
+                dies_after: Mutex::default(),
+                dead: AtomicBool::new(false),
+            }
+        }
+
+        /// `request`, answered unless its client died ([`Hooked::dies_after`]).
+        fn answered<T>(
+            &self,
+            request: impl Future<Output = T> + Send,
+        ) -> impl Future<Output = T> + Send {
+            let dead = self.dead.load(Ordering::SeqCst);
+            async move {
+                if dead {
+                    futures::future::pending::<()>().await;
+                }
+                request.await
+            }
         }
 
         /// What it runs, if `now` and it has yet to.
@@ -3115,8 +3147,12 @@ mod tests {
             {
                 then();
             }
-            let then = self.then(matches!(&self.hook, Hook::Got(at) if at == key));
-            let get = self.bucket.get(key);
+            let then = match &self.hook {
+                Hook::Got(at) => self.then(at == key),
+                Hook::Gotten(at, nth) => self.nth(at == key, *nth),
+                _ => None,
+            };
+            let get = self.answered(self.bucket.get(key));
             async move {
                 let got = get.await;
                 if let Some(then) = then {
@@ -3131,11 +3167,11 @@ mod tests {
             key: &str,
             range: ByteRange,
         ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
-            self.bucket.get_range(key, range)
+            self.answered(self.bucket.get_range(key, range))
         }
 
         fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
-            self.bucket.head(key)
+            self.answered(self.bucket.head(key))
         }
 
         fn list(
@@ -3147,7 +3183,7 @@ mod tests {
             {
                 then();
             }
-            self.bucket.list(prefix)
+            self.answered(self.bucket.list(prefix))
         }
 
         fn list_delimited(
@@ -3156,7 +3192,7 @@ mod tests {
             page: crate::bucket::Page<'_>,
         ) -> impl Future<Output = Result<crate::bucket::Listing, crate::bucket::Error>> + Send
         {
-            self.bucket.list_delimited(prefix, page)
+            self.answered(self.bucket.list_delimited(prefix, page))
         }
 
         fn put(
@@ -3172,7 +3208,10 @@ mod tests {
             }
             let checkpoint = matches!(layout::kind(key), Kind::Checkpoint { .. });
             let then = self.then(checkpoint && matches!(self.hook, Hook::Checkpointed));
-            let put = self.bucket.put(key, bytes, mode);
+            let put = self.answered(self.bucket.put(key, bytes, mode));
+            if self.dies_after.lock().unwrap().as_deref() == Some(key) {
+                self.dead.store(true, Ordering::SeqCst);
+            }
             async move {
                 let put = put.await;
                 if let Some(then) = then {
@@ -3183,7 +3222,7 @@ mod tests {
         }
 
         fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
-            self.bucket.delete(key)
+            self.answered(self.bucket.delete(key))
         }
 
         fn now(&self) -> u64 {
@@ -4171,9 +4210,10 @@ mod tests {
     }
 
     /// TASK-395.3: a writable fork's child of another cell gets its reference, under its parent's
-    /// cell, before its record, the writer writing both; of bytes unique to the fork, its owner's,
-    /// which a deletion recording the fork again writes again, the same. A child of the parent's own
-    /// cell gets none: that cell's pass reads its record.
+    /// cell, before its record, the writer writing both; of bytes unique to the fork, its owner's.
+    /// A deletion recording the fork again, finding the child's record, its own, writes none: the
+    /// writer's came first (TASK-395.14). A child of the parent's own cell gets none: that cell's
+    /// pass reads its record.
     #[test]
     fn writable_forks_refer_before_their_childrens_records() {
         let bucket = SimBucket::new();
@@ -4204,10 +4244,11 @@ mod tests {
         };
         assert_eq!(refers(&asked), Vec::<String>::new(), "within the cell, at {at}");
 
-        // The parent's deletion records the forks of its state again, their references first.
+        // The parent's deletion records the forks of its state again: recorded, their references
+        // stand.
         let (deleted, asked) = bucket.served(branch::delete(&*bucket, parent, 20, 0));
         deleted.unwrap();
-        assert_eq!(refers(&asked), [format!("put {reference}")]);
+        assert_eq!(refers(&asked), Vec::<String>::new());
         let references: Vec<String> =
             bucket.keys().into_iter().filter(|key| key.contains("/refs/")).collect();
         assert_eq!(references, [reference]);
@@ -4331,8 +4372,9 @@ mod tests {
     /// point, and its reference under the root's cell stays, the child's cell holding the
     /// grandchild's; the root frees and checkpoints, and the grandchild, with no checkpoint, reads
     /// what it inherited through both. The grandchild deleted too, the passes retire the
-    /// references down the chain, and the cells of the dead are reclaimed whole but their records:
-    /// no reference is left, and the root's cell holds its own alone.
+    /// references down the chain, and the cells of the dead are reclaimed whole but their records
+    /// and the marks of the references retired (TASK-395.13): no reference is left, and the root's
+    /// cell holds its own alone.
     #[test]
     fn references_hold_while_their_childrens_cells_hold_references() {
         let (read, bucket) = block_on(read_through_a_deleted_child());
@@ -4350,7 +4392,10 @@ mod tests {
             let kept: Vec<&String> = (left.iter())
                 .filter(|key| key.starts_with(&prefix))
                 .filter(|key| {
-                    !matches!(layout::kind(key), Kind::Record { .. } | Kind::Marks { .. })
+                    !matches!(
+                        layout::kind(key),
+                        Kind::Record { .. } | Kind::Marks { .. } | Kind::Retired { .. }
+                    )
                 })
                 .collect();
             assert_eq!(kept, Vec::<&String>::new(), "cell {cell}, dead, reclaimed whole");
@@ -4541,18 +4586,20 @@ mod tests {
 
     /// TASK-395.4's AC #1: a pass over a cell lists nothing outside the cell's prefix, writes and
     /// deletes nothing outside it but the one reference it retires, of its deleted child's fork
-    /// across cells; and what it asks is the same in a bucket of many more cells: it grows with
-    /// the cell, not the bucket.
+    /// across cells, and its mark (TASK-395.13); and what it asks is the same in a bucket of many
+    /// more cells: it grows with the cell, not the bucket.
     #[test]
     fn passes_over_a_cell_list_and_delete_within_it_alone() {
         let (asked, report, parent, child, at) = pass_over_a_dead_fork(3);
         let prefix = child.cell.prefix();
         let retired = layout::reference(parent, at, child);
+        let mark = layout::retired(parent, at, child);
         for request in &asked {
             let (verb, key) = request.split_once(' ').unwrap();
             let key = key.split(' ').next().unwrap();
             match verb {
-                "list" | "list-delimited" | "put" => assert!(key.starts_with(&prefix), "{request}"),
+                "list" | "list-delimited" => assert!(key.starts_with(&prefix), "{request}"),
+                "put" => assert!(key.starts_with(&prefix) || key == mark, "{request}"),
                 "delete" => assert!(key.starts_with(&prefix) || key == retired, "{request}"),
                 _ => {}
             }
@@ -4560,6 +4607,11 @@ mod tests {
         let lists = asked.iter().filter(|asked| asked.starts_with("list")).count();
         assert!(lists > 0, "{asked:#?}");
         assert!(asked.contains(&format!("delete {retired}")), "{asked:#?}");
+        let (marked, deleted) = (
+            position(&asked, &format!("put {mark}")),
+            position(&asked, &format!("delete {retired}")),
+        );
+        assert!(marked < deleted, "marked first: {asked:#?}");
         assert_eq!(report.retired, 1);
         assert!(report.deleted > 0, "{report:?}");
         let (many, many_report, ..) = pass_over_a_dead_fork(30);
@@ -4973,6 +5025,122 @@ mod tests {
         [layout::reference(parent, at, child), reference].map(|key| left.contains(&key))
     }
 
+    /// TASK-395.14, the simulation's restores, seed 53: a recorder of a fork across cells (the
+    /// parent's writer, its next, its deletion) reads the child's record live, its own; the child
+    /// is then deleted, and its cell's pass retires the reference. The recorder writes no reference:
+    /// the record's maker wrote it first. Before, it wrote it again after its retirement, which the
+    /// dead cell's passes, skipping it, retired again only by sending every retirement again, every
+    /// pass.
+    #[test]
+    fn recorders_finding_their_childs_record_write_no_reference() {
+        block_on(async {
+            let direct = Arc::new(Direct(SimBucket::new()));
+            let (parent, child) = (celled(1, 1), celled(2, 2));
+            branch::create(&*direct, parent, 0).await.unwrap();
+            let writer = Writer::open(direct.clone(), parent, 10, 0).await.unwrap();
+            let at = commit_and_fork(&writer, Vec::new(), forked(child)).await;
+            let reference = layout::reference(parent, at, child);
+            assert!(keys(&*direct).await.contains(&reference));
+            let bucket = Hooked::new(direct.clone(), Hook::Got(layout::record(child)));
+            let going = direct.clone();
+            *bucket.then.lock().unwrap() = Some(Box::new(move || {
+                let went = std::thread::spawn(move || {
+                    block_on(async {
+                        branch::delete(&*going, child, 30, u64::MAX).await.unwrap();
+                        let mut collector =
+                            Collector::new(Options { compact_below: 0.0, grace: 0 });
+                        let report = collector.collect_cell(&*going, child.cell, 1).await;
+                        assert_eq!(report.unwrap().retired, 1);
+                    })
+                });
+                went.join().unwrap();
+            }));
+            let origin = layout::Origin { parent, at };
+            assert_eq!(branch::record_fork(&bucket, forked(child), origin).await, Ok(()));
+            assert!(bucket.then.lock().unwrap().is_none(), "the child went");
+            assert!(!keys(&*direct).await.contains(&reference));
+        });
+    }
+
+    /// TASK-395.13 and TASK-395.14: a writer of the parent recording a fork across cells reads the
+    /// child's record, twice (TASK-395.11), finding none; before it writes the reference, either
+    /// the child's ID is taken by a root and another recorder takes the reference back, the writer
+    /// dying once it wrote it, before its create (`taken`); or another recorder records the fork,
+    /// the child is deleted and its cell's passes retire the reference, until they skip the cell,
+    /// dead and unchanged, the writer going on. Its
+    /// reference written after, no record will name it, and no recorder nor pass of the child's
+    /// cell looks at it again: the pass over the parent's cell deletes it, by its mark, whatever
+    /// else of the parent it keeps. Whether it is left once sweeps ran, and what else
+    /// [`crate::testing::uncollected`] finds left.
+    async fn left_by_a_stale_recorder(taken: bool) -> (bool, Vec<String>) {
+        let direct = Arc::new(Direct(SimBucket::new()));
+        let (parent, child) = (celled(1, 1), celled(2, 2));
+        branch::create(&*direct, parent, 0).await.unwrap();
+        let hook = Hook::Gotten(layout::record(child), 2);
+        let bucket = Arc::new(Hooked::new(direct.clone(), hook));
+        let writer = Writer::open(bucket.clone(), parent, 10, 0).await.unwrap();
+        commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
+        let forking = Batch::from(Commit { tag: 2, ..Commit::default() });
+        let at =
+            writer.add_segment(forking.fork(forked(child), &mut writer.chain()).frame()).unwrap();
+        writer.upload(at).await.unwrap();
+        let origin = layout::Origin { parent, at };
+        let reference = layout::reference(parent, at, child);
+        let other = direct.clone();
+        // The other recorder and the pass, on a thread of their own, by this one's rules.
+        let rules = crate::rules();
+        *bucket.then.lock().unwrap() = Some(Box::new(move || {
+            let went = std::thread::spawn(move || {
+                crate::set_rules(rules);
+                block_on(async {
+                    if taken {
+                        branch::create(&*other, child, 0x99).await.unwrap();
+                        let refused = branch::record_fork(&*other, forked(child), origin).await;
+                        assert_eq!(refused, Err(Error::IdTaken(child)));
+                        return;
+                    }
+                    branch::record_fork(&*other, forked(child), origin).await.unwrap();
+                    branch::delete(&*other, child, 30, u64::MAX).await.unwrap();
+                    // Until the child's cell settles, its passes skipping it.
+                    sweep(&*other).await.unwrap();
+                    let reference = layout::reference(parent, at, child);
+                    assert!(!keys(&*other).await.contains(&reference), "retired");
+                })
+            });
+            went.join().unwrap();
+        }));
+        if taken {
+            *bucket.dies_after.lock().unwrap() = Some(reference.clone());
+            assert!(writer.acknowledge().now_or_never().is_none(), "the writer died");
+        } else {
+            assert_eq!(writer.acknowledge().await.map(drop), Ok(()));
+        }
+        drop(writer);
+        assert!(bucket.then.lock().unwrap().is_none(), "the child's record came");
+        assert!(keys(&*direct).await.contains(&reference), "written after");
+        sweep(&*direct).await.unwrap();
+        let left = keys(&*direct).await.contains(&reference);
+        (left, crate::testing::uncollected(&*direct, 0.0).await)
+    }
+
+    /// The reference such a stale recorder writes goes with the pass over its parent's cell.
+    #[test]
+    fn stale_recorders_references_go_by_their_marks() {
+        for taken in [true, false] {
+            let left = block_on(left_by_a_stale_recorder(taken));
+            assert_eq!(left, (false, Vec::new()), "taken: {taken}");
+        }
+    }
+
+    /// Without the rule, they stay, for ever: specs/bucket's NoRetirementsMarked.
+    #[test]
+    fn stale_recorders_references_need_retirements_marked() {
+        crate::set_rules(crate::Rules { retirements_marked: false, ..crate::Rules::ALL });
+        let left = [true, false].map(|taken| block_on(left_by_a_stale_recorder(taken)).0);
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(left, [true, true]);
+    }
+
     /// TASK-395.10: a clone's host dying at each step of the clone, before its reference, before
     /// its read of the point, before it makes its record made, its directory then deleted
     /// knowing nothing of the child, as a host's left unmade does: once the point and its origin
@@ -5264,8 +5432,10 @@ mod tests {
     /// TASK-395.6: a pass skips nothing it went by more than the cell for. A clone being made in the
     /// cell, of a point in another, its pass reads the point's record for: deleted then, with
     /// nothing of the cell's changed, the next pass gives the clone up, as a pass in full does. The
-    /// cell dead, passes that skip it retire its references again. And passes of other options, or
-    /// that only mark, go over the cell in full.
+    /// cell dead, the pass in full retires the clone's reference, marking it, and passes that skip
+    /// the cell after ask its lease and listing alone (TASK-395.14): the reference written again,
+    /// by a writer whose read came before, the pass over the parent's cell deletes, by its mark.
+    /// And passes of other options, or that only mark, go over the cell in full.
     #[test]
     fn passes_skip_only_what_the_cell_alone_decides() {
         use crate::layout::Origin;
@@ -5306,32 +5476,29 @@ mod tests {
         let record = bucket.served(branch::record(&*bucket, clone)).0.unwrap().unwrap();
         assert!(record.deleted, "{record:?}");
 
-        // Settled: the clone given up on, a pass after the one that saw it changed skips. The cell
-        // dead, it retires the clone's reference again, which a parent's writer that read a child
-        // live may write again after its retirement (the simulation's restores, seed 53): retired
-        // as a pass in full would, though nothing of the cell's changed.
+        // Settled: the clone given up on, the cell dead, a pass in full retires the clone's
+        // reference, marked; the passes after skip the cell, asking nothing more of it.
         let (report, _) = pass(&mut collector, 4);
         assert_eq!(report.retired, 1);
+        let mark = layout::retired(origin_branch, at, clone);
         assert!(!bucket.keys().contains(&reference));
-        let retiring = |asked: Vec<String>| {
-            let mut retiring = idle(clone.cell);
-            retiring.extend([
-                format!("get {}", layout::gc_lease(clone.cell)),
-                format!("delete {reference}"),
-            ]);
-            assert_eq!(asked, retiring);
-        };
+        assert!(bucket.keys().contains(&mark));
+        let skipped = Report { skipped: 1, ..Report::default() };
         let (report, asked) = pass(&mut collector, 5);
-        assert_eq!(report, Report { retired: 1, skipped: 1, ..Report::default() });
-        retiring(asked);
+        assert_eq!((report, asked), (skipped, idle(clone.cell)));
+        // Written again, as a writer whose read came before writes it (the simulation's restores,
+        // seed 53): the dead cell's passes skip it still; its parent's cell's pass deletes it.
         bucket.served(async {
             let bytes = layout::encode(&layout::Reference::of(0x33));
             bucket::create(&*bucket, &reference, bytes).await;
         });
         let (report, asked) = pass(&mut collector, 6);
-        assert_eq!(report, Report { retired: 1, skipped: 1, ..Report::default() });
-        retiring(asked);
+        assert_eq!((report, asked), (skipped, idle(clone.cell)));
+        assert!(bucket.keys().contains(&reference));
+        let (report, _) = bucket.served(collector.collect_cell(&*bucket, origin_branch.cell, 9));
+        assert_eq!(report.unwrap().retired, 1);
         assert!(!bucket.keys().contains(&reference));
+        assert!(bucket.keys().contains(&mark));
         let mut other = Collector::new(Options { compact_below: 0.5, grace: 0 });
         let (report, asked) = bucket.served(other.collect_cell(&*bucket, clone.cell, 7));
         report.unwrap();
@@ -5412,10 +5579,11 @@ mod tests {
             sim.advance(1);
             let before = bucket.now();
             branch::delete(&*bucket, child, 21, 0).await.unwrap();
-            // Retired by every pass over the dead cell: the first, the next, which finds the cell
-            // changed by that one's deletes, and the one after, which skips it.
+            // Retired by the passes over the dead cell in full: the first, and the next, which
+            // finds the cell changed by that one's deletes; not by the one after, which skips it
+            // (TASK-395.14).
             let report = crate::testing::collect_until_quiet(&*bucket, &options).await.unwrap();
-            assert_eq!(report.retired, 3);
+            assert_eq!(report.retired, 2);
             check("deleted", before, &[1, 2]).await;
             let (usage, _) = usages(&*bucket, parent.cell).await;
             assert!(!usage.kinds.contains_key("reference"), "{usage:?}");

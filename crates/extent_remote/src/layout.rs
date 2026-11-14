@@ -47,6 +47,8 @@ const GC_MARKS: &str = "gc/marks/";
 const MOVES: &str = "moves/";
 /// fxdax: under a cell's prefix, the references of forks of its branches ([`reference`]).
 const REFS: &str = "refs/";
+/// fxdax: under a cell's prefix, the marks of the references retired or taken back ([`retired`]).
+const RETIRED: &str = "retired/";
 /// fxdax: the prefix of the blocks of object IDs taken ([`objectid_block`]).
 const OBJECTIDS: &str = "objectid/";
 /// fxdax: there while a mark-only pass marks the bucket, which it writes and an operator removes
@@ -214,6 +216,30 @@ pub fn reference(parent: Branch, at: u64, child: Branch) -> String {
     format!("{}{tenant:016x}.{cell:016x}.{id:016x}", fork_point(parent, at))
 }
 
+/// fxdax: the mark of the reference of the fork of `parent` at the end of its segment `at` to
+/// `child` ([`reference`]), retired or taken back, under the parent's cell beside the references,
+/// outside their prefix, which a pass lists by delimiter (TASK-395.13, TASK-395.14): written before
+/// the reference is deleted, and kept for good, its bytes a [`Retired`]. The reference is garbage
+/// from then on, no record ever to name its fork: one a writer whose read of the child's record
+/// came before writes again after, the pass over the parent's cell that lists it beside its mark
+/// deletes. Nothing else would look at it again.
+pub fn retired(parent: Branch, at: u64, child: Branch) -> String {
+    let Branch { cell: Cell { tenant, id: cell }, id } = child;
+    format!(
+        "{}{RETIRED}{:016x}/{at:016x}/{tenant:016x}.{cell:016x}.{id:016x}",
+        parent.cell.prefix(),
+        parent.id
+    )
+}
+
+/// fxdax: the mark of the reference at `key` ([`retired`]), if it is a reference's key.
+pub fn retired_of(key: &str) -> Option<String> {
+    match kind(key) {
+        Kind::Reference { parent, at, child } => Some(retired(parent, at, child)),
+        _ => None,
+    }
+}
+
 /// fxdax: the parent a prefix of `cell`'s references names, `<C>refs/<parent>/`, as a delimiter
 /// listing of [`references`] gives it.
 pub fn referenced_parent(cell: Cell, prefix: &str) -> Option<Branch> {
@@ -303,6 +329,12 @@ pub enum Kind<'a> {
         at: u64,
         child: Branch,
     },
+    /// fxdax: the mark of that reference, retired or taken back ([`retired`]): never a candidate.
+    Retired {
+        parent: Branch,
+        at: u64,
+        child: Branch,
+    },
     Unknown,
 }
 
@@ -322,6 +354,7 @@ impl Kind<'_> {
             Self::Marking => "marking",
             Self::Moves { .. } => "moves",
             Self::Reference { .. } => "reference",
+            Self::Retired { .. } => "retired",
             Self::Unknown => "unknown",
         }
     }
@@ -337,7 +370,8 @@ pub fn owner(key: &str) -> Option<Cell> {
         | Kind::Checkpoint { branch, .. }
         | Kind::Record { branch }
         | Kind::Lease { branch }
-        | Kind::Reference { parent: branch, .. } => Some(branch.cell),
+        | Kind::Reference { parent: branch, .. }
+        | Kind::Retired { parent: branch, .. } => Some(branch.cell),
         Kind::Cell { cell } | Kind::GcLease { cell } | Kind::Marks { cell, .. } => Some(cell),
         Kind::Moves { cell, .. } => Some(cell),
         Kind::ObjectIds { .. } | Kind::Marking | Kind::Unknown => None,
@@ -371,7 +405,8 @@ pub fn kind(key: &str) -> Kind<'_> {
             let epoch = rest.strip_prefix(GC_MARKS.strip_prefix(GC)?)?;
             return Some(Kind::Marks { cell, epoch: hex(epoch)? });
         }
-        if let Some(rest) = rest.strip_prefix(REFS) {
+        // A reference's key, or its mark's, the rest after their prefixes alike.
+        let fork = |rest: &str| -> Option<(Branch, u64, Branch)> {
             let [parent, at, child] = rest.split('/').collect::<Vec<_>>()[..] else {
                 return None;
             };
@@ -382,7 +417,15 @@ pub fn kind(key: &str) -> Kind<'_> {
                 cell: Cell { tenant: hex(tenant)?, id: hex(child_cell)? },
                 id: hex(child)?,
             };
-            return Some(Kind::Reference { parent: branch(parent)?, at: hex(at)?, child });
+            Some((Branch { cell, id: hex(parent)? }, hex(at)?, child))
+        };
+        if let Some(rest) = rest.strip_prefix(REFS) {
+            let (parent, at, child) = fork(rest)?;
+            return Some(Kind::Reference { parent, at, child });
+        }
+        if let Some(rest) = rest.strip_prefix(RETIRED) {
+            let (parent, at, child) = fork(rest)?;
+            return Some(Kind::Retired { parent, at, child });
         }
         if let Some(rest) = rest.strip_prefix("branches/") {
             return Some(Kind::Record { branch: branch(rest)? });
@@ -514,6 +557,17 @@ impl Reference {
     pub fn of(owner: u64) -> Self {
         Self { format: FORMAT, owner }
     }
+}
+
+/// fxdax: a reference's mark's bytes ([`retired`]): the format of the bucket's objects alone, the
+/// same whoever writes it. What a pass deletes by is its key alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retired {
+    pub format: u32,
+}
+
+impl Retired {
+    pub const NOW: Self = Self { format: FORMAT };
 }
 
 /// An object a mark-only pass found doomed, as the listing it went by found it: an object at its
@@ -743,6 +797,13 @@ mod tests {
             kind(&reference(branch, 7, child)),
             Kind::Reference { parent: branch, at: 7, child }
         );
+        assert_eq!(
+            kind(&retired(branch, 7, child)),
+            Kind::Retired { parent: branch, at: 7, child }
+        );
+        assert_eq!(retired_of(&reference(branch, 7, child)), Some(retired(branch, 7, child)));
+        assert_eq!(retired_of(&retired(branch, 7, child)), None);
+        assert!(!retired(branch, 7, child).starts_with(&references(cell)));
         assert_eq!(kind(&format!("{}2", fork_point(branch, 7))), Kind::Unknown);
         assert_eq!(kind(&fork_point(branch, 7)), Kind::Unknown);
         // The layout before cells, and keys of cells' prefixes malformed, are no objects of a
@@ -782,6 +843,7 @@ mod tests {
             gc_lease(cell),
             marks(cell, 1),
             reference(branch, 7, child),
+            retired(branch, 7, child),
         ];
         for key in keys {
             assert_eq!(owner(&key), Some(cell), "{key}");

@@ -416,6 +416,14 @@ pub struct Rules {
     /// so that one dying first leaves it to the next (TASK-395.10).
     /// TLA+: `specs/bucket/mutations/NoReferencesTakenBack.cfg`.
     pub references_taken_back: bool,
+    /// A reference retired, or taken back, is marked first ([`layout::retired`]), the mark kept for
+    /// good under the parent's cell, and a pass over that cell deletes the references it lists
+    /// marked: a writer whose read of the child's record came before, finding none, writes it
+    /// after, which no record names and no recorder looks at again (TASK-395.13), or which the
+    /// child's cell's passes, skipping that cell, dead and unchanged, never retire again
+    /// (TASK-395.14). Its write changes the parent's cell's listing, whose next pass finds it.
+    /// TLA+: `specs/bucket/mutations/NoRetirementsMarked.cfg`.
+    pub retirements_marked: bool,
 }
 
 impl Rules {
@@ -466,6 +474,7 @@ impl Rules {
         fork_points_kept: true,
         clones_record_first: true,
         references_taken_back: true,
+        retirements_marked: true,
     };
 }
 

@@ -17,8 +17,8 @@
 //! What it records goes with every taking to the next ([`Passed`]): a pass that ran to its end
 //! records, as it lets the lease go, the digest of its listing of the cell, but the collector's own
 //! objects (`<C>gc/`); the options it decided by; what it found no live branch needs but for the
-//! time since an object was written, each with when it may go ([`Deferred`]); the references it
-//! retired; and the cell's objects and bytes, by kind, as of its listing ([`Usage`]).
+//! time since an object was written, each with when it may go ([`Deferred`]); and the cell's
+//! objects and bytes, by kind, as of its listing ([`Usage`]).
 //!
 //! A pass whose listing has the digest recorded, of options the same, decides what the recorded
 //! one did: everything it decides by is under the cell's prefix, and an object there written,
@@ -103,11 +103,6 @@ pub struct Passed {
     /// What it found no live branch needs, but that it was written too recently, each with when it
     /// may go, by the store's clock: in the order of their keys.
     pub deferred: Vec<Deferred>,
-    /// The references it retired, under other cells, its cell being dead: a pass that skips the
-    /// cell retires them again, as a parent's writer that read the child's record live may write a
-    /// reference again after its retirement ([`crate::branch::record_fork`]), which no change of
-    /// this cell's shows (found by the simulation, seed 53 of `restores`).
-    pub retired: Vec<String>,
     /// The cell's objects and bytes, as of its listing, less what it deleted, and with what it
     /// compacted to.
     pub usage: Usage,
@@ -210,6 +205,11 @@ pub(crate) struct Listed {
     /// Every object listed but the cell's collector lease, which recording counts as it writes it
     /// ([`record`]).
     pub usage: Usage,
+    /// fxdax: the references of forks of the cell's branches listed beside their marks
+    /// ([`layout::retired`]): retired, or taken back, and written again since by a writer whose
+    /// read of the child's record came before, garbage the pass deletes (TASK-395.13,
+    /// TASK-395.14). Their writes changed the listing, so that no pass skips them.
+    pub stale: Vec<String>,
 }
 
 /// Lists `cell`, once.
@@ -221,6 +221,7 @@ pub(crate) async fn list(bucket: &impl Bucket, cell: Cell) -> Listed {
     let mut digest = Sha256::new();
     let mut usage = Usage { measured, ..Usage::default() };
     let mut objects = BTreeMap::new();
+    let mut references = Vec::new();
     for meta in listed {
         if meta.key != lease {
             usage.add(&meta.key, meta.size);
@@ -228,11 +229,15 @@ pub(crate) async fn list(bucket: &impl Bucket, cell: Cell) -> Listed {
         if !meta.key.starts_with(&own) {
             digest_of(&mut digest, &meta);
         }
-        if !matches!(layout::kind(&meta.key), layout::Kind::Reference { .. }) {
-            objects.insert(meta.key.clone(), meta);
+        match layout::kind(&meta.key) {
+            layout::Kind::Reference { .. } => references.push(meta.key),
+            _ => drop(objects.insert(meta.key.clone(), meta)),
         }
     }
-    Listed { objects, digest: digest.finalize().into(), usage }
+    let stale = (references.into_iter())
+        .filter(|key| layout::retired_of(key).is_some_and(|mark| objects.contains_key(&mark)))
+        .collect();
+    Listed { objects, digest: digest.finalize().into(), usage, stale }
 }
 
 /// Feeds `meta` to `digest`, every part of it after its length, so that no two listings feed the
@@ -389,7 +394,6 @@ mod tests {
             listing: Some([7; 32]),
             decided: Decided { compact_below: 0, grace: 0 },
             deferred,
-            retired: vec!["r".into()],
             usage,
         };
         let passed = Some(passed);
