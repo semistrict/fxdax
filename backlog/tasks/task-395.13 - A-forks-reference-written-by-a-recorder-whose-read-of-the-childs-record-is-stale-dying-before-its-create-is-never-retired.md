@@ -3,11 +3,11 @@ id: TASK-395.13
 title: >-
   A fork's reference written by a recorder whose read of the child's record is
   stale, dying before its create, is never retired
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-13 18:27'
-updated_date: '2026-11-14 12:53'
+updated_date: '2026-11-14 15:30'
 labels:
   - bucket
   - collector
@@ -26,15 +26,15 @@ Found by TASK-395.10's strict oracle (testing::uncollected flags a reference no 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A reference never outlives every record of its child naming another origin or none, whatever recorder dies when (a model of the code's separate read and write shows it)
-- [ ] #2 testing::uncollected no longer excuses references whose child's record names another origin
+- [x] #1 A reference never outlives every record of its child naming another origin or none, whatever recorder dies when (a model of the code's separate read and write shows it)
+- [x] #2 testing::uncollected no longer excuses references whose child's record names another origin
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -47,3 +47,19 @@ Done together with TASK-395.14 (both change who writes references and when).
 4. testing::uncollected loses its TASK-395.13 excuse.
 5. Simulation: leak searches for references_taken_back and retirements_marked; re-seed what loses its search.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fix: retirements are marked (rule retirements_marked, TLA+ NoRetirementsMarked, invariant ReferencesRetiredMarked). A reference retired or taken back first gets <C>retired/<parent>/<at>/<child> under the parent's cell, kept; a pass deletes its cell's references it lists beside their marks (passed::Listed::stale). The stale recorder's write changes the parent's cell's listing, so its next pass goes in full and deletes it. Chosen over the task's candidates (OPEN_QUESTIONS, Decisions): (1) a marker per fork in the child's cell costs a PUT per fork and the pass it wakes may run before the reference lands; (2) pending records first leaves the same stale-read window and churns writers, hosts, claims, deletions and the collector. Tried first in the model: emptying the reference in place (dead-ends/reference-tombstones-in-place.md): breaks the parent's prefix-only fork-point listing.
+
+Blind spot: Bucket.tla merged record_fork's read and write in one step, and testing::uncollected excused the result by name. Now the model splits them (writer and deletion), the excuse is gone, and the simulation has leak searches for both rules (restores_need_references_taken_back, restores_need_retirements_marked). Direct test: collector::tests::stale_recorders_references_go_by_their_marks / ..._need_retirements_marked (writer dying after its write, a hook stalling its requests), red with the rule off. Looked around: clones' slow refer (record first, then reference) is the same class, covered by marks (BucketRefsClones checks ReferencesRetiredMarked). Structure: marks make retirement final from the parent's side; no other writer of references reads before writing but record_fork and the deletion (same function).
+
+Verified on main 111633d6f (pre-rebase 57f568458): macOS cargo clippy gate clean; cargo nextest -p extent_remote 303/303; scripts/test.sh: workspace 2359/2360 (the one failure TASK-328's flake, 4/4 alone after), sim 63/63, Shuttle 37+10+6+33+10+18, scripts 313 OK, mutants 0 broken, go ok; Linux zig cross-check clean; ubu1 run t39513a under fxjob: workspace 2632/2632, sim 63/63, guest tests and e2e pass; upstream-changes.py --check ok; after rebasing onto e5c49d2e3: clippy gate clean, extent_remote+fxdax remote/peers/kept/collect 396/396. TLA+: all bucket models but BucketForks/Overlap/Strays/Takeovers hold (16, with BucketRefsTaken), all 53 mutations fail as expected (NoRetirementsMarked 1-2 s). BucketDeletions grows 3.44M -> 4.64M states (+35%; ~210 s idle from 158 s), BucketCells 2.9M -> 3.68M: every default model stays under 10 min. Not run: the four long models (the decomposition delegate's).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A stale recorder's reference no longer outlives its take-back: retirements and take-backs write a kept mark under the parent's cell first, and that cell's next pass, which the stale write wakes, deletes it. Modelled first (Bucket.tla, read and write split, rule retirementsMarked, mutation NoRetirementsMarked), direct test of the stale-read-then-crash order, testing::uncollected's excuse removed, sim leak searches added. Verified macOS (test.sh), ubu1 t39513a, TLC.
+<!-- SECTION:FINAL_SUMMARY:END -->
